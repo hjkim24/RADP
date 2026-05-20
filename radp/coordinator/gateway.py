@@ -29,6 +29,7 @@ import grpc
 import torch
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 
+from radp.common.architectures import ModelArchitecture, get_architecture
 from radp.common.logging_utils import get_logger
 from radp.common.model_utils import ModelHandle, load_model, measure_resident_bytes
 from radp.common.proto import radp_pb2, radp_pb2_grpc
@@ -86,13 +87,15 @@ class RequestGateway:
 
         log.info("coordinator loading model %s on %s", model_id, torch_device)
         self.handle: ModelHandle = load_model(model_id, dtype=dtype, torch_device=torch_device)
-        self._decoder = self._get_opt_decoder(self.handle.model)
+        self._arch: ModelArchitecture = get_architecture(self.handle.model.config.model_type)
+        self._decoder = self._arch.get_decoder(self.handle.model)
         rss_before = measure_resident_bytes()
         self._decoder.layers = torch.nn.ModuleList()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         log.info(
-            "coordinator freed decoder.layers (rss %.1f -> %.1f MB)",
+            "coordinator freed decoder.layers (arch=%s, rss %.1f -> %.1f MB)",
+            self._arch.name,
             rss_before / (1024 * 1024),
             measure_resident_bytes() / (1024 * 1024),
         )
@@ -413,14 +416,8 @@ class RequestGateway:
             self._stubs.clear()
 
     # ------------------------------------------------------------------
-    # OPT-specific embed + head
+    # Architecture-dispatched embed + head
     # ------------------------------------------------------------------
-    @staticmethod
-    def _get_opt_decoder(model: Any) -> Any:
-        if not (hasattr(model, "model") and hasattr(model.model, "decoder")):
-            raise ValueError("RequestGateway currently supports OPT-family models only.")
-        return model.model.decoder
-
     def _embed(
         self,
         input_ids: torch.Tensor,
@@ -428,22 +425,10 @@ class RequestGateway:
         *,
         past_kv_length: int,
     ) -> torch.Tensor:
-        dec = self._decoder
-        inputs_embeds = dec.embed_tokens(input_ids)
-        pos_embeds = dec.embed_positions(attention_mask_2d, past_key_values_length=past_kv_length)
-        hidden = inputs_embeds + pos_embeds
-        if getattr(dec, "project_in", None) is not None:
-            hidden = dec.project_in(hidden)
-        return hidden  # type: ignore[no-any-return]
+        return self._arch.embed(self._decoder, input_ids, attention_mask_2d, past_kv_length)
 
     def _head(self, hidden: torch.Tensor) -> torch.Tensor:
-        dec = self._decoder
-        if getattr(dec, "final_layer_norm", None) is not None:
-            hidden = dec.final_layer_norm(hidden)
-        if getattr(dec, "project_out", None) is not None:
-            hidden = dec.project_out(hidden)
-        logits = self.handle.model.lm_head(hidden)
-        return logits  # type: ignore[no-any-return]
+        return self._arch.head(self._decoder, self.handle.model.lm_head, hidden)
 
     # ------------------------------------------------------------------
     # Convenience used by tests and existing callers

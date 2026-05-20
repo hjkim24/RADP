@@ -20,6 +20,7 @@ import torch
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
+from radp.common.architectures import get_architecture
 from radp.common.logging_utils import get_logger
 from radp.common.types import LayerIdx
 
@@ -216,13 +217,8 @@ def load_stage_blocks(
     OPT-only for Phase 2.5 (other architectures need their own decoder-block
     class + a different weight-key prefix).
     """
-    from transformers.models.opt.modeling_opt import OPTDecoderLayer
-
     config = AutoConfig.from_pretrained(model_id)
-    if config.model_type != "opt":
-        raise NotImplementedError(
-            f"Phase 2.5 supports OPT only, got '{config.model_type}'"
-        )
+    arch = get_architecture(config.model_type)
     if start < 1 or end > config.num_hidden_layers or start > end:
         raise ValueError(
             f"Stage [{start}, {end}] out of range for "
@@ -238,11 +234,11 @@ def load_stage_blocks(
     try:
         all_keys = reader.keys()
         for global_idx in range(int(start), int(end) + 1):
-            layer = OPTDecoderLayer(config, layer_idx=global_idx - 1)
+            layer = arch.make_block(config, layer_idx=global_idx - 1)
             layer.to(dtype=torch_dtype, device=torch_device)
             layer.eval()
 
-            prefix = f"model.decoder.layers.{global_idx - 1}."
+            prefix = arch.weight_prefix(global_idx - 1)
             local_state: dict[str, torch.Tensor] = {}
             for k in all_keys:
                 if k.startswith(prefix):

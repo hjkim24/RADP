@@ -1,4 +1,4 @@
-"""Multi-stage inference executor (Phase 2.6).
+"""Multi-stage inference executor (Phase 2.10).
 
 Adds KV-cache support: each worker maintains a ``DynamicCache`` per
 ``(request_id, stage_key)``. ``is_prefill=True`` clears the cache for that
@@ -6,21 +6,24 @@ key; subsequent decode-step ``run`` calls append to it. Cache lifetime ends
 when the coordinator calls ``evict_request`` (typically right after the user
 request finishes).
 
-OPT family only (block forward signature is OPT-specific). Per-stage
-weights still loaded via ``load_stage_blocks``.
+Model-family agnostic: block invocation is delegated to a
+``ModelArchitecture`` adapter (OPT / LLaMA / Mistral) chosen by
+``config.model_type``. The worker creates the per-architecture auxiliary
+modules (e.g., LLaMA's ``rotary_emb``) once per model load.
 """
 
 from __future__ import annotations
 
 import threading
-from typing import Any
 
 import torch
 from torch import nn
-from transformers import DynamicCache
+from transformers import AutoConfig, DynamicCache
 
+from radp.common.architectures import ModelArchitecture, get_architecture
 from radp.common.logging_utils import get_logger
 from radp.common.model_utils import (
+    DTYPE_MAP,
     load_stage_blocks,
     measure_resident_bytes,
 )
@@ -53,6 +56,8 @@ class StageRunner:
         self._backup_for: dict[StageKey, DeviceId] = {}
         self._promoted: set[StageKey] = set()
         self._kv_cache: dict[CacheKey, DynamicCache] = {}
+        self._arch: ModelArchitecture | None = None
+        self._aux: dict[str, nn.Module] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -153,8 +158,18 @@ class StageRunner:
         payload = decode(activation_blob)
         hidden = payload["hidden_states"].to(self.torch_device)
         attention_mask = payload["attention_mask"].to(self.torch_device)
+        # IMPORTANT: get_seq_length(layer_idx) — our cache only has slots filled
+        # for THIS stage's layer indices (start-1 .. end-1, 0-based). Querying
+        # the default layer 0 would return 0 for any non-first stage and
+        # silently misalign RoPE positions. Use this stage's first layer index.
+        first_layer_idx = int(start) - 1
+        past_length = (
+            int(cache.get_seq_length(layer_idx=first_layer_idx))
+            if not is_prefill
+            else 0
+        )
         with torch.no_grad():
-            hidden = self._run_blocks(blocks, hidden, attention_mask, cache)
+            hidden = self._run_blocks(blocks, hidden, attention_mask, cache, past_length)
 
         out_payload: dict[str, torch.Tensor] = {
             "hidden_states": hidden.detach().cpu(),
@@ -172,29 +187,34 @@ class StageRunner:
     # ------------------------------------------------------------------
     def _ensure_model(self, model_id: str) -> None:
         if self._model_id is None:
+            config = AutoConfig.from_pretrained(model_id)
+            self._arch = get_architecture(config.model_type)
+            self._aux = self._arch.make_aux(
+                config, dtype=DTYPE_MAP[self.dtype], device=self.torch_device
+            )
             self._model_id = model_id
-            log.info("worker=%s pinned to model %s", self.device_id, model_id)
+            log.info(
+                "worker=%s pinned to model %s (arch=%s)",
+                self.device_id, model_id, self._arch.name,
+            )
         elif self._model_id != model_id:
             raise ValueError(
                 f"worker={self.device_id} already pinned to {self._model_id}; "
                 f"refusing to switch to {model_id}"
             )
 
-    @staticmethod
     def _run_blocks(
+        self,
         blocks: nn.ModuleList,
         hidden: torch.Tensor,
         attention_mask: torch.Tensor,
         cache: DynamicCache,
+        past_length: int,
     ) -> torch.Tensor:
-        """OPT-only block invocation with shared KV cache mutated in place."""
+        """Architecture-dispatched block invocation. Cache is mutated in place."""
+        assert self._arch is not None, "load_primary/load_backup must be called first"
+        arch = self._arch
+        aux = self._aux
         for block in blocks:
-            out: Any = block(
-                hidden,
-                attention_mask=attention_mask,
-                past_key_values=cache,
-                use_cache=True,
-            )
-            # OPT 5.x returns just the hidden tensor; older versions returned a tuple.
-            hidden = out[0] if isinstance(out, tuple) else out
+            hidden = arch.run_block(block, hidden, attention_mask, cache, past_length, aux)
         return hidden
