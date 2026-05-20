@@ -94,6 +94,8 @@ class ClusterSpec:
     layers: list[LayerProfile]
     network: NetworkProfile
     slo: SLO
+    activation_bytes: int = 1_000_000
+    """Size of one inter-stage activation payload (bytes). Used for T_comm."""
     extras: dict[str, str] = field(default_factory=dict)
 
 

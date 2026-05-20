@@ -3,17 +3,20 @@
 ## 1. 프로젝트 개요
 
 ### 1.1 연구 주제
+
 PETALS 기반 분산 LLM 추론 환경에서 **이기종 엣지 디바이스(Jetson Nano)** 를 활용한 파이프라인 병렬화 구현. 핵심 기여는 **레이어 배치와 장애 복구를 통합한 단일 최적화 문제 (Recovery-Aware DP)** 설계.
 
 ### 1.2 동기
 
 기존 시스템의 한계:
 
-| 시스템 | 한계 |
-|---|---|
-| PETALS | Greedy 레이어 배치 → 처리량 최대 2.38× 손실 (Helix 실측). FT는 레이어 redundancy 전제 → 4GB 환경에서 불가능 |
-| EdgeShard Algo.2 | DP로 배치 최적화하나 FT 부재. 부분집합 탐색으로 O(N²×2^M×M²) |
-| Jupiter | 모든 디바이스 참여 가정으로 O(L²×\|D\|), but 정적 오프라인 계획. FT 부재 |
+
+| 시스템              | 한계                                                                               |
+| ---------------- | -------------------------------------------------------------------------------- |
+| PETALS           | Greedy 레이어 배치 → 처리량 최대 2.38× 손실 (Helix 실측). FT는 레이어 redundancy 전제 → 4GB 환경에서 불가능 |
+| EdgeShard Algo.2 | DP로 배치 최적화하나 FT 부재. 부분집합 탐색으로 O(N²×2^M×M²)                                       |
+| Jupiter          | 모든 디바이스 참여 가정으로 O(L²×|D|), but 정적 오프라인 계획. FT 부재                                 |
+
 
 **근본 문제**: 현재 배치 결정이 복구 가능성을 전혀 고려하지 않음. Jetson Nano 4GB 메모리 환경에서는 레이어 redundancy 유지가 어려워, 장애 시 대체 노드가 메모리 여유가 없으면 복구 자체가 불가능.
 
@@ -65,11 +68,13 @@ PETALS 기반 분산 LLM 추론 환경에서 **이기종 엣지 디바이스(Jet
 ### 2.2 데이터 흐름
 
 **정상 추론**:
+
 ```
 User → Coordinator → Stage 1 → activation 캐싱 → Stage 2 → ... → Stage N → Output → User
 ```
 
 **장애 복구**:
+
 ```
 1. Coordinator: 노드 j 장애 감지 (heartbeat timeout)
 2. R(j) = k 조회 (precomputed)
@@ -102,6 +107,7 @@ T_stage(l+1→y, d_n) = Σ T_comp(i, d_n) for i = l+1 to y
 ### 3.3 제약 조건
 
 **(1) 메모리 제약 (핵심 기여)**:
+
 ```
 Σ mem(i) for i in stage(k)  +  Σ Σ mem(i) for j in R⁻¹(k), i in stage(j)  ≤  Mem(k)
 └────────── 자기 담당 ──────────┘  └─────────── 백업 reserve slot ───────────┘
@@ -110,17 +116,20 @@ R⁻¹(k) = { j : R(j) = k }
 ```
 
 **(2) SLO 제약**:
+
 ```
 TTFT(Ψ) ≤ TTFT_SLO  (예: 300ms)
 TBT(Ψ)  ≤ TBT_SLO   (예: 100ms)
 ```
 
 **(3) 복구 가능성**:
+
 ```
 ∀ j ∈ D, ∃ R(j) ∈ D \ {j}  (모든 노드는 백업이 존재)
 ```
 
 **(4) 커버리지**:
+
 ```
 ∀ i ∈ {1, ..., L}, ∃! k ∈ D s.t. Ψ(i) = k  (모든 레이어가 유일하게 배치)
 ```
@@ -186,27 +195,31 @@ project/
 ### 4.2 Phase별 구현 우선순위
 
 #### Phase 1: 오프라인 컴포넌트 (단독 실행 가능)
-- [ ] `profiler/layer_profiler.py` — Jetson에서 레이어별 실측
-- [ ] `profiler/network_profiler.py` — 노드 간 대역폭 측정
-- [ ] `coordinator/scheduler.py` — DP 알고리즘 본체 (단위 테스트로 검증)
-- [ ] `coordinator/recovery_table.py` — R 결정 휴리스틱
+
+- `profiler/layer_profiler.py` — Jetson에서 레이어별 실측
+- `profiler/network_profiler.py` — 노드 간 대역폭 측정
+- `coordinator/scheduler.py` — DP 알고리즘 본체 (단위 테스트로 검증)
+- `coordinator/recovery_table.py` — R 결정 휴리스틱
 
 #### Phase 2: 분산 추론 인프라
-- [ ] `common/protocol.py` — gRPC 또는 ZeroMQ 기반 메시지 정의
-- [ ] `worker/stage_runner.py` — 단일 스테이지 추론 실행
-- [ ] `worker/weight_loader.py` — 동적 가중치 로딩
-- [ ] `coordinator/gateway.py` — 사용자 요청 입출력
-- [ ] `coordinator/activation_cache.py` — activation 미러링 저장
+
+- `common/protocol.py` — gRPC 또는 ZeroMQ 기반 메시지 정의
+- `worker/stage_runner.py` — 단일 스테이지 추론 실행
+- `worker/weight_loader.py` — 동적 가중치 로딩
+- `coordinator/gateway.py` — 사용자 요청 입출력
+- `coordinator/activation_cache.py` — activation 미러링 저장
 
 #### Phase 3: 장애 처리 메커니즘
-- [ ] `worker/heartbeat_sender.py`
-- [ ] `coordinator/failure_detector.py`
-- [ ] 복구 트리거 → 가중치 다운로드 → activation 전달 흐름 연결
+
+- `worker/heartbeat_sender.py`
+- `coordinator/failure_detector.py`
+- 복구 트리거 → 가중치 다운로드 → activation 전달 흐름 연결
 
 #### Phase 4: 실험 및 평가
-- [ ] `experiments/run_normal.py`
-- [ ] `experiments/run_failure.py`
-- [ ] `experiments/analyze.py`
+
+- `experiments/run_normal.py`
+- `experiments/run_failure.py`
+- `experiments/analyze.py`
 
 ---
 
@@ -348,26 +361,31 @@ def memory_check(node_k, start, end, R, mem_layers, Mem_nodes, current_placement
 
 ### 6.3 비교 대상 (Baseline)
 
-| 시스템 | 배치 방식 | FT |
-|---|---|---|
-| PETALS 원본 | Greedy | Reactive (dual-cache, redundancy 전제) |
-| Jupiter-style DP | DP (처리량만) | 없음 |
-| **우리 시스템** | **Recovery-Aware DP** | **복구 테이블 R 기반** |
+
+| 시스템              | 배치 방식                 | FT                                   |
+| ---------------- | --------------------- | ------------------------------------ |
+| PETALS 원본        | Greedy                | Reactive (dual-cache, redundancy 전제) |
+| Jupiter-style DP | DP (처리량만)             | 없음                                   |
+| **우리 시스템**       | **Recovery-Aware DP** | **복구 테이블 R 기반**                      |
+
 
 ### 6.4 평가 지표
 
 **정상 운영**:
+
 - 처리량 (tokens/s)
 - TTFT (Time To First Token)
 - TBT (Time Between Tokens)
 
 **장애 시나리오**:
+
 - 복구 시작까지 걸리는 시간
 - 복구 완료까지 걸리는 시간 (가중치 다운로드 포함)
 - 장애 중 드롭된 요청 수
 - 복구 가능 여부 (redundancy 없는 환경)
 
 **알고리즘 자체**:
+
 - DP 실행 시간 (오프라인)
 - 복구 메모리 예약으로 인한 정상 처리량 손실
 
@@ -414,3 +432,4 @@ def memory_check(node_k, start, end, R, mem_layers, Mem_nodes, current_placement
 - **Jupiter**: Ye et al., "Jupiter: Fast and Resource-Efficient Collaborative Inference of Generative LLMs on Edge Devices", INFOCOM 2025.
 - **Helix**: Mei et al., "Helix: Serving Large Language Models over Heterogeneous GPUs and Network via Max-Flow", ASPLOS 2025.
 - **Parallax**: Tong et al., "Parallax: Efficient LLM Inference Service over Decentralized Environment", 2025.
+

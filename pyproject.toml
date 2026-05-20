@@ -66,5 +66,8 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra -q"
+addopts = "-ra -q -m 'not slow'"
 asyncio_mode = "auto"
+markers = [
+  "slow: end-to-end tests that download HF weights or hit a network (opt-in via `-m slow`)",
+]
