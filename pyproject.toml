@@ -59,6 +59,7 @@ warn_redundant_casts = true
 [[tool.mypy.overrides]]
 module = ["radp.common.proto.*"]
 ignore_errors = true
+follow_imports = "skip"
 
 [[tool.mypy.overrides]]
 module = ["transformers.*", "accelerate.*", "bitsandbytes.*", "grpc.*", "torch.*"]
