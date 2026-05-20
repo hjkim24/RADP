@@ -77,6 +77,10 @@ def determine_recovery_table(
         d.id: _stage_bytes(spec, placement_by_device[d.id]) if d.id in placement_by_device else 0
         for d in spec.devices
     }
+    # Running reservation per device as we assign backups; prevents the
+    # heuristic from greedily pointing every source at the fastest peer when
+    # that peer cannot actually hold all of them.
+    reserved: dict[DeviceId, int] = {d.id: 0 for d in spec.devices}
 
     recovery: RecoveryTable = {}
     for j in spec.devices:
@@ -92,7 +96,7 @@ def determine_recovery_table(
         for k in spec.devices:
             if k.id == j.id:
                 continue
-            free = k.total_memory_bytes - self_usage[k.id]
+            free = k.total_memory_bytes - self_usage[k.id] - reserved[k.id]
             if free < j_stage_bytes:
                 continue
             cost = estimate_download_time(
@@ -105,8 +109,10 @@ def determine_recovery_table(
         if best_k is None:
             raise NoRecoveryError(
                 f"Device {j.id} has no viable backup: every peer lacks free memory "
-                f"for {j_stage_bytes} bytes."
+                f"for {j_stage_bytes} bytes (after accounting for backups already "
+                f"assigned to peers)."
             )
         recovery[j.id] = best_k
+        reserved[best_k] += j_stage_bytes
 
     return recovery

@@ -87,6 +87,35 @@ class DPResult:
 
 
 @dataclass(frozen=True)
+class AlternatingIterationLog:
+    """One iteration of the R-Ψ alternating loop."""
+
+    iteration: int
+    max_stage_time: float
+    self_consistent: bool
+    """True iff Ψ_i's own backup burden fits within memory (the DP used
+    Ψ_{i-1} as its reference, so this may differ)."""
+    psi_changed: bool
+    """True iff Ψ_i ≠ Ψ_{i-1} (also true on the first iteration)."""
+    r_changed: bool
+
+
+@dataclass(frozen=True)
+class AlternatingResult:
+    """Output of Scheduler.solve_alternating (plan.md §3.4 / §7.2)."""
+
+    placement: Placement
+    recovery: RecoveryTable
+    max_stage_time: float
+    iterations: int
+    converged: bool
+    """True iff (R_i, Ψ_i) == (R_{i-1}, Ψ_{i-1}) and Ψ_i is self-consistent.
+    False means we returned the best self-consistent intermediate found
+    within ``max_iterations``."""
+    history: list[AlternatingIterationLog]
+
+
+@dataclass(frozen=True)
 class ClusterSpec:
     """A whole cluster's static configuration, passed to the scheduler."""
 

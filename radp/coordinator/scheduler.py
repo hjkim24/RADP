@@ -9,33 +9,54 @@ where the n-th device handles layers [l+1, y], subject to:
 
 Device ordering D is taken as given (plan.md §7.1: "외부에서 정렬되어 들어옴").
 All M devices participate ("모든 노드 참여 가정").
+
+Two entry points:
+  * ``solve(R)`` — single-shot DP. Uses a round-robin reference placement
+    for the backup-burden term in memory_check (Phase 1 simplification).
+  * ``solve_alternating()`` — R-Ψ alternating optimization (plan.md §3.4
+    "구현 단순화" → §7.2 future work). Iterates until (R, Ψ) is mutually
+    self-consistent or ``max_iterations`` is hit.
 """
 
 from __future__ import annotations
 
 import math
 
+from radp.common.logging_utils import get_logger
 from radp.common.types import (
+    AlternatingIterationLog,
+    AlternatingResult,
     ClusterSpec,
     DeviceId,
     DeviceProfile,
     DPResult,
     LayerIdx,
     NoFeasibleSolutionError,
+    NoRecoveryError,
     Placement,
     RecoveryTable,
     Stage,
 )
 from radp.coordinator.memory_check import memory_check
+from radp.coordinator.recovery_table import determine_recovery_table
+
+log = get_logger(__name__)
 
 
 class Scheduler:
     """Recovery-Aware DP scheduler.
 
-    Phase 1 simplification (plan.md §3.4):
+    Single-shot mode (Phase 1, plan.md §3.4):
       - Backup memory burden is estimated from a uniform round-robin
-        "initial placement"; this is the only `current_placement` the DP
-        sees during memory_check. R is held fixed across the DP run.
+        "initial placement"; the DP only sees this round-robin reference.
+        R is held fixed across the DP run.
+
+    Alternating mode (this file, plan.md §3.4 "구현 단순화" → §7.2):
+      - Iterate (R, Ψ) until both stabilize and Ψ is consistent with its
+        OWN backup burden. The DP at iteration i uses Ψ_{i-1} as its
+        reference; after solving, we re-check the new Ψ_i against its
+        own backup burden to detect inconsistencies introduced by the
+        change in stage sizes.
     """
 
     def __init__(self, spec: ClusterSpec) -> None:
@@ -44,10 +65,20 @@ class Scheduler:
         self._M = len(spec.devices)
 
     # ------------------------------------------------------------------
-    # Public API
+    # Public API — single shot
     # ------------------------------------------------------------------
-    def solve(self, recovery: RecoveryTable) -> DPResult:
-        """Run DP forward + backtracking. Returns the optimal placement."""
+    def solve(
+        self,
+        recovery: RecoveryTable,
+        *,
+        ref_placement: Placement | None = None,
+    ) -> DPResult:
+        """Run DP forward + backtracking. Returns the optimal placement.
+
+        ``ref_placement`` is the backup-burden reference used by
+        ``memory_check`` during DP. If omitted, defaults to a uniform
+        round-robin placement (Phase 1 behavior).
+        """
         if self._L == 0 or self._M == 0:
             raise NoFeasibleSolutionError("Empty layers or devices")
         if self._L < self._M:
@@ -56,7 +87,9 @@ class Scheduler:
                 "DP requires each device to host at least one layer."
             )
 
-        A, choice = self._forward(recovery)
+        if ref_placement is None:
+            ref_placement = uniform_placement(self.spec.devices, self._L)
+        A, choice = self._forward(recovery, ref_placement=ref_placement)
         if math.isinf(A[self._L][self._M]):
             raise NoFeasibleSolutionError(
                 "Every (y, n) cell is infeasible under the given memory + SLO constraints."
@@ -69,20 +102,158 @@ class Scheduler:
         )
 
     # ------------------------------------------------------------------
+    # Public API — alternating
+    # ------------------------------------------------------------------
+    def solve_alternating(
+        self,
+        *,
+        initial_placement: Placement | None = None,
+        max_iterations: int = 10,
+    ) -> AlternatingResult:
+        """Run the R-Ψ alternating optimization.
+
+        At each iteration: derive R from the current Ψ via
+        ``determine_recovery_table``, then DP with that R using the current Ψ
+        as the backup-burden reference. Check whether the resulting Ψ' is
+        consistent with ITS OWN backup burden; track the best self-consistent
+        Ψ seen across iterations as a safe fallback.
+
+        Convergence: (R, Ψ) unchanged from previous iteration AND Ψ is
+        self-consistent. Otherwise we run up to ``max_iterations`` and
+        return the best self-consistent Ψ.
+        """
+        if self._L < self._M:
+            raise NoFeasibleSolutionError(
+                f"Fewer layers ({self._L}) than devices ({self._M}); "
+                "DP requires each device to host at least one layer."
+            )
+
+        prev_psi: Placement = (
+            initial_placement
+            if initial_placement is not None
+            else uniform_placement(self.spec.devices, self._L)
+        )
+        prev_r: RecoveryTable | None = None
+        history: list[AlternatingIterationLog] = []
+        best_consistent: AlternatingResult | None = None
+
+        for i in range(1, max_iterations + 1):
+            try:
+                r = determine_recovery_table(self.spec, prev_psi)
+            except NoRecoveryError as e:
+                if best_consistent is not None:
+                    log.warning(
+                        "alternating iter=%d: recovery infeasible (%s); "
+                        "falling back to best self-consistent (max_stage=%.4f)",
+                        i, e, best_consistent.max_stage_time,
+                    )
+                    return _replace_history(best_consistent, history)
+                raise
+
+            try:
+                A, choice = self._forward(r, ref_placement=prev_psi)
+            except NoFeasibleSolutionError:
+                if best_consistent is not None:
+                    return _replace_history(best_consistent, history)
+                raise
+
+            if math.isinf(A[self._L][self._M]):
+                if best_consistent is not None:
+                    log.warning(
+                        "alternating iter=%d: DP infeasible; falling back", i,
+                    )
+                    return _replace_history(best_consistent, history)
+                raise NoFeasibleSolutionError(
+                    f"Alternating iter={i}: DP found no feasible placement"
+                )
+
+            psi = self._backtrack(choice)
+            max_stage = A[self._L][self._M]
+            self_consistent = self._memory_self_check(psi, r)
+
+            log_entry = AlternatingIterationLog(
+                iteration=i,
+                max_stage_time=max_stage,
+                self_consistent=self_consistent,
+                psi_changed=(psi != prev_psi),
+                r_changed=(r != prev_r),
+            )
+            history.append(log_entry)
+            log.debug(
+                "alternating iter=%d max_stage=%.4f self_consistent=%s "
+                "psi_changed=%s r_changed=%s",
+                i, max_stage, self_consistent, log_entry.psi_changed, log_entry.r_changed,
+            )
+
+            if self_consistent and (
+                best_consistent is None or max_stage < best_consistent.max_stage_time
+            ):
+                best_consistent = AlternatingResult(
+                    placement=psi,
+                    recovery=r,
+                    max_stage_time=max_stage,
+                    iterations=i,
+                    converged=False,
+                    history=list(history),
+                )
+
+            # Converged when R and Ψ are stable AND Ψ is self-consistent.
+            if r == prev_r and psi == prev_psi and self_consistent:
+                return AlternatingResult(
+                    placement=psi,
+                    recovery=r,
+                    max_stage_time=max_stage,
+                    iterations=i,
+                    converged=True,
+                    history=history,
+                )
+
+            prev_r = r
+            prev_psi = psi
+
+        # Hit max iterations without convergence.
+        if best_consistent is not None:
+            return _replace_history(best_consistent, history)
+        raise NoFeasibleSolutionError(
+            f"No self-consistent (R, Ψ) found in {max_iterations} iterations"
+        )
+
+    # ------------------------------------------------------------------
+    # Consistency check
+    # ------------------------------------------------------------------
+    def _memory_self_check(
+        self, placement: Placement, recovery: RecoveryTable
+    ) -> bool:
+        """Does every stage in `placement` fit its own self+backup burden?
+
+        ``memory_check`` is called with ``placement`` as both the candidate
+        and the reference, so the answer reflects what the DP would have
+        seen had it run with this Ψ as the reference from the start.
+        """
+        devices_by_id = {d.id: d for d in self.spec.devices}
+        for stage in placement:
+            device = devices_by_id[stage.device]
+            if not memory_check(
+                device, stage.start_layer, stage.end_layer,
+                recovery, placement, self.spec.layers,
+            ):
+                return False
+        return True
+
+    # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
     def _forward(
         self,
         recovery: RecoveryTable,
+        *,
+        ref_placement: Placement,
     ) -> tuple[list[list[float]], list[list[int]]]:
         spec = self.spec
         L, M = self._L, self._M
         devices = spec.devices
         layers = spec.layers
         tbt = spec.slo.tbt_seconds
-
-        # Backup-burden reference: uniform initial placement (round-robin).
-        ref_placement = uniform_placement(devices, L)
 
         # A[y][n] = best max-stage-time placing layers [1..y] across first n devices.
         # choice[y][n] = the split point l (last layer of the (n-1)-th device).
@@ -185,6 +356,27 @@ class Scheduler:
         if bw is None or bw <= 0:
             return math.inf
         return self.spec.activation_bytes / bw + lat
+
+
+# ---------------------------------------------------------------------------
+# Module-internal helpers
+# ---------------------------------------------------------------------------
+def _replace_history(
+    result: AlternatingResult, full_history: list[AlternatingIterationLog]
+) -> AlternatingResult:
+    """Return a copy of `result` whose history is the full run's history.
+
+    The best_consistent snapshot was taken mid-run; we want the user to see
+    every iteration in the returned log even if we ended on a fallback.
+    """
+    return AlternatingResult(
+        placement=result.placement,
+        recovery=result.recovery,
+        max_stage_time=result.max_stage_time,
+        iterations=result.iterations,
+        converged=False,
+        history=full_history,
+    )
 
 
 # ---------------------------------------------------------------------------

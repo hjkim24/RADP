@@ -145,6 +145,31 @@ def _section_concurrent(buf: StringIO) -> None:
     buf.write("\n")
 
 
+def _section_algo_alternating(buf: StringIO) -> None:
+    data = _read("algo_alternating")
+    if data is None:
+        return
+    buf.write("## Alternating gain — single-shot vs R-Ψ alternating (algorithmic)\n\n")
+    buf.write("| scenario | single max(s) | alt max(s) | iters | converged | Δ% | single layers | alt layers |\n")
+    buf.write("|---|---:|---:|---:|:---:|---:|:---:|:---:|\n")
+    for r in data["rows"]:
+        if "single_shot_error" in r or "alternating_error" in r:
+            err = r.get("single_shot_error") or r.get("alternating_error")
+            buf.write(f"| {r['scenario']} | — | — | — | — | — | ERROR | {err} |\n")
+            continue
+        buf.write(
+            f"| {r['scenario']} "
+            f"| {_fmt_float(r['single_shot_max_stage_seconds'])} "
+            f"| {_fmt_float(r['alternating_max_stage_seconds'])} "
+            f"| {r['iterations']} "
+            f"| {'✓' if r['converged'] else '✗'} "
+            f"| {_fmt_float(r['improvement_pct'], 2)} "
+            f"| {r['single_shot_layer_counts']} "
+            f"| {r['alternating_layer_counts']} |\n"
+        )
+    buf.write(f"\n> {data['note']}\n\n")
+
+
 def _section_algo_runtime(buf: StringIO) -> None:
     data = _read("algo_runtime")
     if data is None:
@@ -177,6 +202,7 @@ def main() -> None:
     _section_concurrent(buf)
     _section_algo_memory(buf)
     _section_algo_hetero(buf)
+    _section_algo_alternating(buf)
     _section_algo_runtime(buf)
     text = buf.getvalue()
     if args.out is None:

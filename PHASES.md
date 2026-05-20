@@ -6,8 +6,8 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ## 현재 상태 요약
 
-- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 완료** (총 12개 Phase)
-- **단위 테스트 48개 + slow 통합 테스트 12개 모두 통과**
+- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 완료** (총 13개 Phase)
+- **단위 테스트 56개 + slow 통합 테스트 12개 모두 통과**
 - ruff ✓ / mypy strict (33 source files) ✓
 - 지원 모델: OPT, LLaMA, Mistral (단일 safetensors/bin 파일 한정)
 - Mac CPU에서 OPT-125M / SmolLM-135M 검증; Jetson 도착 시 config만 변경하면 즉시 동작
@@ -265,6 +265,54 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ---
 
+## Phase A1 — R-Ψ alternating optimization
+
+**목표**: plan.md §3.4의 "구현 단순화" 해소. 단일샷 DP (라운드로빈 기준 R 1회 결정)에서 (R, Ψ) joint fixed point를 찾는 alternating 알고리즘으로 확장. plan.md §7.2의 향후 확장 항목.
+
+**구현**:
+- [common/types.py](radp/common/types.py): `AlternatingResult`, `AlternatingIterationLog` dataclass 추가
+- [coordinator/scheduler.py:_forward](radp/coordinator/scheduler.py): `ref_placement` 파라미터 받도록 리팩토링 (기존 default는 round-robin → 단일샷 회귀 없음)
+- [coordinator/scheduler.py:solve_alternating](radp/coordinator/scheduler.py): 메인 alternating 루프
+  - 매 iteration: Ψ_{i-1}로 R_i 결정 → ref=Ψ_{i-1}로 DP → 새 Ψ_i
+  - 자가 일치 검증: Ψ_i가 ITS OWN backup burden에서도 memory_check 통과하는지 확인
+  - 수렴: `(R_i == R_{i-1}) AND (Ψ_i == Ψ_{i-1}) AND self_consistent(Ψ_i)`
+  - 안전망: max_iterations 도달 시 본 적 있는 best self-consistent fallback
+- [coordinator/scheduler.py:_memory_self_check](radp/coordinator/scheduler.py): placement를 ITS OWN reference로 memory_check 재실행
+- [experiments/run_algorithm.py](experiments/run_algorithm.py): `run_alternating_gain` 시나리오 추가 (loose vs tight memory × homo/hetero)
+
+**찾아낸 버그 (Phase 1 유산)**:
+[recovery_table.py:determine_recovery_table](radp/coordinator/recovery_table.py)가 누적 backup reservation을 추적하지 않아 모든 소스가 fastest peer로 R을 몰빵 → 실제론 메모리 초과로 infeasible인데 R 결정 단계에서 못 잡음. **수정**: `reserved: dict[DeviceId, int]`를 도입해 순차 할당하며 차감, 다른 backup이 이미 잡고 있으면 다음 후보로 넘어감.
+
+**검증 결과**:
+- ruff ✓ / mypy strict ✓
+- 단위 테스트 56개 통과 (alternating 8개 추가):
+  - homogeneous → 2 iter 만에 수렴
+  - heterogeneous → alternating ≤ single-shot 보장
+  - max_iterations=1 → converged=False, self-consistent fallback 반환
+  - infeasibility / NoRecoveryError 전파
+  - explicit initial_placement 전달
+
+**실험 결과 (6 시나리오)**:
+| | scenario | single max(s) | alt max(s) | iters | Δ% |
+|---|---|---:|---:|---:|---:|
+| | homogeneous_3x12_loose | 0.202 | 0.202 | 2 | 0.00% |
+| | strong_hetero_3x12_loose | 0.113 | 0.113 | 2 | 0.00% |
+| | homogeneous_4x12_loose | 0.152 | 0.152 | 2 | 0.00% |
+| | strong_hetero_4x12_loose | 0.102 | 0.102 | 2 | 0.00% |
+| | **strong_hetero_4x12_tight** | **0.152** | **0.152** | **3** | **0.00%** (다른 fixed point) |
+| | strong_hetero_5x12_tight | 0.127 | 0.127 | 2 | 0.00% |
+
+**해석**: 모든 시나리오에서 alternating ≤ single-shot. tight memory 케이스(`strong_hetero_4x12_tight`)는 **다른 (R, Ψ) fixed point [5,2,2,3] vs single의 [4,2,3,3]**을 찾았으나 max_stage_time은 동일. 즉:
+- **Phase 1 단순화는 실제로 대부분 케이스에서 near-optimal** (긍정적 결과)
+- alternating의 가치: (a) 수학적 엄밀성/수렴 증명, (b) tied optima 탐색, (c) tight-memory edge에서 R 재분배 보장
+
+**의도된 한계**:
+- 수렴은 보장되지 않음 (alternating optimization의 본질적 특성). max_iterations safeguard로 처리
+- 자가 일치 검증은 binary (pass/fail) — soft penalty가 더 견고한 수렴 동작을 줄 수 있음
+- objective는 여전히 max_stage_time만 최적화 (R의 download time은 cost로 들어가지 않음)
+
+---
+
 ## Phase 4 — 벤치마크 + 분석 인프라
 
 **목표**: plan.md §6의 실험 시나리오 1~4 측정 가능한 harness + 자동 보고서.
@@ -293,7 +341,7 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 ## 알려진 한계 (현재)
 
 - **Sharded safetensors 미지원**: OPT-6.7B / Llama-2-7B 같은 멀티-shard 모델은 단계적 로딩 추가 필요
-- **R-Ψ alternating optimization** (plan.md §7.2): 현재는 라운드로빈 placement 기준 R 1회 결정
+- **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능
 - **Backpressure / queue**: 동시 요청이 thread pool 넘으면 자연 큐잉만; admission control 없음
 - **Online 재배치**: 부하 변화에 따른 동적 placement 조정 없음
 - **bitsandbytes int4**: CUDA 전용 → Mac에선 float32만 검증
