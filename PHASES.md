@@ -6,11 +6,11 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ## 현재 상태 요약
 
-- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 완료** (총 13개 Phase)
-- **단위 테스트 56개 + slow 통합 테스트 12개 모두 통과**
+- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 완료** (총 14개 Phase)
+- **단위 테스트 60개 + slow 통합 테스트 14개 모두 통과**
 - ruff ✓ / mypy strict (33 source files) ✓
-- 지원 모델: OPT, LLaMA, Mistral (단일 safetensors/bin 파일 한정)
-- Mac CPU에서 OPT-125M / SmolLM-135M 검증; Jetson 도착 시 config만 변경하면 즉시 동작
+- 지원 모델: OPT, LLaMA, Mistral (단일 + sharded safetensors/bin 모두)
+- Mac CPU에서 OPT-125M / SmolLM-135M / **SmolLM-1.7B (2-shard)** 검증; Jetson 도착 시 config만 변경하면 즉시 동작
 
 ---
 
@@ -265,6 +265,41 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ---
 
+## Phase B2 — Sharded safetensors / bin 지원
+
+**목표**: 큰 모델(OPT-6.7B, Llama-2-7B 등 5GB↑)이 HF에 단일 파일이 아닌 **shard로 저장됨** (`model.safetensors.index.json` + `model-00001-of-NNNNN.safetensors`). 현재는 단일 파일만 지원해서 이런 모델을 못 로드. 단계적으로 worker가 자기 layer 범위에 필요한 shard만 다운로드하도록 확장 → 에지 디바이스의 디스크/대역폭 절감.
+
+**구현**:
+- [common/model_utils.py](radp/common/model_utils.py):
+  - `WeightsLocation` dataclass 신규: fmt ∈ {`safetensors`, `bin`, `safetensors_sharded`, `bin_sharded`}, path(single) 또는 index path(sharded), `weight_map`(sharded), `model_id`(sharded shard 다운로드용)
+  - `_find_weights_file` → `_find_weights_location`: 단일 → sharded 순서로 시도, sharded면 index JSON 파싱
+  - `_WeightReader` 재설계: 4가지 형식 모두 처리. sharded는 **lazy per-shard 다운로드 + 캐시** (`get_tensor(key)` 호출 시 해당 shard 처음이면 download + open, 이후 캐시 재사용)
+  - `_get_shard_safetensors`, `_get_shard_bin` 헬퍼 추가
+- `load_stage_blocks`: `_find_weights_location` 사용으로 single-line 변경 (나머지 로직 동일 — 다형성)
+
+**핵심 트레이드오프**:
+- 4-worker 클러스터, 32-layer Llama-2-7B (4 shard ≈ 3GB each): 각 워커가 자기 quarter만 → **shard 1-2개만 다운로드** (4× 절감)
+- `keys()`는 weight_map만 보고 다운로드 0회 → 인덱스 조회 비용 무료
+- 첫 layer 접근 시에만 shard 1개 다운로드, 같은 shard 내 추가 access는 캐시 hit
+
+**검증 결과**:
+- ruff ✓ / mypy strict ✓
+- **단위 테스트 4개** (test_sharded_weights.py): 합성 sharded 레이아웃(HF 의존 없이 tmp 디렉터리에 직접 2-shard + index 작성) 기반:
+  - keys() 다중 shard 통합 ✓
+  - lazy shard 다운로드 + 캐시 (monkeypatch로 hf_hub_download 스텁) ✓
+  - 단일 파일 회귀 없음 ✓
+  - index JSON 파싱 정합성 ✓
+- **slow 통합 테스트 2개** (test_sharded_integration.py): 실제 SmolLM-1.7B (~3.4GB, 2-shard):
+  - `_find_weights_location` → `safetensors_sharded` 정확히 감지 ✓
+  - `load_stage_blocks(model_id, 5, 8)` 결과가 full model load 후 slice [4:8]과 **byte-for-byte 일치** ✓
+- 기존 slow 통합 12개 (OPT/SmolLM-135M 단일 파일) 회귀 없음 ✓
+
+**의도된 한계**:
+- 다운로드 단위는 shard 단위 (텐서 단위 streaming 아님). 한 shard 안의 일부 layer만 필요해도 shard 전체 다운로드. 텐서별 HTTP range request는 다음 단계 후보
+- 단일 process 안에서만 shard 캐시 공유 (워커 간 공유 디스크라면 OS file cache로 자연스럽게 절감되긴 함)
+
+---
+
 ## Phase A1 — R-Ψ alternating optimization
 
 **목표**: plan.md §3.4의 "구현 단순화" 해소. 단일샷 DP (라운드로빈 기준 R 1회 결정)에서 (R, Ψ) joint fixed point를 찾는 alternating 알고리즘으로 확장. plan.md §7.2의 향후 확장 항목.
@@ -340,12 +375,47 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ## 알려진 한계 (현재)
 
-- **Sharded safetensors 미지원**: OPT-6.7B / Llama-2-7B 같은 멀티-shard 모델은 단계적 로딩 추가 필요
-- **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능
+- **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
 - **Backpressure / queue**: 동시 요청이 thread pool 넘으면 자연 큐잉만; admission control 없음
 - **Online 재배치**: 부하 변화에 따른 동적 placement 조정 없음
 - **bitsandbytes int4**: CUDA 전용 → Mac에선 float32만 검증
 - **Jetson 실측**: 코드는 그대로 동작 가능하나 하드웨어 도착 후 재실험 필요
+
+---
+
+## 남은 작업 후보 (백로그)
+
+새 Phase를 시작할 때 이 목록에서 골라 진행한다. 우선순위는 사용자 결정 시점에 정함. 각 항목은 plan.md 참조 + 예상 작업 깊이로 정렬.
+
+### A. 알고리즘 / 논문 기여 강화 (plan.md §7.2 / §8)
+
+| | 항목 | 내용 | 예상 깊이 |
+|---|---|---|---|
+| **A2** | **동시 다중 장애 대응** | `R(j): DeviceId → list[DeviceId]`로 확장. 1차/2차 백업 후보. 동시 2-node 장애에서도 복구. 메모리 제약 다시 검토 필요. | 중 |
+| **A3** | **Online 재배치** | 부하 변화/노드 추가·제거 시 placement 동적 재최적화. 진행 중인 요청 마이그레이션 정책 필요. | 큼 |
+| **A4** | **Proactive 예측 복구** | 하드웨어 텔레메트리(온도, 메모리 압력 등) → 장애 사전 감지 → 미리 backup promotion. plan.md §8 "향후 연구 방향". | 큼 |
+
+### B. 운영 검증 / 실데이터 (논문 실험 데이터)
+
+| | 항목 | 내용 | 예상 깊이 |
+|---|---|---|---|
+| **B1** | **실제 Jetson Nano 클러스터 검증** | OPT-6.7B INT4를 4GB Jetson × 3-4대에서 실제 구동. plan.md §6.1 환경. config만 변경 → 코드 변경 없음. 실측 데이터로 REPORT.md 업데이트. | 중 (하드웨어 의존) |
+| ~~**B2**~~ | ~~**Sharded safetensors 지원**~~ | **완료** (위 Phase B2 섹션 참조) | — |
+| **B3** | **bitsandbytes int4 적용** | CUDA 환경에서 int4 양자화로 메모리 4× 절감. plan.md §6.2 OPT-6.7B INT4 / LLaMA-7B INT4 시나리오. | 소 (CUDA 환경 필요) |
+
+### C. 시스템 완성도
+
+| | 항목 | 내용 | 예상 깊이 |
+|---|---|---|---|
+| **C1** | **Backpressure / admission control** | 동시 요청이 thread pool 한도 넘을 시 큐잉 정책 + SLO 기반 거절. 메모리 압력 시 신규 요청 거부. | 중 |
+| **C2** | **True streaming Generate** | 현재 `gateway.generate`는 전체 토큰 생성 후 일괄 yield. 토큰 단위 실시간 streaming으로 변경 → TTFT 사용자 체감 ↑. recovery 흐름과 함께 재설계 필요. | 중 |
+| **C3** | **Beam search / 더 다양한 sampling** | 현재 greedy + temperature/top-k/top-p. Beam search는 별도 path. nucleus + repetition penalty 등 추가. | 소-중 |
+
+### 권장 선택 가이드
+
+- **논문 기여 강화**: **A2** (동시 다중 장애) — plan.md §7.2 명시 항목, 측정 가능한 차별점
+- **실증 강화**: **B1 + B2** — 진짜 큰 모델로 실데이터 생성
+- **사용자 체감 개선**: **C2** (true streaming) — 데모/UX 임팩트 큼
 
 ---
 

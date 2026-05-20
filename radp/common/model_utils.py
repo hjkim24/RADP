@@ -11,6 +11,7 @@ Two loading paths:
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -135,72 +136,193 @@ def measure_resident_bytes() -> int:
     return int(psutil.Process().memory_info().rss)
 
 
-def _find_weights_file(model_id: str) -> tuple[Path, str]:
-    """Locate the single-file model weights in the local HF cache (download if
-    needed). Returns ``(path, format)`` where format is 'safetensors' or 'bin'.
+@dataclass
+class WeightsLocation:
+    """Where a model's weights live and in what format.
 
-    Sharded weights are not yet supported.
+    Four formats are supported (cf. HF conventions):
+      * ``"safetensors"`` — single ``model.safetensors``
+      * ``"bin"`` — single ``pytorch_model.bin``
+      * ``"safetensors_sharded"`` — ``model.safetensors.index.json`` + shards
+      * ``"bin_sharded"``         — ``pytorch_model.bin.index.json`` + shards
+
+    For sharded formats, ``index_path`` points at the index JSON and
+    ``weight_map`` is the parsed ``weight_map`` field (tensor_name → shard
+    filename). ``model_id`` is retained so we can download specific shard
+    files on demand via ``huggingface_hub.hf_hub_download``.
     """
+
+    fmt: str
+    path: Path  # single-file: the file. Sharded: the index file.
+    model_id: str | None = None
+    weight_map: dict[str, str] | None = None
+
+
+def _find_weights_location(model_id: str) -> WeightsLocation:
+    """Locate weights for ``model_id`` and download the entry-point file
+    (single weights or the shard index). Sharded shards themselves are
+    downloaded lazily by ``_WeightReader``.
+
+    Lookup order, first match wins:
+      1. single ``model.safetensors``
+      2. single ``pytorch_model.bin``
+      3. sharded ``model.safetensors.index.json``
+      4. sharded ``pytorch_model.bin.index.json``
+    """
+    import json as _json
+
     from huggingface_hub import hf_hub_download
+
     errors: list[str] = []
     for filename, fmt in [
         ("model.safetensors", "safetensors"),
         ("pytorch_model.bin", "bin"),
     ]:
         try:
-            return Path(hf_hub_download(model_id, filename)), fmt
+            return WeightsLocation(fmt=fmt, path=Path(hf_hub_download(model_id, filename)))
         except Exception as e:  # noqa: BLE001
             errors.append(f"{filename}: {e}")
-    raise NotImplementedError(
-        f"Phase 2.5 requires a single 'model.safetensors' or 'pytorch_model.bin' "
-        f"for {model_id}. Sharded weights are not yet supported. "
-        f"Errors:\n  " + "\n  ".join(errors)
+
+    for index_filename, fmt in [
+        ("model.safetensors.index.json", "safetensors_sharded"),
+        ("pytorch_model.bin.index.json", "bin_sharded"),
+    ]:
+        try:
+            idx_path = Path(hf_hub_download(model_id, index_filename))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{index_filename}: {e}")
+            continue
+        try:
+            idx_data = _json.loads(idx_path.read_text())
+            weight_map = idx_data["weight_map"]
+            log.info(
+                "%s is sharded (%s): %d tensors across %d shards",
+                model_id, fmt, len(weight_map), len(set(weight_map.values())),
+            )
+            return WeightsLocation(
+                fmt=fmt, path=idx_path, model_id=model_id, weight_map=weight_map,
+            )
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{index_filename} parse: {e}")
+
+    raise FileNotFoundError(
+        f"No supported weights file for {model_id}. Tried single + sharded "
+        f"safetensors/bin. Errors:\n  " + "\n  ".join(errors)
     )
 
 
 class _WeightReader:
-    """Tiny wrapper that exposes a uniform (keys / get_tensor / close) API
-    over either safetensors mmap or a fully-loaded ``torch.load`` state dict.
-    The safetensors path is the memory-efficient one; bin is a fallback."""
+    """Uniform (keys / get_tensor / close) API over single or sharded weights.
 
-    def __init__(self, path: Path, fmt: str, torch_device: str) -> None:
-        self.fmt = fmt
+    Single safetensors: opens once with ``safe_open`` (mmap, lazy per-tensor).
+    Single bin: ``torch.load`` once (whole file in memory).
+    Sharded safetensors: per-shard ``safe_open`` handles, opened lazily as
+      tensors from that shard are first requested.
+    Sharded bin: per-shard ``torch.load``, also lazy.
+    """
+
+    def __init__(self, loc: WeightsLocation, torch_device: str) -> None:
+        self.fmt = loc.fmt
+        self._torch_device = torch_device
+        # Single-file caches:
         self._st: Any = None
         self._state: dict[str, torch.Tensor] | None = None
-        if fmt == "safetensors":
-            from safetensors import safe_open  # local import keeps surface small
+        # Sharded caches:
+        self._weight_map: dict[str, str] | None = loc.weight_map
+        self._model_id: str | None = loc.model_id
+        self._shard_st: dict[str, Any] = {}              # shard filename → safe_open handle
+        self._shard_state: dict[str, dict[str, torch.Tensor]] = {}  # shard filename → state dict
+
+        if loc.fmt == "safetensors":
+            from safetensors import safe_open
             handle: Any = safe_open(  # type: ignore[no-untyped-call]
-                str(path), framework="pt", device=torch_device
+                str(loc.path), framework="pt", device=torch_device
             )
             handle.__enter__()
             self._st = handle
-        elif fmt == "bin":
-            self._state = torch.load(str(path), map_location=torch_device, weights_only=True)
+        elif loc.fmt == "bin":
+            self._state = torch.load(
+                str(loc.path), map_location=torch_device, weights_only=True
+            )
+        elif loc.fmt in ("safetensors_sharded", "bin_sharded"):
+            if self._weight_map is None or self._model_id is None:
+                raise ValueError(f"{loc.fmt} requires weight_map + model_id")
         else:
-            raise ValueError(f"Unsupported weights format: {fmt}")
+            raise ValueError(f"Unsupported weights format: {loc.fmt}")
 
+    # ------------------------------------------------------------------
+    # Public
+    # ------------------------------------------------------------------
     def keys(self) -> set[str]:
         if self._st is not None:
             return set(self._st.keys())
-        assert self._state is not None
-        return set(self._state.keys())
+        if self._state is not None:
+            return set(self._state.keys())
+        if self._weight_map is not None:
+            return set(self._weight_map.keys())
+        return set()
 
     def get_tensor(self, key: str) -> torch.Tensor:
         if self._st is not None:
             tensor: torch.Tensor = self._st.get_tensor(key)
             return tensor
-        assert self._state is not None
-        return self._state[key]
+        if self._state is not None:
+            return self._state[key]
+        # Sharded path: find the shard, lazy-open, read.
+        assert self._weight_map is not None and self._model_id is not None
+        shard_filename = self._weight_map[key]
+        if self.fmt == "safetensors_sharded":
+            handle = self._get_shard_safetensors(shard_filename)
+            return handle.get_tensor(key)  # type: ignore[no-any-return]
+        # bin_sharded
+        state = self._get_shard_bin(shard_filename)
+        return state[key]
 
     def close(self) -> None:
         if self._st is not None:
             self._st.__exit__(None, None, None)
             self._st = None
+        for handle in self._shard_st.values():
+            with contextlib.suppress(Exception):
+                handle.__exit__(None, None, None)
+        self._shard_st.clear()
+        self._shard_state.clear()
         self._state = None
 
+    # ------------------------------------------------------------------
+    # Sharded internals — download + cache per shard on first access
+    # ------------------------------------------------------------------
+    def _get_shard_safetensors(self, shard_filename: str) -> Any:
+        if shard_filename in self._shard_st:
+            return self._shard_st[shard_filename]
+        from huggingface_hub import hf_hub_download
+        from safetensors import safe_open
+        assert self._model_id is not None
+        log.info("downloading shard %s of %s", shard_filename, self._model_id)
+        path = hf_hub_download(self._model_id, shard_filename)
+        handle: Any = safe_open(  # type: ignore[no-untyped-call]
+            path, framework="pt", device=self._torch_device
+        )
+        handle.__enter__()
+        self._shard_st[shard_filename] = handle
+        return handle
 
-def _open_weight_reader(path: Path, fmt: str, torch_device: str) -> _WeightReader:
-    return _WeightReader(path, fmt, torch_device)
+    def _get_shard_bin(self, shard_filename: str) -> dict[str, torch.Tensor]:
+        if shard_filename in self._shard_state:
+            return self._shard_state[shard_filename]
+        from huggingface_hub import hf_hub_download
+        assert self._model_id is not None
+        log.info("downloading shard %s of %s", shard_filename, self._model_id)
+        path = hf_hub_download(self._model_id, shard_filename)
+        state: dict[str, torch.Tensor] = torch.load(
+            path, map_location=self._torch_device, weights_only=True
+        )
+        self._shard_state[shard_filename] = state
+        return state
+
+
+def _open_weight_reader(loc: WeightsLocation, torch_device: str) -> _WeightReader:
+    return _WeightReader(loc, torch_device)
 
 
 def load_stage_blocks(
@@ -226,11 +348,11 @@ def load_stage_blocks(
         )
 
     torch_dtype = DTYPE_MAP[dtype]
-    weights_path, fmt = _find_weights_file(model_id)
+    weights_loc = _find_weights_location(model_id)
 
     blocks = nn.ModuleList()
     rss_before = measure_resident_bytes()
-    reader = _open_weight_reader(weights_path, fmt, torch_device)
+    reader = _open_weight_reader(weights_loc, torch_device)
     try:
         all_keys = reader.keys()
         for global_idx in range(int(start), int(end) + 1):
