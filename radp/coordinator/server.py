@@ -1,20 +1,18 @@
-"""Coordinator orchestrator (Phase 2 MVP).
+"""Coordinator orchestrator (Phase 3).
 
 On start:
-  1. Read YAML config: model_id, workers (id + address), placement.
-  2. For each Stage in placement, call WorkerService.LoadStage on the target.
-  3. Build a RequestGateway over the placement.
-  4. Start a gRPC CoordinatorService server exposing Generate(prompt, max_tokens).
-
-Phase 2 supports both:
-  - manual placement (placement section in YAML)
-  - auto placement via the Phase 1 DP (placement: auto + profile path)
+  1. Read YAML config: model, workers, placement, recovery.
+  2. Deploy each Stage to its assigned worker via LoadStage.
+  3. For each backup (R(j) = k), call LoadBackup on k.
+  4. Build a RequestGateway over (placement, recovery).
+  5. Start the FailureDetector — heartbeat timeouts call gateway.mark_dead.
+  6. Start gRPC CoordinatorService.
 """
 
 from __future__ import annotations
 
 from concurrent import futures
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +22,10 @@ import yaml
 from radp.common.logging_utils import get_logger
 from radp.common.proto import radp_pb2, radp_pb2_grpc
 from radp.common.protocol import WorkerClient
-from radp.common.types import DeviceId, LayerIdx, Placement, Stage
+from radp.common.types import DeviceId, LayerIdx, Placement, RecoveryTable, Stage
+from radp.coordinator.failure_detector import FailureDetector, HeartbeatRecord
 from radp.coordinator.gateway import RequestGateway
+from radp.coordinator.recovery_plan import inverse_recovery
 
 log = get_logger(__name__)
 
@@ -47,16 +47,17 @@ class CoordinatorConfig:
     bind_address: str
     workers: list[WorkerSpec]
     placement: Placement
+    recovery: RecoveryTable = field(default_factory=dict)
     torch_device: str = "cpu"
     dtype: str = "float32"
+    heartbeat_timeout_seconds: float = 5.0
+    heartbeat_tick_seconds: float = 1.0
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> CoordinatorConfig:
         data = yaml.safe_load(Path(path).read_text())
-        model_id = data["model"]["id"]
-        torch_device = data["model"].get("torch_device", "cpu")
-        dtype = data["model"].get("dtype", "float32")
-        bind_address = data["coordinator"]["bind"]
+        model = data["model"]
+        coord = data["coordinator"]
         workers = [
             WorkerSpec(device_id=DeviceId(w["id"]), address=w["address"])
             for w in data["workers"]
@@ -69,21 +70,38 @@ class CoordinatorConfig:
             )
             for s in data["placement"]
         ]
+        recovery_raw = data.get("recovery", {})
+        recovery: RecoveryTable = {
+            DeviceId(k): DeviceId(v) for k, v in recovery_raw.items()
+        }
         return cls(
-            model_id=model_id,
-            bind_address=bind_address,
+            model_id=model["id"],
+            bind_address=coord["bind"],
             workers=workers,
             placement=placement,
-            torch_device=torch_device,
-            dtype=dtype,
+            recovery=recovery,
+            torch_device=model.get("torch_device", "cpu"),
+            dtype=model.get("dtype", "float32"),
+            heartbeat_timeout_seconds=float(
+                coord.get("heartbeat_timeout_seconds", 5.0)
+            ),
+            heartbeat_tick_seconds=float(coord.get("heartbeat_tick_seconds", 1.0)),
         )
 
 
 class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: ignore[misc]
-    def __init__(self, gateway: RequestGateway) -> None:
+    def __init__(self, gateway: RequestGateway, detector: FailureDetector) -> None:
         self._gateway = gateway
+        self._detector = detector
 
     def Heartbeat(self, request: Any, context: grpc.ServicerContext) -> Any:
+        self._detector.record(
+            HeartbeatRecord(
+                device_id=DeviceId(request.device_id),
+                last_ts_ns=int(request.ts_ns),
+                free_memory_bytes=float(request.free_memory_bytes),
+            )
+        )
         return radp_pb2.HeartbeatResponse(ack=True)
 
     def Generate(self, request: Any, context: grpc.ServicerContext) -> Any:
@@ -102,19 +120,22 @@ class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: i
 class CoordinatorServer:
     def __init__(self, config: CoordinatorConfig) -> None:
         self.config = config
-        self._addr_lookup: dict[DeviceId, str] = {w.device_id: w.address for w in config.workers}
+        self._addr_lookup: dict[DeviceId, str] = {
+            w.device_id: w.address for w in config.workers
+        }
         self.gateway: RequestGateway | None = None
+        self.detector: FailureDetector | None = None
         self._server: grpc.Server | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
     def deploy(self) -> None:
-        """Push each stage to its target worker via LoadStage."""
+        """Push primary stages, then backup stages, to their target workers."""
         for stage in self.config.placement:
             address = self._addr_lookup[stage.device]
             log.info(
-                "deploy %s layers[%d..%d] -> %s",
+                "deploy primary %s layers[%d..%d] -> %s",
                 stage.device, stage.start_layer, stage.end_layer, address,
             )
             with WorkerClient(address) as client:
@@ -125,20 +146,69 @@ class CoordinatorServer:
                     model_id=self.config.model_id,
                 )
 
+        # Backup deployment: for each k, load every j in R⁻¹(k)'s stage.
+        stage_by_device = {s.device: s for s in self.config.placement}
+        for k, backed_up_js in inverse_recovery(self.config.recovery).items():
+            backup_addr = self._addr_lookup.get(k)
+            if backup_addr is None:
+                log.warning("recovery target %s has no address; skipping backup load", k)
+                continue
+            with WorkerClient(backup_addr) as client:
+                for j in backed_up_js:
+                    j_stage = stage_by_device.get(j)
+                    if j_stage is None:
+                        log.warning("backup source %s has no stage; skipping", j)
+                        continue
+                    log.info(
+                        "deploy backup %s layers[%d..%d] (for %s) -> %s",
+                        k, j_stage.start_layer, j_stage.end_layer, j, backup_addr,
+                    )
+                    client.load_backup(
+                        for_device_id=j,
+                        start_layer=int(j_stage.start_layer),
+                        end_layer=int(j_stage.end_layer),
+                        model_id=self.config.model_id,
+                    )
+
     def start(self) -> None:
         self.gateway = RequestGateway(
             placement=self.config.placement,
+            recovery=self.config.recovery,
             worker_addresses=self._addr_lookup,
             model_id=self.config.model_id,
             torch_device=self.config.torch_device,
             dtype=self.config.dtype,
         )
+
+        def on_failure(device_id: DeviceId) -> None:
+            assert self.gateway is not None
+            try:
+                self.gateway.mark_dead(device_id)
+                # Trigger promotion on the backup target (if any).
+                k = self.config.recovery.get(device_id)
+                if k is None or k not in self._addr_lookup:
+                    return
+                try:
+                    with WorkerClient(self._addr_lookup[k]) as client:
+                        client.promote_backup(for_device_id=device_id)
+                except Exception:  # noqa: BLE001
+                    log.exception("promote_backup on %s failed", k)
+            except Exception:  # noqa: BLE001
+                log.exception("on_failure handling for %s failed", device_id)
+
+        self.detector = FailureDetector(
+            on_failure=on_failure,
+            timeout_seconds=self.config.heartbeat_timeout_seconds,
+            tick_interval_seconds=self.config.heartbeat_tick_seconds,
+        )
+        self.detector.start()
+
         self._server = grpc.server(
             futures.ThreadPoolExecutor(max_workers=4),
             options=_GRPC_OPTIONS,
         )
         radp_pb2_grpc.add_CoordinatorServiceServicer_to_server(
-            _CoordinatorServicer(self.gateway), self._server
+            _CoordinatorServicer(self.gateway, self.detector), self._server
         )
         self._server.add_insecure_port(self.config.bind_address)
         self._server.start()
@@ -150,6 +220,8 @@ class CoordinatorServer:
         self._server.wait_for_termination()
 
     def stop(self, grace: float = 1.0) -> None:
+        if self.detector is not None:
+            self.detector.stop()
         if self._server is not None:
             self._server.stop(grace).wait()
             log.info("coordinator stopped")

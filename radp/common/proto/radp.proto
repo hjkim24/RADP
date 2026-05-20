@@ -46,9 +46,11 @@ message LoadStageResponse {
 }
 
 message RunStageRequest {
-  bytes activation     = 1;   // serialized tensor (Phase 2 decides exact format)
+  bytes activation     = 1;   // serialized tensor payload (hidden + mask)
   int32 request_id     = 2;
   bool  is_prefill     = 3;
+  int32 start_layer    = 4;   // Phase 3: which loaded stage to run
+  int32 end_layer      = 5;
 }
 
 message RunStageResponse {

@@ -56,6 +56,7 @@ def test_pipeline_matches_full_model(two_workers: dict[DeviceId, str]) -> None:
 
     gateway = RequestGateway(
         placement=placement,
+        recovery={},
         worker_addresses=two_workers,
         model_id=model_id,
         torch_device="cpu",

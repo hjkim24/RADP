@@ -1,4 +1,4 @@
-"""`radp-worker` CLI entry point (Phase 2)."""
+"""`radp-worker` CLI entry point (Phase 3)."""
 
 from __future__ import annotations
 
@@ -15,9 +15,11 @@ log = get_logger(__name__)
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="radp-worker")
-    p.add_argument("--device-id", required=True, help="Unique device id, e.g. jetson-1.")
-    p.add_argument("--bind", default="0.0.0.0:50051", help="gRPC bind address.")
-    p.add_argument("--torch-device", default="cpu", help="torch device string.")
+    p.add_argument("--device-id", required=True)
+    p.add_argument("--bind", default="0.0.0.0:50051")
+    p.add_argument("--coord", default=None, help="Coordinator address for heartbeats. Optional.")
+    p.add_argument("--heartbeat-interval", type=float, default=1.0)
+    p.add_argument("--torch-device", default="cpu")
     p.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
     return p.parse_args()
 
@@ -28,6 +30,8 @@ def main() -> None:
     server = WorkerServer(
         device_id=DeviceId(args.device_id),
         bind_address=args.bind,
+        coordinator_address=args.coord,
+        heartbeat_interval=args.heartbeat_interval,
         torch_device=args.torch_device,
         dtype=args.dtype,
     )

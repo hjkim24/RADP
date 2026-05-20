@@ -1,12 +1,17 @@
-"""Single-stage inference executor (Phase 2 MVP).
+"""Multi-stage inference executor (Phase 3).
 
-Loads the full model (Phase 2 simplification — every worker holds the whole
-model) and, on each ``run`` call, walks ONLY the assigned transformer blocks.
-Coordinator handles embedding + final norm + LM head.
+A worker can host MULTIPLE loaded stages: one primary (the layers it was
+originally assigned by the DP), zero or more backups (stages of peers j
+for which R(j) == self, preloaded so failure handoff is instant).
 
-Currently supports OPT-family models only. The decoder-layer call signature
-in transformers is architecture-specific; add a new branch in `_run_blocks`
-to support LLaMA / GPT-2 / etc.
+Each ``run(start, end, ...)`` call selects which loaded stage to execute,
+identified by its (start_layer, end_layer) range. This lets the coordinator
+re-route requests through the surviving worker without changing the API.
+
+Phase 3 simplification (carried over from Phase 2 MVP):
+  - Every worker holds the FULL model in memory. ``load_primary`` /
+    ``load_backup`` just record which slice that stage refers to.
+    Phase 2.5 will swap in real per-stage weight loading.
 """
 
 from __future__ import annotations
@@ -24,9 +29,11 @@ from radp.common.types import DeviceId, LayerIdx, RequestId
 
 log = get_logger(__name__)
 
+StageKey = tuple[int, int]  # (start_layer, end_layer)
+
 
 class StageRunner:
-    """Owns a primary stage [start, end] of transformer blocks on one device."""
+    """Owns one or more loaded stages on a single device."""
 
     def __init__(
         self,
@@ -40,70 +47,143 @@ class StageRunner:
         self.dtype = dtype
         self._lock = threading.Lock()
         self._handle: ModelHandle | None = None
-        self._start: LayerIdx | None = None
-        self._end: LayerIdx | None = None
-        self._blocks: nn.ModuleList | None = None
+        self._primary: StageKey | None = None
+        # All loaded stages (primary + backups) keyed by (start, end).
+        self._stages: dict[StageKey, nn.ModuleList] = {}
+        # backup_for[stage_key] = original owner device id (for diagnostics)
+        self._backup_for: dict[StageKey, DeviceId] = {}
+        # Stages whose backup has been promoted (ready to serve).
+        self._promoted: set[StageKey] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
     def load_primary(self, model_id: str, start: LayerIdx, end: LayerIdx) -> None:
         with self._lock:
+            self._ensure_model(model_id)
+            self._validate_range(start, end)
+            key = (int(start), int(end))
+            self._stages[key] = self._slice_blocks(start, end)
+            self._primary = key
             log.info(
-                "worker=%s loading %s[%d..%d] on %s",
-                self.device_id, model_id, start, end, self.torch_device,
+                "worker=%s primary loaded layers[%d..%d]",
+                self.device_id, start, end,
             )
-            handle = load_model(model_id, dtype=self.dtype, torch_device=self.torch_device)
-            if start < 1 or end > handle.num_layers or start > end:
-                raise ValueError(
-                    f"Stage [{start}, {end}] out of range for {handle.num_layers}-layer model"
+
+    def load_backup(
+        self,
+        model_id: str,
+        start: LayerIdx,
+        end: LayerIdx,
+        *,
+        for_device_id: DeviceId,
+    ) -> None:
+        """Preload another node's stage into our reserve slot."""
+        with self._lock:
+            self._ensure_model(model_id)
+            self._validate_range(start, end)
+            key = (int(start), int(end))
+            self._stages[key] = self._slice_blocks(start, end)
+            self._backup_for[key] = for_device_id
+            log.info(
+                "worker=%s backup loaded for %s layers[%d..%d]",
+                self.device_id, for_device_id, start, end,
+            )
+
+    def promote_backup(self, for_device_id: DeviceId) -> None:
+        """Mark every backup stage owned-for `for_device_id` as ready to serve.
+
+        Currently a bookkeeping flip — the stage is already in memory from
+        load_backup; we just record that the coordinator can route real
+        traffic to it.
+        """
+        with self._lock:
+            keys = [k for k, owner in self._backup_for.items() if owner == for_device_id]
+            if not keys:
+                raise RuntimeError(
+                    f"worker={self.device_id} no backup loaded for {for_device_id}"
                 )
-            layers = get_transformer_layers(handle.model)
-            self._handle = handle
-            self._start = start
-            self._end = end
-            self._blocks = nn.ModuleList(list(layers)[int(start) - 1 : int(end)])
-
-    def load_backup(self, model_id: str, start: LayerIdx, end: LayerIdx) -> None:
-        raise NotImplementedError("Phase 3")
-
-    def promote_backup(self) -> None:
-        raise NotImplementedError("Phase 3")
+            for k in keys:
+                self._promoted.add(k)
+            log.info(
+                "worker=%s promoted backup for %s: stages=%s",
+                self.device_id, for_device_id, keys,
+            )
 
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
-    def run(self, request_id: RequestId, activation_blob: bytes, *, is_prefill: bool) -> bytes:
-        if self._handle is None or self._blocks is None:
-            raise RuntimeError("StageRunner.run called before load_primary")
+    def run(
+        self,
+        request_id: RequestId,
+        activation_blob: bytes,
+        *,
+        start: LayerIdx,
+        end: LayerIdx,
+        is_prefill: bool,
+    ) -> bytes:
+        with self._lock:
+            key = (int(start), int(end))
+            blocks = self._stages.get(key)
+        if blocks is None:
+            raise RuntimeError(
+                f"worker={self.device_id} no stage loaded for layers[{start}..{end}]"
+            )
 
         payload = decode(activation_blob)
         hidden = payload["hidden_states"].to(self.torch_device)
         attention_mask = payload["attention_mask"].to(self.torch_device)
-
         with torch.no_grad():
-            hidden = self._run_blocks(self._blocks, hidden, attention_mask)
+            hidden = self._run_blocks(blocks, hidden, attention_mask)
 
         out_payload: dict[str, torch.Tensor] = {
             "hidden_states": hidden.detach().cpu(),
             "attention_mask": attention_mask.detach().cpu(),
         }
         log.debug(
-            "worker=%s request=%d stage[%d..%d] prefill=%s shape=%s",
-            self.device_id, request_id, self._start, self._end, is_prefill, tuple(hidden.shape),
+            "worker=%s request=%d layers[%d..%d] prefill=%s shape=%s",
+            self.device_id, request_id, start, end, is_prefill, tuple(hidden.shape),
         )
         return encode(out_payload)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+    def _ensure_model(self, model_id: str) -> None:
+        if self._handle is None:
+            log.info(
+                "worker=%s loading %s on %s",
+                self.device_id, model_id, self.torch_device,
+            )
+            self._handle = load_model(
+                model_id, dtype=self.dtype, torch_device=self.torch_device
+            )
+        elif self._handle.model_id != model_id:
+            raise ValueError(
+                f"worker={self.device_id} already holds {self._handle.model_id}; "
+                f"refusing to switch to {model_id}"
+            )
+
+    def _validate_range(self, start: LayerIdx, end: LayerIdx) -> None:
+        assert self._handle is not None
+        if start < 1 or end > self._handle.num_layers or start > end:
+            raise ValueError(
+                f"Stage [{start}, {end}] out of range for "
+                f"{self._handle.num_layers}-layer model"
+            )
+
+    def _slice_blocks(self, start: LayerIdx, end: LayerIdx) -> nn.ModuleList:
+        assert self._handle is not None
+        layers = get_transformer_layers(self._handle.model)
+        return nn.ModuleList(list(layers)[int(start) - 1 : int(end)])
+
     @staticmethod
     def _run_blocks(
         blocks: nn.ModuleList,
         hidden: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Architecture-specific block invocation. OPT-only in Phase 2."""
+        """OPT-only block invocation (Phase 2 MVP carryover)."""
         for block in blocks:
             out: Any = block(
                 hidden,

@@ -12,6 +12,7 @@ dependencies = [
   "protobuf>=4.25",
   "numpy",
   "pyyaml",
+  "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,7 @@ dev = [
   "mypy",
   "types-protobuf",
   "types-PyYAML",
+  "types-psutil",
 ]
 quant = ["bitsandbytes"]
 
