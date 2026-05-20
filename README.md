@@ -19,6 +19,9 @@ bash scripts/gen_proto.sh
 uv run ruff check radp tests
 uv run mypy radp
 uv run pytest --collect-only
+
+# 4) git 훅 활성화 (Conventional Commits 메시지 검증)
+git config core.hooksPath scripts/git-hooks
 ```
 
 ## CLI

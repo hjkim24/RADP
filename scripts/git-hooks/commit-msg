@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Conventional Commits validator.
+#
+# Subject line must match:
+#   <type>[(scope)][!]: <subject>
+#
+# Allowed types:
+#   feat fix chore docs refactor test perf build ci style revert
+#
+# Activate per-clone with:
+#   git config core.hooksPath scripts/git-hooks
+
+set -euo pipefail
+
+MSG_FILE=${1:?"usage: $0 <commit-msg-file>"}
+
+# First non-empty, non-comment line is the subject.
+SUBJECT=$(grep -vE '^(#|$)' "$MSG_FILE" | head -n1 || true)
+
+PATTERN='^(feat|fix|chore|docs|refactor|test|perf|build|ci|style|revert)(\([a-z0-9_./-]+\))?!?: .+$'
+
+if ! [[ "$SUBJECT" =~ $PATTERN ]]; then
+    cat <<EOF >&2
+[commit-msg] ❌ Subject does not follow Conventional Commits.
+
+Got:
+  $SUBJECT
+
+Expected format:
+  <type>[(scope)][!]: <subject>
+
+Allowed types: feat fix chore docs refactor test perf build ci style revert
+
+Examples:
+  feat: add concurrent request support
+  fix(scheduler): correct DP backtracking off-by-one
+  feat!: rename Generate RPC fields (breaking)
+  docs(phases): log Phase 2.10 LLaMA support
+
+To bypass for a single commit (e.g., emergency): \`git commit --no-verify\`.
+EOF
+    exit 1
+fi
