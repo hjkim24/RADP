@@ -107,6 +107,10 @@ class WorkerClient:
         resp = self._require_stub().RunStage(req)
         return bytes(resp.activation)
 
+    def evict_request(self, *, request_id: RequestId) -> None:
+        req = radp_pb2.EvictRequestRequest(request_id=int(request_id))
+        self._require_stub().EvictRequest(req)
+
 
 class CoordinatorClient:
     """High-level client to the coordinator (Generate + Heartbeat)."""
@@ -137,8 +141,26 @@ class CoordinatorClient:
             raise RuntimeError("CoordinatorClient used outside of `with` block")
         return self._stub
 
-    def generate(self, prompt: str, max_tokens: int) -> list[str]:
-        req = radp_pb2.GenerateRequest(prompt=prompt, max_tokens=max_tokens)
+    def generate(
+        self,
+        prompt: str,
+        max_tokens: int,
+        *,
+        temperature: float = 0.0,
+        top_k: int = 0,
+        top_p: float = 1.0,
+        eos_token_id: int = 0,
+        seed: int = 0,
+    ) -> list[str]:
+        req = radp_pb2.GenerateRequest(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            eos_token_id=eos_token_id,
+            seed=seed,
+        )
         chunks = []
         for chunk in self._require_stub().Generate(req):
             chunks.append(chunk.text)

@@ -17,6 +17,9 @@ service WorkerService {
 
   // Activate the backup slot — switch primary execution to the loaded backup.
   rpc PromoteBackup (PromoteBackupRequest) returns (PromoteBackupResponse);
+
+  // Drop the KV cache for a finished (or aborted) request.
+  rpc EvictRequest (EvictRequestRequest) returns (EvictRequestResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +80,14 @@ message PromoteBackupResponse {
   bool ok = 1;
 }
 
+message EvictRequestRequest {
+  int32 request_id = 1;
+}
+
+message EvictRequestResponse {
+  bool ok = 1;
+}
+
 message HeartbeatRequest {
   string device_id          = 1;
   double free_memory_bytes  = 2;
@@ -90,6 +101,14 @@ message HeartbeatResponse {
 message GenerateRequest {
   string prompt     = 1;
   int32  max_tokens = 2;
+  // Sampling — temperature == 0 (default) means greedy argmax.
+  double temperature = 3;
+  int32  top_k       = 4;   // 0 (default) disables the top-k filter
+  double top_p       = 5;   // 0 or >=1 disables the top-p (nucleus) filter
+  // EOS stopping — eos_token_id == 0 (default) means disabled.
+  int32  eos_token_id = 6;
+  // Reproducibility — seed == 0 (default) means use a fresh random generator.
+  int64  seed         = 7;
 }
 
 message GenerateChunk {

@@ -76,6 +76,10 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
         )
         return radp_pb2.RunStageResponse(activation=result, request_id=request.request_id)
 
+    def EvictRequest(self, request: Any, context: grpc.ServicerContext) -> Any:
+        self._runner.evict_request(RequestId(request.request_id))
+        return radp_pb2.EvictRequestResponse(ok=True)
+
 
 class WorkerServer:
     """gRPC server hosting a StageRunner + optional heartbeat publisher."""
@@ -89,7 +93,7 @@ class WorkerServer:
         heartbeat_interval: float = 1.0,
         torch_device: str = "cpu",
         dtype: str = "float32",
-        max_workers: int = 4,
+        max_workers: int = 16,
     ) -> None:
         self.device_id = device_id
         self.bind_address = bind_address

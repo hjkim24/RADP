@@ -1,20 +1,29 @@
 """HuggingFace model loading + layer-range slicing helpers.
 
-Centralizes the architecture-specific knowledge of where transformer blocks
-live in different model families (OPT, LLaMA, GPT-2, etc.) so the rest of
-the codebase can treat any HF causal LM uniformly.
+Two loading paths:
+  * ``load_model``        — coordinator-side: full HF causal LM (needs
+                            embedding + lm_head + optional pre/post norms).
+  * ``load_stage_blocks`` — worker-side (Phase 2.5): allocates ONLY the
+                            requested transformer blocks and streams their
+                            weights from safetensors. Memory cost scales
+                            with stage size, not full model size.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+import psutil
 import torch
 from torch import nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
+from radp.common.logging_utils import get_logger
 from radp.common.types import LayerIdx
+
+log = get_logger(__name__)
 
 DTYPE_MAP: dict[str, torch.dtype] = {
     "float32": torch.float32,
@@ -115,3 +124,143 @@ def layer_param_bytes(layer: nn.Module) -> int:
     for param in layer.parameters():
         total += int(param.numel()) * int(param.element_size())
     return total
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.5: per-stage weight loading (no full-model resident in RAM)
+# ---------------------------------------------------------------------------
+def measure_resident_bytes() -> int:
+    """Resident set size of the current process (bytes)."""
+    return int(psutil.Process().memory_info().rss)
+
+
+def _find_weights_file(model_id: str) -> tuple[Path, str]:
+    """Locate the single-file model weights in the local HF cache (download if
+    needed). Returns ``(path, format)`` where format is 'safetensors' or 'bin'.
+
+    Sharded weights are not yet supported.
+    """
+    from huggingface_hub import hf_hub_download
+    errors: list[str] = []
+    for filename, fmt in [
+        ("model.safetensors", "safetensors"),
+        ("pytorch_model.bin", "bin"),
+    ]:
+        try:
+            return Path(hf_hub_download(model_id, filename)), fmt
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{filename}: {e}")
+    raise NotImplementedError(
+        f"Phase 2.5 requires a single 'model.safetensors' or 'pytorch_model.bin' "
+        f"for {model_id}. Sharded weights are not yet supported. "
+        f"Errors:\n  " + "\n  ".join(errors)
+    )
+
+
+class _WeightReader:
+    """Tiny wrapper that exposes a uniform (keys / get_tensor / close) API
+    over either safetensors mmap or a fully-loaded ``torch.load`` state dict.
+    The safetensors path is the memory-efficient one; bin is a fallback."""
+
+    def __init__(self, path: Path, fmt: str, torch_device: str) -> None:
+        self.fmt = fmt
+        self._st: Any = None
+        self._state: dict[str, torch.Tensor] | None = None
+        if fmt == "safetensors":
+            from safetensors import safe_open  # local import keeps surface small
+            handle: Any = safe_open(  # type: ignore[no-untyped-call]
+                str(path), framework="pt", device=torch_device
+            )
+            handle.__enter__()
+            self._st = handle
+        elif fmt == "bin":
+            self._state = torch.load(str(path), map_location=torch_device, weights_only=True)
+        else:
+            raise ValueError(f"Unsupported weights format: {fmt}")
+
+    def keys(self) -> set[str]:
+        if self._st is not None:
+            return set(self._st.keys())
+        assert self._state is not None
+        return set(self._state.keys())
+
+    def get_tensor(self, key: str) -> torch.Tensor:
+        if self._st is not None:
+            tensor: torch.Tensor = self._st.get_tensor(key)
+            return tensor
+        assert self._state is not None
+        return self._state[key]
+
+    def close(self) -> None:
+        if self._st is not None:
+            self._st.__exit__(None, None, None)
+            self._st = None
+        self._state = None
+
+
+def _open_weight_reader(path: Path, fmt: str, torch_device: str) -> _WeightReader:
+    return _WeightReader(path, fmt, torch_device)
+
+
+def load_stage_blocks(
+    model_id: str,
+    start: LayerIdx,
+    end: LayerIdx,
+    *,
+    dtype: str = "float32",
+    torch_device: str = "cpu",
+) -> nn.ModuleList:
+    """Construct ONLY the transformer blocks for layers [start, end] and
+    populate them with pretrained weights from safetensors.
+
+    OPT-only for Phase 2.5 (other architectures need their own decoder-block
+    class + a different weight-key prefix).
+    """
+    from transformers.models.opt.modeling_opt import OPTDecoderLayer
+
+    config = AutoConfig.from_pretrained(model_id)
+    if config.model_type != "opt":
+        raise NotImplementedError(
+            f"Phase 2.5 supports OPT only, got '{config.model_type}'"
+        )
+    if start < 1 or end > config.num_hidden_layers or start > end:
+        raise ValueError(
+            f"Stage [{start}, {end}] out of range for "
+            f"{config.num_hidden_layers}-layer model {model_id}"
+        )
+
+    torch_dtype = DTYPE_MAP[dtype]
+    weights_path, fmt = _find_weights_file(model_id)
+
+    blocks = nn.ModuleList()
+    rss_before = measure_resident_bytes()
+    reader = _open_weight_reader(weights_path, fmt, torch_device)
+    try:
+        all_keys = reader.keys()
+        for global_idx in range(int(start), int(end) + 1):
+            layer = OPTDecoderLayer(config, layer_idx=global_idx - 1)
+            layer.to(dtype=torch_dtype, device=torch_device)
+            layer.eval()
+
+            prefix = f"model.decoder.layers.{global_idx - 1}."
+            local_state: dict[str, torch.Tensor] = {}
+            for k in all_keys:
+                if k.startswith(prefix):
+                    tensor = reader.get_tensor(k)
+                    local_state[k[len(prefix):]] = tensor.to(dtype=torch_dtype)
+            missing, unexpected = layer.load_state_dict(local_state, strict=False)
+            if missing:
+                log.warning("layer %d missing keys: %s", global_idx, missing)
+            if unexpected:
+                log.warning("layer %d unexpected keys: %s", global_idx, unexpected)
+            blocks.append(layer)
+    finally:
+        reader.close()
+    rss_after = measure_resident_bytes()
+    delta_mb = (rss_after - rss_before) / (1024 * 1024)
+    log.info(
+        "load_stage_blocks %s[%d..%d]: %d blocks, rss +%.1f MB (now %.1f MB)",
+        model_id, start, end, int(end) - int(start) + 1, delta_mb,
+        rss_after / (1024 * 1024),
+    )
+    return blocks

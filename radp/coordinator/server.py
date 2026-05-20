@@ -107,13 +107,28 @@ class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: i
     def Generate(self, request: Any, context: grpc.ServicerContext) -> Any:
         prompt = request.prompt
         max_tokens = max(1, int(request.max_tokens))
-        log.info("Generate prompt_len=%d max_tokens=%d", len(prompt), max_tokens)
-        text_acc = prompt
-        for step in range(max_tokens):
-            _, token_text = self._gateway.next_token(text_acc)
-            yield radp_pb2.GenerateChunk(text=token_text, done=False)
-            text_acc = text_acc + token_text
-            if step == max_tokens - 1:
+        # Proto defaults: 0 means "use the natural off-state".
+        eos = int(request.eos_token_id) if request.eos_token_id else None
+        seed = int(request.seed) if request.seed else None
+        top_p = float(request.top_p) if 0.0 < float(request.top_p) <= 1.0 else 1.0
+        log.info(
+            "Generate prompt_len=%d max_tokens=%d temp=%.2f top_k=%d top_p=%.2f eos=%s seed=%s",
+            len(prompt), max_tokens, request.temperature, request.top_k, top_p, eos, seed,
+        )
+        token_ids = self._gateway.generate(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=float(request.temperature),
+            top_k=int(request.top_k),
+            top_p=top_p,
+            eos_token_id=eos,
+            seed=seed,
+        )
+        # Stream each decoded token; final chunk signals done.
+        tokenizer = self._gateway.handle.tokenizer
+        for i, tid in enumerate(token_ids):
+            yield radp_pb2.GenerateChunk(text=tokenizer.decode([tid]), done=False)
+            if i == len(token_ids) - 1:
                 yield radp_pb2.GenerateChunk(text="", done=True)
 
 
@@ -204,7 +219,7 @@ class CoordinatorServer:
         self.detector.start()
 
         self._server = grpc.server(
-            futures.ThreadPoolExecutor(max_workers=4),
+            futures.ThreadPoolExecutor(max_workers=16),
             options=_GRPC_OPTIONS,
         )
         radp_pb2_grpc.add_CoordinatorServiceServicer_to_server(
