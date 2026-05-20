@@ -1,0 +1,70 @@
+[project]
+name = "radp"
+version = "0.1.0"
+description = "Recovery-Aware DP for Distributed LLM Inference on Heterogeneous Edge Clusters"
+requires-python = ">=3.10"
+readme = "README.md"
+dependencies = [
+  "torch>=2.1",
+  "transformers>=4.40",
+  "accelerate",
+  "grpcio>=1.60",
+  "protobuf>=4.25",
+  "numpy",
+  "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+  "grpcio-tools",
+  "pytest",
+  "pytest-asyncio",
+  "ruff",
+  "mypy",
+  "types-protobuf",
+  "types-PyYAML",
+]
+quant = ["bitsandbytes"]
+
+[project.scripts]
+radp-coordinator = "radp.cli.coordinator:main"
+radp-worker = "radp.cli.worker:main"
+radp-profile = "radp.cli.profile:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["radp"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"radp/common/proto/*" = ["ALL"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["radp"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = ["radp.common.proto.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["transformers.*", "accelerate.*", "bitsandbytes.*", "grpc.*", "torch.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+asyncio_mode = "auto"

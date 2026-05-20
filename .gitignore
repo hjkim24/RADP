@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs / package managers
+.venv/
+venv/
+.uv/
+
+# Generated gRPC stubs
+radp/common/proto/*_pb2.py
+radp/common/proto/*_pb2.pyi
+radp/common/proto/*_pb2_grpc.py
+
+# Model / cache artifacts
+*.bin
+*.safetensors
+.cache/
+hf_cache/
+.jetson_cache/
+
+# Experiment outputs
+results/
+logs/
+*.log
+
+# Editor
+.vscode/
+.idea/
+.DS_Store

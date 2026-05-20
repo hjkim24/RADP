@@ -1,0 +1,38 @@
+# Sample experiment config (plan.md §6).
+# Loaded by experiments/run_normal.py and run_failure.py.
+
+model:
+  id: facebook/opt-6.7b
+  dtype: int4
+  num_layers: 32
+
+cluster:
+  coordinator:
+    address: "10.0.0.1:50050"
+  workers:
+    - id: jetson-1
+      address: "10.0.0.11:50051"
+      total_memory_bytes: 4_000_000_000
+      compute_throughput: 1.0
+    - id: jetson-2
+      address: "10.0.0.12:50051"
+      total_memory_bytes: 4_000_000_000
+      compute_throughput: 1.0
+    - id: jetson-3
+      address: "10.0.0.13:50051"
+      total_memory_bytes: 4_000_000_000
+      compute_throughput: 1.0
+
+slo:
+  ttft_seconds: 0.3
+  tbt_seconds: 0.1
+
+workload:
+  dataset: wikitext-2
+  prompts: 100
+  max_new_tokens: 64
+
+failure:
+  enabled: false
+  victim_device_id: jetson-2
+  trigger_after_seconds: 30
