@@ -10,7 +10,7 @@ dependencies = [
   "accelerate",
   "grpcio>=1.60",
   "protobuf>=4.25",
-  "numpy",
+  "numpy<2",  # NVIDIA's Jetson torch wheels are NumPy 1.x ABI; 2.x breaks import
   "pyyaml",
   "psutil>=5.9",
 ]
