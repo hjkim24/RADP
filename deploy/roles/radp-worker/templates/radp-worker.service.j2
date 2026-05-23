@@ -1,0 +1,25 @@
+[Unit]
+Description=RADP worker ({{ device_id }})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+Group={{ ansible_user }}
+WorkingDirectory={{ radp_install_dir }}
+Environment=RADP_DEVICE_ID={{ device_id }}
+Environment=RADP_BIND=0.0.0.0:{{ radp_worker_port }}
+Environment=RADP_COORD={{ hostvars[groups['coordinator'][0]]['ansible_host'] }}:{{ radp_coord_port }}
+Environment=RADP_HEARTBEAT_INTERVAL_S={{ heartbeat_tick_seconds }}
+Environment=RADP_TORCH_DEVICE={{ model_torch_device }}
+Environment=RADP_DTYPE={{ model_dtype }}
+Environment=HF_HOME=/home/{{ ansible_user }}/.cache/huggingface
+ExecStart={{ radp_install_dir }}/.venv/bin/radp-worker
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

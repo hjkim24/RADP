@@ -1,0 +1,46 @@
+# RADP fleet vars. Copy to all.yml and edit.
+
+# ---- Repo + install location ------------------------------------------------
+radp_repo_url: "https://github.com/hjkim24/RADP.git"
+radp_ref: "main"
+radp_install_dir: "/home/{{ ansible_user }}/radp"
+
+# ---- Jetson-specific PyTorch wheel ------------------------------------------
+# Pick the wheel matching your JetPack version from NVIDIA's index:
+#   JetPack 6 (Python 3.10, CUDA 12.x):
+#     https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/
+#   JetPack 5 (Python 3.8):  use that index (and bump Python in radp pyproject)
+#
+# Leave unset → assume torch is already installed system-wide (e.g., via
+# NVIDIA NGC container). The play will detect+warn.
+jetson_torch_wheel_url: ""
+
+# ---- Model + cluster topology -----------------------------------------------
+model_id: "facebook/opt-125m"
+model_dtype: "float16"           # float32 / float16 / bfloat16
+model_torch_device: "cuda"        # cpu / cuda
+
+radp_worker_port: 50051
+radp_coord_port: 50050
+heartbeat_timeout_seconds: 5.0
+heartbeat_tick_seconds: 1.0
+
+# Pipeline placement — start/end are 1-based, inclusive.
+# Edit to match your model's layer count and fleet size.
+# (OPT-125M has 12 layers; the example below splits 4-4-4 across 3 workers.)
+cluster_placement:
+  - device: jetson-1
+    start: 1
+    end: 4
+  - device: jetson-2
+    start: 5
+    end: 8
+  - device: jetson-3
+    start: 9
+    end: 12
+
+# Recovery table — each j's single backup target (Phase 3).
+cluster_recovery:
+  jetson-1: jetson-2
+  jetson-2: jetson-3
+  jetson-3: jetson-1

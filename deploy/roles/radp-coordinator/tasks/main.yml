@@ -1,0 +1,41 @@
+---
+- name: Ensure /etc/radp exists
+  ansible.builtin.file:
+    path: /etc/radp
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  tags: [config]
+
+- name: Render cluster.yaml
+  ansible.builtin.template:
+    src: cluster.yaml.j2
+    dest: /etc/radp/cluster.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart radp-coordinator
+  tags: [config]
+
+- name: Render radp-coordinator systemd unit
+  ansible.builtin.template:
+    src: radp-coordinator.service.j2
+    dest: /etc/systemd/system/radp-coordinator.service
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart radp-coordinator
+  tags: [config, service]
+
+- name: Enable + start radp-coordinator
+  ansible.builtin.systemd:
+    name: radp-coordinator
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  tags: [service]

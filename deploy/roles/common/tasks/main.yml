@@ -1,0 +1,103 @@
+---
+# Shared setup: OS packages, time sync, code sync, Python venv with the
+# right Jetson torch wheel, radp install, gRPC stubs.
+
+- name: Install OS packages
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-venv
+      - python3-pip
+      - git
+      - libopenblas-base
+      - libopenmpi-dev
+      - libomp-dev
+      - cmake
+      - netcat-openbsd
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+  tags: [install]
+
+- name: Enable NTP time sync (heartbeat timing depends on it)
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    enabled: true
+    state: started
+  become: true
+  tags: [install]
+
+- name: Ensure install dir exists
+  ansible.builtin.file:
+    path: "{{ radp_install_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+  become: true
+  tags: [install]
+
+- name: Clone or update RADP repo
+  ansible.builtin.git:
+    repo: "{{ radp_repo_url }}"
+    dest: "{{ radp_install_dir }}"
+    version: "{{ radp_ref }}"
+    update: true
+    force: true
+  tags: [install, update]
+
+- name: Create Python venv
+  ansible.builtin.command: "python3 -m venv {{ radp_install_dir }}/.venv"
+  args:
+    creates: "{{ radp_install_dir }}/.venv/bin/python"
+  tags: [install]
+
+- name: Upgrade pip in venv
+  ansible.builtin.pip:
+    name: ["pip", "wheel", "setuptools"]
+    state: latest
+    virtualenv: "{{ radp_install_dir }}/.venv"
+  tags: [install]
+
+- name: Install Jetson-specific PyTorch wheel (if provided)
+  ansible.builtin.pip:
+    name: "{{ jetson_torch_wheel_url }}"
+    virtualenv: "{{ radp_install_dir }}/.venv"
+    state: present
+  when: jetson_torch_wheel_url | length > 0
+  tags: [install]
+
+- name: Verify torch is available (any source)
+  ansible.builtin.command: "{{ radp_install_dir }}/.venv/bin/python -c \"import torch; print(torch.__version__, torch.cuda.is_available())\""
+  register: torch_check
+  changed_when: false
+  failed_when: torch_check.rc != 0
+  tags: [install]
+
+- name: Report torch version + CUDA availability
+  ansible.builtin.debug:
+    msg: "torch: {{ torch_check.stdout }}"
+  tags: [install]
+
+- name: Install RADP package + dev/runtime deps from pyproject (editable)
+  ansible.builtin.pip:
+    chdir: "{{ radp_install_dir }}"
+    name: ".[dev]"
+    editable: true
+    virtualenv: "{{ radp_install_dir }}/.venv"
+    state: present
+  tags: [install, update]
+
+- name: Generate gRPC stubs (idempotent — script only writes if missing)
+  ansible.builtin.command: "{{ radp_install_dir }}/.venv/bin/python -m grpc_tools.protoc -I radp/common/proto --python_out=radp/common/proto --grpc_python_out=radp/common/proto radp/common/proto/radp.proto"
+  args:
+    chdir: "{{ radp_install_dir }}"
+    creates: "{{ radp_install_dir }}/radp/common/proto/radp_pb2.py"
+  tags: [install, update]
+
+- name: Patch generated stub for package-relative import
+  ansible.builtin.replace:
+    path: "{{ radp_install_dir }}/radp/common/proto/radp_pb2_grpc.py"
+    regexp: "^import radp_pb2 as radp__pb2$"
+    replace: "from . import radp_pb2 as radp__pb2"
+  tags: [install, update]

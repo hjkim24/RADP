@@ -1,8 +1,12 @@
-"""`radp-coordinator` CLI entry point (Phase 2)."""
+"""`radp-coordinator` CLI entry point (Phase 2).
+
+  --config / RADP_CONFIG    (required)  Path to coordinator YAML.
+"""
 
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 from types import FrameType
 
@@ -14,8 +18,15 @@ log = get_logger(__name__)
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="radp-coordinator")
-    p.add_argument("--config", required=True, help="Path to coordinator YAML config.")
-    return p.parse_args()
+    p.add_argument(
+        "--config",
+        default=os.environ.get("RADP_CONFIG"),
+        help="Path to coordinator YAML config (env: RADP_CONFIG).",
+    )
+    args = p.parse_args()
+    if not args.config:
+        p.error("--config or RADP_CONFIG is required")
+    return args
 
 
 def main() -> None:

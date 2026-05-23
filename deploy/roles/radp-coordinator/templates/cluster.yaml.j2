@@ -1,0 +1,28 @@
+## Rendered by Ansible — do not edit by hand. Source: group_vars/all.yml
+model:
+  id: {{ model_id }}
+  dtype: {{ model_dtype }}
+  torch_device: {{ model_torch_device }}
+
+coordinator:
+  bind: "0.0.0.0:{{ radp_coord_port }}"
+  heartbeat_timeout_seconds: {{ heartbeat_timeout_seconds }}
+  heartbeat_tick_seconds: {{ heartbeat_tick_seconds }}
+
+workers:
+{% for h in groups['workers'] %}
+  - id: {{ hostvars[h]['device_id'] }}
+    address: "{{ hostvars[h]['ansible_host'] }}:{{ radp_worker_port }}"
+{% endfor %}
+
+placement:
+{% for stage in cluster_placement %}
+  - device: {{ stage.device }}
+    start: {{ stage.start }}
+    end: {{ stage.end }}
+{% endfor %}
+
+recovery:
+{% for j, k in cluster_recovery.items() %}
+  {{ j }}: {{ k }}
+{% endfor %}

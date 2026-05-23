@@ -1,8 +1,21 @@
-"""`radp-worker` CLI entry point (Phase 3)."""
+"""`radp-worker` CLI entry point (Phase 3).
+
+Every flag falls back to an environment variable so that systemd units (or
+container orchestrators) can configure the worker via ``Environment=`` lines
+without long ExecStart arguments.
+
+  --device-id      / RADP_DEVICE_ID         (required)
+  --bind           / RADP_BIND              (default: 0.0.0.0:50051)
+  --coord          / RADP_COORD             (default: unset → no heartbeat)
+  --heartbeat-interval / RADP_HEARTBEAT_INTERVAL_S  (default: 1.0)
+  --torch-device   / RADP_TORCH_DEVICE      (default: cpu)
+  --dtype          / RADP_DTYPE             (default: float32)
+"""
 
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 from types import FrameType
 
@@ -15,13 +28,26 @@ log = get_logger(__name__)
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="radp-worker")
-    p.add_argument("--device-id", required=True)
-    p.add_argument("--bind", default="0.0.0.0:50051")
-    p.add_argument("--coord", default=None, help="Coordinator address for heartbeats. Optional.")
-    p.add_argument("--heartbeat-interval", type=float, default=1.0)
-    p.add_argument("--torch-device", default="cpu")
-    p.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
-    return p.parse_args()
+    p.add_argument("--device-id", default=os.environ.get("RADP_DEVICE_ID"))
+    p.add_argument("--bind", default=os.environ.get("RADP_BIND", "0.0.0.0:50051"))
+    p.add_argument("--coord", default=os.environ.get("RADP_COORD"))
+    p.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=float(os.environ.get("RADP_HEARTBEAT_INTERVAL_S", "1.0")),
+    )
+    p.add_argument(
+        "--torch-device", default=os.environ.get("RADP_TORCH_DEVICE", "cpu")
+    )
+    p.add_argument(
+        "--dtype",
+        default=os.environ.get("RADP_DTYPE", "float32"),
+        choices=["float32", "float16", "bfloat16"],
+    )
+    args = p.parse_args()
+    if not args.device_id:
+        p.error("--device-id or RADP_DEVICE_ID is required")
+    return args
 
 
 def main() -> None:

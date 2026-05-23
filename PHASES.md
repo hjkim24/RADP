@@ -6,11 +6,11 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ## 현재 상태 요약
 
-- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 완료** (총 14개 Phase)
+- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 완료** (총 15개 Phase)
 - **단위 테스트 60개 + slow 통합 테스트 14개 모두 통과**
 - ruff ✓ / mypy strict (33 source files) ✓
 - 지원 모델: OPT, LLaMA, Mistral (단일 + sharded safetensors/bin 모두)
-- Mac CPU에서 OPT-125M / SmolLM-135M / **SmolLM-1.7B (2-shard)** 검증; Jetson 도착 시 config만 변경하면 즉시 동작
+- Mac CPU에서 OPT-125M / SmolLM-135M / SmolLM-1.7B (2-shard) 검증; Jetson은 **Ansible playbook 한 줄로 배포**
 
 ---
 
@@ -265,6 +265,55 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ---
 
+## Phase OPS1 — Ansible 기반 Jetson 함대 자동 배포
+
+**목표**: N대의 Jetson + 코디네이터 호스트에 RADP를 한 줄 명령으로 설치/실행. 운영 오버헤드 0 (k8s 같은 daemon 없음). 노드 재부팅·프로세스 죽음·노드 통째 죽음 각각 다른 계층이 담당.
+
+**구현**:
+- **CLI env-var 지원** (Ansible/systemd 친화):
+  - [cli/worker.py](radp/cli/worker.py): 모든 flag가 `RADP_DEVICE_ID` / `RADP_BIND` / `RADP_COORD` / `RADP_HEARTBEAT_INTERVAL_S` / `RADP_TORCH_DEVICE` / `RADP_DTYPE` 로 fallback
+  - [cli/coordinator.py](radp/cli/coordinator.py): `--config` → `RADP_CONFIG`
+  - systemd unit이 `Environment=` 줄로 깔끔하게 설정 가능 (long ExecStart 없음)
+- **deploy/ 디렉터리** 신규:
+  - [ansible.cfg](deploy/ansible.cfg) — SSH pipelining + ControlPersist, 8 forks
+  - [playbook.yml](deploy/playbook.yml) — 3개 play: common(모든 노드) → workers → coordinator
+  - [inventory.ini.example](deploy/inventory.ini.example) — 호스트별 IP + device_id 템플릿
+  - [group_vars/all.yml.example](deploy/group_vars/all.yml.example) — 모델/placement/recovery/포트/heartbeat 전부 변수화
+  - **roles/common**: OS 패키지 + NTP + 코드 sync (git) + venv + Jetson용 torch wheel + radp pip install + proto stub 생성 (idempotent)
+  - **roles/radp-worker**: systemd unit 템플릿 + enable/start + handler로 `notify: restart radp-worker`
+  - **roles/radp-coordinator**: `/etc/radp/cluster.yaml` 템플릿 렌더 (모든 워커 IP 자동 수집) + systemd unit + enable/start
+  - [deploy/README.md](deploy/README.md) — 사용법 + tag별 부분 배포 + JetPack/torch wheel 가이드 + 트러블슈팅
+
+**책임 분담**:
+| 계층 | 도구 | 역할 |
+|---|---|---|
+| 배포/설정 (1회성) | Ansible | OS 셋업, 코드 sync, systemd unit 설치, cluster.yaml 렌더 |
+| 프로세스 라이프사이클 | systemd | 부팅 시 자동 시작, `Restart=on-failure` |
+| 분산 추론 + 장애 복구 | RADP (Phase 3) | heartbeat / activation cache replay / R-기반 라우팅 |
+
+→ k8s 같은 런타임 daemon 불필요. 4GB Jetson에서 ~512MB 절약.
+
+**자주 쓰는 명령**:
+```bash
+ansible-playbook playbook.yml                # 전체 배포
+ansible-playbook playbook.yml --tags update  # 코드만 sync + 재시작
+ansible-playbook playbook.yml --tags config  # cluster.yaml만 재렌더
+ansible-playbook playbook.yml --limit '!jetson-2'
+ansible workers -a "journalctl -u radp-worker -n 50"
+```
+
+**검증 결과**:
+- ruff ✓ / mypy strict ✓ / 단위 테스트 60개 (CLI 회귀 없음)
+- `ansible-playbook --syntax-check` 통과 (uvx ansible-core 사용)
+- `ansible-inventory --list` 4개 group + 4개 host 정확히 인식
+
+**의도된 한계**:
+- 실 Jetson에서 end-to-end는 하드웨어 도착 후 검증 필요 (Phase B1 — 백로그)
+- `jetson_torch_wheel_url`은 사용자가 JetPack 버전에 맞게 수동 설정 (auto-detect 미구현)
+- JetPack 4 (Python 3.6)는 비지원 — pyproject의 `requires-python = ">=3.10"`이라 JetPack 6+ 권장
+
+---
+
 ## Phase B2 — Sharded safetensors / bin 지원
 
 **목표**: 큰 모델(OPT-6.7B, Llama-2-7B 등 5GB↑)이 HF에 단일 파일이 아닌 **shard로 저장됨** (`model.safetensors.index.json` + `model-00001-of-NNNNN.safetensors`). 현재는 단일 파일만 지원해서 이런 모델을 못 로드. 단계적으로 worker가 자기 layer 범위에 필요한 shard만 다운로드하도록 확장 → 에지 디바이스의 디스크/대역폭 절감.
@@ -379,7 +428,7 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 - **Backpressure / queue**: 동시 요청이 thread pool 넘으면 자연 큐잉만; admission control 없음
 - **Online 재배치**: 부하 변화에 따른 동적 placement 조정 없음
 - **bitsandbytes int4**: CUDA 전용 → Mac에선 float32만 검증
-- **Jetson 실측**: 코드는 그대로 동작 가능하나 하드웨어 도착 후 재실험 필요
+- **Jetson 실측**: 코드 + 배포 자동화 (Phase OPS1)는 완료. 하드웨어 도착 후 end-to-end 검증 필요
 
 ---
 

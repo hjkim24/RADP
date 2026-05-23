@@ -1,0 +1,37 @@
+---
+# RADP fleet deployment.
+#
+# Usage:
+#   cd deploy/
+#   cp inventory.ini.example inventory.ini && $EDITOR inventory.ini
+#   cp group_vars/all.yml.example group_vars/all.yml && $EDITOR group_vars/all.yml
+#   ansible-playbook playbook.yml
+#
+# Useful flags:
+#   --tags install              # only OS deps + code sync, skip service mgmt
+#   --tags config               # only re-render cluster.yaml + restart coord
+#   --tags service              # only restart services
+#   --limit '!jetson-2'         # skip one node
+#   --check                     # dry run
+#
+# After it finishes, every worker runs as a systemd service ('radp-worker')
+# and the coordinator runs as 'radp-coordinator'. Logs:
+#   ansible workers -a "journalctl -u radp-worker -n 50"
+
+- name: Common setup (every Jetson + the coordinator host)
+  hosts: jetson_nodes
+  gather_facts: true
+  roles:
+    - common
+
+- name: Bring up workers
+  hosts: workers
+  gather_facts: false
+  roles:
+    - radp-worker
+
+- name: Bring up coordinator
+  hosts: coordinator
+  gather_facts: false
+  roles:
+    - radp-coordinator

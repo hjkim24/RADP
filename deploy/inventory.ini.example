@@ -1,0 +1,27 @@
+# Copy to inventory.ini and fill in your fleet.
+#
+# Each worker host MUST define `device_id` — this becomes the DeviceId used
+# in placement / R. Each must also resolve to the IP the coordinator can
+# reach (set via `ansible_host`).
+#
+# The coordinator host can be one of the Jetsons or a separate beefier
+# machine (recommended: separate, since it holds embed + lm_head).
+
+[workers]
+jetson-1 ansible_host=192.168.1.10 device_id=jetson-1
+jetson-2 ansible_host=192.168.1.11 device_id=jetson-2
+jetson-3 ansible_host=192.168.1.12 device_id=jetson-3
+
+[coordinator]
+jetson-master ansible_host=192.168.1.20
+
+# Convenience group spanning everything (used by the `common` role).
+[jetson_nodes:children]
+workers
+coordinator
+
+[all:vars]
+ansible_user=hjkim24
+ansible_python_interpreter=/usr/bin/python3
+# If your hosts use SSH keys other than the default:
+# ansible_ssh_private_key_file=~/.ssh/id_ed25519
