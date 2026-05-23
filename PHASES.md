@@ -307,10 +307,18 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 - `ansible-playbook --syntax-check` 통과 (uvx ansible-core 사용)
 - `ansible-inventory --list` 4개 group + 4개 host 정확히 인식
 
+**실 보드 검증 (2026-05-23, JetPack 6.1 / Jetson 환경)**:
+- 5 worker + 1 coordinator 함대 inventory 채우고 SSH 키 + sudo 통신 확인 (`ansible all -m ping` ✓)
+- jetson-4 1대에 `--tags install` full deploy: `/home/isp/radp/` 생성 + venv + torch 2.5.0 (CUDA True) + numpy 1.26.4 + radp + proto stubs 임포트 정상
+- 발견된 호환성 이슈 2건 픽스 (commit `22b906a`):
+  - **NumPy 2.x vs NVIDIA torch wheel ABI 충돌** → `pyproject.toml`에 `numpy<2` 핀
+  - **`stdout_callback = yaml`** (community.general 12.0.0에서 제거됨) → `default + result_format=yaml`로 교체
+- 나머지 4 worker + coordinator 전체 배포는 추가 보드 도착 후 일괄 진행 예정
+
 **의도된 한계**:
-- 실 Jetson에서 end-to-end는 하드웨어 도착 후 검증 필요 (Phase B1 — 백로그)
-- `jetson_torch_wheel_url`은 사용자가 JetPack 버전에 맞게 수동 설정 (auto-detect 미구현)
+- `jetson_torch_wheel_url`은 사용자가 JetPack 버전에 맞게 수동 설정 (auto-detect 미구현; `direct_url.json`에서 추적은 가능)
 - JetPack 4 (Python 3.6)는 비지원 — pyproject의 `requires-python = ">=3.10"`이라 JetPack 6+ 권장
+- systemd 서비스 시작 + end-to-end 추론 (장애 시나리오 포함) 검증은 전체 함대 배포 후 진행 예정
 
 ---
 
@@ -428,7 +436,7 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 - **Backpressure / queue**: 동시 요청이 thread pool 넘으면 자연 큐잉만; admission control 없음
 - **Online 재배치**: 부하 변화에 따른 동적 placement 조정 없음
 - **bitsandbytes int4**: CUDA 전용 → Mac에선 float32만 검증
-- **Jetson 실측**: 코드 + 배포 자동화 (Phase OPS1)는 완료. 하드웨어 도착 후 end-to-end 검증 필요
+- **Jetson 실측**: 1대(jetson-4) 환경 셋업 (torch CUDA + numpy + radp + proto) 검증 완료 (2026-05-23). 5+1 전체 함대 배포 + systemd 서비스 + end-to-end 추론(정상/장애) 검증은 추가 보드 도착 후 진행
 
 ---
 
