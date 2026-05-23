@@ -37,3 +37,7 @@ logs/
 # Claude Code runtime artifacts
 .claude/scheduled_tasks.lock
 .claude/plans/
+
+# Ansible deployment — actual configs (only .example files are tracked)
+deploy/inventory.ini
+deploy/group_vars/all.yml
