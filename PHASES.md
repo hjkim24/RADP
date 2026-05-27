@@ -6,8 +6,8 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ## 현재 상태 요약
 
-- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 ~ D2 완료** (총 18개 Phase)
-- **단위 테스트 70개 + slow 통합 테스트 16개 모두 통과**
+- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 ~ D3 완료** (총 19개 Phase)
+- **단위 테스트 75개 + slow 통합 테스트 17개 모두 통과**
 - ruff ✓ / mypy strict (33 source files) ✓
 - 지원 모델: OPT, LLaMA, Mistral (단일 + sharded safetensors/bin 모두)
 - Mac CPU에서 OPT-125M / SmolLM-135M / SmolLM-1.7B (2-shard) 검증; Jetson은 **Ansible playbook 한 줄로 배포**
@@ -508,6 +508,52 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 ---
 
+## Phase D3 — Coordinator startup 재설계 (auto vs manual)
+
+**목표**: D2의 `ProfileOrchestrator` 결과를 실제 startup 흐름에 연결. 사용자가 `coordinator.schedule_mode`를 yaml에 적으면 코디네이터가 부팅 시 자동으로 placement/recovery를 결정. 기존 manual 모드 (yaml에 placement를 직접 적는 방식)는 그대로 호환.
+
+**구현**:
+- **`CoordinatorConfig` 확장** ([radp/coordinator/server.py](radp/coordinator/server.py)):
+  - `placement`/`recovery`를 `field(default_factory=...)`로 (auto 모드에선 빈 값)
+  - 신규 필드: `schedule_mode`, `slo_ttft_seconds`, `slo_tbt_seconds`, `activation_bytes`, `profiling_layer_warmup/repeats/seq_length`, `profiling_network_payload_bytes/rounds`, `profiling_wait_timeout_seconds`
+  - `from_yaml`: placement/recovery optional 처리. manual 모드에서 placement 없으면 ValueError. `schedule_mode`가 "manual"/"auto" 외 값이면 ValueError. `coordinator.{slo, profiling}` 서브 dict 파싱
+- **`CoordinatorServer` 구조 변경**:
+  - `placement`, `recovery`를 self attribute로 이동 (config에서 복사, auto_schedule이 덮어씀)
+  - `_ensure_gateway()` (lazy) — placement가 결정된 *후*에만 `RequestGateway` 생성
+  - `start()` — 이제 detector + gRPC만 띄움. gateway는 만들지 않음
+  - `auto_schedule()` 신규 — `ProfileOrchestrator` 4 단계 호출 → `ClusterSpec` → `Scheduler(spec).solve_alternating()` → 결과를 self.placement / self.recovery에 저장. gateway는 안 만듦 (deploy 후 ensure)
+  - `serve()` 신규 — 모드에 따라 올바른 순서로 start/deploy/auto_schedule + `_ensure_gateway` 호출. CLI가 이 한 줄만 부르면 됨
+  - `deploy()` — `self.placement`/`self.recovery`를 사용 (이전엔 `config.placement`). placement 없으면 명시적 RuntimeError
+- **`_CoordinatorServicer` 리팩토링**:
+  - 생성자 `(gateway, detector)` → `(server: CoordinatorServer)`. server 참조를 통해 lazy lookup
+  - `Heartbeat`: detector가 없으면 UNAVAILABLE (start 전 RPC 방지). 있으면 record (D2 동작 유지)
+  - `Generate`: gateway가 None이면 UNAVAILABLE + "still bootstrapping" 메시지. workers의 LoadStage 완료 + scheduler 해 결정 전까지 안전하게 거절
+- **`on_failure` callback**: gateway가 None일 때는 warning + skip (gRPC가 떠 있는데 아직 gateway 없는 windows에서 detector tick이 fire할 수 있음)
+- **CLI 단순화** ([radp/cli/coordinator.py](radp/cli/coordinator.py)): `server.serve(); server.wait_for_termination()`만 호출. 모드 분기는 serve() 내부
+
+**모드별 부팅 순서**:
+| Mode | 순서 |
+|---|---|
+| manual | `deploy()` → `start()` (gRPC) → `_ensure_gateway()` |
+| auto | `start()` (gRPC up, gateway=None) → `auto_schedule()` (워커 등록 대기 → 프로파일 → DP) → `deploy()` (계산된 placement로 LoadStage) → `_ensure_gateway()` |
+
+**검증 결과** ([tests/test_coordinator_auto.py](tests/test_coordinator_auto.py)):
+- ✓ `test_from_yaml_auto_mode` — 모든 신규 필드 정확히 파싱
+- ✓ `test_from_yaml_manual_mode_with_placement` — 기존 yaml 호환
+- ✓ `test_from_yaml_manual_requires_placement` — manual 모드 + 빈 placement → ValueError
+- ✓ `test_from_yaml_rejects_unknown_schedule_mode` — "hybrid" 같은 잘못된 값 거절
+- ✓ `test_deploy_before_placement_raises` — auto 모드에서 auto_schedule 안 거치고 deploy() 시 명시적 에러
+- ✓ (slow) `test_auto_schedule_produces_valid_placement` — 실 in-process worker 2대 + 코디네이터 1대로 full auto path 검증: 12 layer를 2 워커에 연속으로 분배, recovery table 양쪽 등록, gateway는 아직 None (deploy 후 생성 검증)
+- ruff ✓ / mypy strict (35 source files) ✓ / 단위 테스트 75개 + slow 17개 모두 통과 (회귀 없음)
+
+**의도된 한계**:
+- `auto_schedule()` 도중 워커가 죽으면 `wait_for_workers` 단계는 통과하지만 후속 ProfileLayers/MeasurePeer가 실패 → orchestrator가 `RuntimeError`를 raise하면서 startup 전체 중단. 부분 복구 (살아있는 노드만으로 재시도)는 D5
+- network 측정 실패 pair는 silently omit (D2 limitation 그대로). 결과 placement가 그 pair를 안 쓰도록 자연스럽게 유도되긴 함
+- 재배치는 부팅 시점 1회만. 런타임 중 워커 추가/제거에 따른 재스케줄링은 D5 (A3 Online 재배치와 통합 가능)
+- `schedule_mode=auto`로 깔린 yaml은 [cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2)에서 placement/recovery 줄을 빼야 깔끔 — 그 작업은 D4 (스키마 정리)에서 처리
+
+---
+
 ## Phase 4 — 벤치마크 + 분석 인프라
 
 **목표**: plan.md §6의 실험 시나리오 1~4 측정 가능한 harness + 자동 보고서.
@@ -586,7 +632,7 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 | ~~**D0**~~ | ~~**Proto 확장**~~ | **완료** (위 Phase D0 섹션 참조) | — |
 | ~~**D1**~~ | ~~**Worker-side 구현**~~ | **완료** (위 Phase D1 섹션 참조) | — |
 | ~~**D2**~~ | ~~**Coordinator ProfileOrchestrator**~~ | **완료** (위 Phase D2 섹션 참조) | — |
-| **D3** | **Coordinator startup 재설계** | server.py 부팅 흐름 변경: cluster.yaml 로드(토폴로지만) → gRPC 시작 → 워커 등록 대기 → ProfileOrchestrator 실행 → `Scheduler(spec).solve_alternating()` → 결과로 워커에 LoadStage/LoadBackup. CLI 플래그 `--schedule-mode={auto,manual}` 추가 (manual은 기존 동작). | 중 (2-3h) |
+| ~~**D3**~~ | ~~**Coordinator startup 재설계**~~ | **완료** (위 Phase D3 섹션 참조) | — |
 | **D4** | **cluster.yaml 스키마 정리** | auto 모드면 `placement`/`recovery` 필드 생략. `coordinator.schedule_mode`, `coordinator.slo`, `coordinator.profiling.{layer_warmup, layer_repeats, network_payload_bytes, network_rounds}` 신규. [cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2) + group_vars/all.yml 수정. | 소 (1h) |
 | **D5** | **(선택) 주기적 재측정 + 동적 재배치** | N분마다 ProfileOrchestrator 재실행 → diff 임계 이상이면 scheduler 재호출 → 워커 drain/swap. A3(Online 재배치)와 사실상 통합 가능. | 큼 |
 

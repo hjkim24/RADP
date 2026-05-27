@@ -34,9 +34,6 @@ def main() -> None:
     args = _parse_args()
     config = CoordinatorConfig.from_yaml(args.config)
     server = CoordinatorServer(config)
-    log.info("deploying placement to %d workers", len(config.workers))
-    server.deploy()
-    server.start()
 
     def _on_signal(signum: int, _frame: FrameType | None) -> None:
         log.info("received signal %d, shutting down", signum)
@@ -44,6 +41,10 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
+
+    # serve() picks the right order: manual deploys first then starts gRPC,
+    # auto starts first so heartbeats register, then schedules, then deploys.
+    server.serve()
     server.wait_for_termination()
 
 
