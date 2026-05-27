@@ -468,9 +468,39 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 | **C2** | **True streaming Generate** | 현재 `gateway.generate`는 전체 토큰 생성 후 일괄 yield. 토큰 단위 실시간 streaming으로 변경 → TTFT 사용자 체감 ↑. recovery 흐름과 함께 재설계 필요. | 중 |
 | **C3** | **Beam search / 더 다양한 sampling** | 현재 greedy + temperature/top-k/top-p. Beam search는 별도 path. nucleus + repetition penalty 등 추가. | 소-중 |
 
+### D. 프로파일링 기반 자동 결정 흐름 (Auto-Scheduling)
+
+**배경**: 현재 `cluster_placement`/`cluster_recovery`는 사용자가 [deploy/group_vars/all.yml](deploy/group_vars/all.yml)에 손으로 적음. Scheduler는 코드로 완성돼 있지만 호출되는 곳이 없음. `network_profiler.profile_network()`는 `NotImplementedError`. 이 갭을 메워 코디네이터가 부팅 시 실측 → DP → 자동 placement까지 일관 처리하게 만드는 작업.
+
+**디자인 결정 (2026-05-27)**:
+1. **Scheduler + 모니터링은 코디네이터에서** — Mac/별도 orchestrator 아님. 코디네이터 startup이 모든 걸 책임. 보드 추가/제거 시 부팅 한 번으로 재계산.
+2. **네트워크 측정은 gRPC Ping/Echo로** — iperf3 등 외부 도구 아님. RADP 자체 transport 사용 → 실 워크로드 대표성 ↑. proto 확장 필요.
+
+**Phase 분할** (의존성: P0 → P1 → P2 → P3 → P4 → P5):
+
+| | 항목 | 내용 | 예상 깊이 |
+|---|---|---|---|
+| **D0** | **Proto 확장** | `WorkerService`에 `Ping`, `MeasurePeer`, `ProfileLayers` 3개 RPC 추가. `HeartbeatRequest`에 `total_memory_bytes`, `device_class` 필드. `bash scripts/gen_proto.sh` 재생성. | 소 (1-2h) |
+| **D1** | **Worker-side 구현** | (a) `Ping` 에코 핸들러. (b) `MeasurePeer` — 워커가 peer worker의 gRPC client가 돼서 N라운드 ping, bw+lat 산출. (c) `ProfileLayers` — `radp.profiler.layer_profiler.profile_layers()` 호출, 모델 임시 로드/언로드. (d) heartbeat에 total_memory + device_class 포함. | 중 (3-4h) |
+| **D2** | **Coordinator ProfileOrchestrator** | 신규 [radp/coordinator/profile_orchestrator.py](radp/coordinator/profile_orchestrator.py). `wait_for_all_workers()` (heartbeat 대기 + DeviceProfile 수집), `collect_layer_profiles(model_id)` (병렬 `ProfileLayers` RPC), `collect_network_profile()` (full-mesh `MeasurePeer`). | 중 (3-4h) |
+| **D3** | **Coordinator startup 재설계** | server.py 부팅 흐름 변경: cluster.yaml 로드(토폴로지만) → gRPC 시작 → 워커 등록 대기 → ProfileOrchestrator 실행 → `Scheduler(spec).solve_alternating()` → 결과로 워커에 LoadStage/LoadBackup. CLI 플래그 `--schedule-mode={auto,manual}` 추가 (manual은 기존 동작). | 중 (2-3h) |
+| **D4** | **cluster.yaml 스키마 정리** | auto 모드면 `placement`/`recovery` 필드 생략. `coordinator.schedule_mode`, `coordinator.slo`, `coordinator.profiling.{layer_warmup, layer_repeats, network_payload_bytes, network_rounds}` 신규. [cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2) + group_vars/all.yml 수정. | 소 (1h) |
+| **D5** | **(선택) 주기적 재측정 + 동적 재배치** | N분마다 ProfileOrchestrator 재실행 → diff 임계 이상이면 scheduler 재호출 → 워커 drain/swap. A3(Online 재배치)와 사실상 통합 가능. | 큼 |
+
+**검증 마일스톤**:
+- **MVP1** (D0 + D1.a/c + D2 partial): 코디네이터가 layer profile 자동 수집 — 로그에 "5 workers × 12 layers" 출력
+- **MVP2** (D3 + uniform network placeholder): 자동 placement 결정까지 — 로그에 "scheduler decided: jetson-1: 1-3, ..." 출력 + Generate 정상
+- **MVP3** (D1.b + D2 complete): 실측 네트워크 통합 — 5×5 bw/lat 매트릭스 + 그 기반 placement
+- **완성** (D4): 사용자가 placement를 yaml에 적지 않아도 시스템 정상 가동
+
+**현 수동 흐름과의 매핑**:
+- 지금: `group_vars/all.yml`에 `cluster_placement` 적음 → cluster.yaml 렌더 → 코디네이터 그대로 사용
+- D 완료 후: `group_vars/all.yml`에는 model + SLO + profiling 파라미터만 → 코디네이터 startup에 자동 결정
+
 ### 권장 선택 가이드
 
 - **논문 기여 강화**: **A2** (동시 다중 장애) — plan.md §7.2 명시 항목, 측정 가능한 차별점
+- **시스템 자동화 강화**: **D** (Auto-Scheduling) — 사용자가 yaml에 placement 안 적어도 됨. 보드 추가/변동에 강함. 논문에서 "프로파일링 기반 적응형" 어필 가능
 - **실증 강화**: **B1 + B2** — 진짜 큰 모델로 실데이터 생성
 - **사용자 체감 개선**: **C2** (true streaming) — 데모/UX 임팩트 큼
 
