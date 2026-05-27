@@ -6,8 +6,8 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ## 현재 상태 요약
 
-- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 + Phase D1 완료** (총 17개 Phase)
-- **단위 테스트 65개 + slow 통합 테스트 15개 모두 통과**
+- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 ~ D2 완료** (총 18개 Phase)
+- **단위 테스트 70개 + slow 통합 테스트 16개 모두 통과**
 - ruff ✓ / mypy strict (33 source files) ✓
 - 지원 모델: OPT, LLaMA, Mistral (단일 + sharded safetensors/bin 모두)
 - Mac CPU에서 OPT-125M / SmolLM-135M / SmolLM-1.7B (2-shard) 검증; Jetson은 **Ansible playbook 한 줄로 배포**
@@ -477,6 +477,37 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 ---
 
+## Phase D2 — Coordinator ProfileOrchestrator
+
+**목표**: D1에서 워커가 노출한 RPC를 코디네이터가 *드라이브*해서 라이브 클러스터를 측정. ① 모든 워커가 등록될 때까지 대기, ② 모든 워커에 병렬 `ProfileLayers` → 단일 `list[LayerProfile]`로 병합, ③ full-mesh `MeasurePeer` → `NetworkProfile`, ④ 결과를 `DeviceProfile` 리스트로 합성. D3가 이 출력을 `ClusterSpec`으로 묶어 `Scheduler.solve_alternating()`에 그대로 넣게 됨.
+
+**구현**:
+- **`HeartbeatRecord` 확장** ([radp/coordinator/failure_detector.py](radp/coordinator/failure_detector.py)): `total_memory_bytes: float = 0.0`, `device_class: str = ""` 필드 추가 (기본값 있어서 기존 호출부 호환)
+- **`FailureDetector.snapshot_records()`** 신규: 락 잡고 records dict의 shallow copy 반환 — orchestrator가 race-free 스냅샷 확보
+- **`_CoordinatorServicer.Heartbeat`** ([radp/coordinator/server.py](radp/coordinator/server.py)): `request.total_memory_bytes`, `request.device_class`를 HeartbeatRecord에 전달
+- **신규 모듈** [radp/coordinator/profile_orchestrator.py](radp/coordinator/profile_orchestrator.py) — `ProfileOrchestrator` 클래스:
+  - `wait_for_workers(timeout_seconds, poll_interval_seconds)` — 모든 expected device가 heartbeat 받을 때까지 polling. `dict[DeviceId, HeartbeatRecord]` 반환. timeout 시 `TimeoutError` (missing 목록 포함)
+  - `collect_layer_profiles(model_id, warmup, repeats, seq_length)` — `ThreadPoolExecutor`로 모든 워커에 `ProfileLayers` 병렬 호출. JSON payload 디코딩 → LayerProfile 리스트화 → `merge_profiles()`로 단일 list 병합 (각 LayerProfile.compute_time에 N개 device 엔트리)
+  - `collect_network_profile(payload_bytes, rounds)` — `N*(N-1)` directed pair 모두에 대해 src worker의 `MeasurePeer(dst_address)` 병렬 호출. 실패 pair는 결과에서 *생략* + warning log (scheduler가 자동으로 `inf` cost 처리)
+  - `build_device_profiles(records, layer_profiles)` (staticmethod) — heartbeat의 `total_memory_bytes`를 그대로 사용, `compute_throughput`은 device별 총 compute_time 합산 후 가장 빠른 device를 1.0으로 정규화 (느린 device는 비율)
+
+**검증 결과** ([tests/test_profile_orchestrator.py](tests/test_profile_orchestrator.py)):
+- ✓ `test_wait_for_workers_times_out_when_none_register` — missing list 포함 메시지로 TimeoutError
+- ✓ `test_wait_for_workers_returns_when_all_present` — 백그라운드 thread가 heartbeat 보내면 즉시 반환, 신규 필드 보존
+- ✓ `test_collect_network_profile_full_mesh` — 2-worker 환경에서 2개 directed pair (a→b, b→a) bw/lat 모두 양수
+- ✓ `test_build_device_profiles_normalizes_throughput` — 4× 느린 device의 throughput이 정확히 0.25
+- ✓ `test_heartbeat_propagates_new_fields_through_full_stack` — 실 RPC로 `CoordinatorClient.heartbeat()` → `_CoordinatorServicer.Heartbeat` → `FailureDetector` → `snapshot_records()` 전 경로 검증
+- ✓ (slow) `test_collect_layer_profiles_merges_per_device` — OPT-125M을 2-worker 병렬 프로파일 → 12 layer × 2 device compute_time 매핑
+- ruff ✓ / mypy strict (35 source files) ✓ / 단위 테스트 70개 + slow 16개 모두 통과 (회귀 없음)
+
+**의도된 한계**:
+- 아직 코디네이터 startup에 자동 호출되지 않음 — D3에서 wiring
+- `build_device_profiles`의 throughput 정규화는 *상대값*이지 *절대 처리량*이 아님. 같은 모델을 같은 조건으로 모든 device에서 profile했을 때만 의미 있음
+- network 측정 실패 pair는 silently omit — fail-loud 모드 옵션은 D3에서 검토
+- `collect_network_profile`의 ThreadPoolExecutor 동시성 제한 없음. N대가 매우 클 경우 동일 dst에 N-1개 동시 측정 요청이 몰릴 수 있음 — 현 fleet 규모 (5-10)에선 문제 없음
+
+---
+
 ## Phase 4 — 벤치마크 + 분석 인프라
 
 **목표**: plan.md §6의 실험 시나리오 1~4 측정 가능한 harness + 자동 보고서.
@@ -554,7 +585,7 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 |---|---|---|---|
 | ~~**D0**~~ | ~~**Proto 확장**~~ | **완료** (위 Phase D0 섹션 참조) | — |
 | ~~**D1**~~ | ~~**Worker-side 구현**~~ | **완료** (위 Phase D1 섹션 참조) | — |
-| **D2** | **Coordinator ProfileOrchestrator** | 신규 [radp/coordinator/profile_orchestrator.py](radp/coordinator/profile_orchestrator.py). `wait_for_all_workers()` (heartbeat 대기 + DeviceProfile 수집), `collect_layer_profiles(model_id)` (병렬 `ProfileLayers` RPC), `collect_network_profile()` (full-mesh `MeasurePeer`). | 중 (3-4h) |
+| ~~**D2**~~ | ~~**Coordinator ProfileOrchestrator**~~ | **완료** (위 Phase D2 섹션 참조) | — |
 | **D3** | **Coordinator startup 재설계** | server.py 부팅 흐름 변경: cluster.yaml 로드(토폴로지만) → gRPC 시작 → 워커 등록 대기 → ProfileOrchestrator 실행 → `Scheduler(spec).solve_alternating()` → 결과로 워커에 LoadStage/LoadBackup. CLI 플래그 `--schedule-mode={auto,manual}` 추가 (manual은 기존 동작). | 중 (2-3h) |
 | **D4** | **cluster.yaml 스키마 정리** | auto 모드면 `placement`/`recovery` 필드 생략. `coordinator.schedule_mode`, `coordinator.slo`, `coordinator.profiling.{layer_warmup, layer_repeats, network_payload_bytes, network_rounds}` 신규. [cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2) + group_vars/all.yml 수정. | 소 (1h) |
 | **D5** | **(선택) 주기적 재측정 + 동적 재배치** | N분마다 ProfileOrchestrator 재실행 → diff 임계 이상이면 scheduler 재호출 → 워커 drain/swap. A3(Online 재배치)와 사실상 통합 가능. | 큼 |

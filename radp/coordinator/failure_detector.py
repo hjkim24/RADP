@@ -28,6 +28,9 @@ class HeartbeatRecord:
     device_id: DeviceId
     last_ts_ns: int
     free_memory_bytes: float
+    # Phase D additions — defaulted so existing call sites keep working
+    total_memory_bytes: float = 0.0
+    device_class: str = ""
 
 
 class FailureDetector:
@@ -54,6 +57,15 @@ class FailureDetector:
         with self._lock:
             self._records[hb.device_id] = hb
             self._fired.discard(hb.device_id)
+
+    def snapshot_records(self) -> dict[DeviceId, HeartbeatRecord]:
+        """Thread-safe shallow copy of the current heartbeat table.
+
+        Consumers (e.g., ProfileOrchestrator) get a stable view without
+        racing against incoming heartbeats.
+        """
+        with self._lock:
+            return dict(self._records)
 
     def mark_failed(self, device_id: DeviceId) -> bool:
         """Immediately mark `device_id` as failed. Returns True if this is the

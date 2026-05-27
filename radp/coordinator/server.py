@@ -100,6 +100,8 @@ class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: i
                 device_id=DeviceId(request.device_id),
                 last_ts_ns=int(request.ts_ns),
                 free_memory_bytes=float(request.free_memory_bytes),
+                total_memory_bytes=float(request.total_memory_bytes),
+                device_class=str(request.device_class),
             )
         )
         return radp_pb2.HeartbeatResponse(ack=True)
