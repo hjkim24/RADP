@@ -6,7 +6,7 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ## 현재 상태 요약
 
-- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 완료** (총 15개 Phase)
+- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 완료** (총 16개 Phase)
 - **단위 테스트 60개 + slow 통합 테스트 14개 모두 통과**
 - ruff ✓ / mypy strict (33 source files) ✓
 - 지원 모델: OPT, LLaMA, Mistral (단일 + sharded safetensors/bin 모두)
@@ -405,6 +405,35 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 ---
 
+## Phase D0 — Proto 확장 (auto-scheduling 기반 작업)
+
+**목표**: 백로그 D 시리즈(프로파일링 기반 자동 결정 흐름)의 토대. 후속 D1~D5가 의존하는 RPC 인터페이스와 메시지 타입을 [radp.proto](radp/common/proto/radp.proto)에 미리 잡아둠. 본 단계는 *인터페이스 계약*만 정의; 핸들러 구현은 D1.
+
+**구현**:
+- **3개 신규 RPC** ([WorkerService](radp/common/proto/radp.proto)에 추가):
+  - `Ping(PingRequest) → PingResponse` — bytes echo. 코디네이터→워커 RTT/대역폭 1차 측정용
+  - `MeasurePeer(MeasurePeerRequest) → MeasurePeerResponse` — 워커가 peer worker의 임시 gRPC client가 돼서 N라운드 ping → bandwidth + latency 산출. 워커↔워커 full-mesh 측정 가능
+  - `ProfileLayers(ProfileLayersRequest) → ProfileLayersResponse` — 모델을 임시 로드해서 [layer_profiler.profile_layers()](radp/profiler/layer_profiler.py) 실행. 결과는 JSON 직렬화된 `list[LayerProfile]`을 `bytes`로 반환
+- **6개 신규 메시지**: `PingRequest/Response`, `MeasurePeerRequest/Response`, `ProfileLayersRequest/Response`
+- **HeartbeatRequest 확장** (field 4-5 추가; 기존 1-3 ID는 보존 → 와이어 호환):
+  - `double total_memory_bytes` — DeviceProfile.total_memory_bytes 자동 채집용
+  - `string device_class` — 예: `"jetson-orin-nano-4gb"` (보드 종류 식별)
+- [scripts/gen_proto.sh](scripts/gen_proto.sh) 실행으로 `radp_pb2.py`, `radp_pb2_grpc.py` 재생성 (gitignored)
+
+**검증 결과**:
+- ruff ✓ / mypy strict (33 source files) ✓
+- 단위 테스트 60개 모두 통과 (회귀 없음 — proto 추가만, 기존 wire format 보존)
+- 새 메시지 6개 import + 인스턴스화 확인
+- `WorkerServiceStub.__init__`에 `Ping`, `MeasurePeer`, `ProfileLayers` 모두 등록 확인
+- HeartbeatRequest를 신규 필드 포함해서 직렬화/역직렬화 정상
+
+**의도된 한계**:
+- 핸들러 본문 없음 — `WorkerServicer`에 새 RPC 메서드를 구현하지 않은 상태에서 호출하면 gRPC `UNIMPLEMENTED` 에러 발생 (D1에서 구현)
+- `ProfileLayersResponse.serialized_profiles`는 `bytes` 그대로 — 추후 LayerProfile 전용 proto 메시지로 더 단단히 타입화 가능 (지금은 JSON 라운드트립으로 충분)
+- HeartbeatRequest의 신규 필드는 기본값 0/"" 처리 — 이전 버전 워커가 보낸 heartbeat도 코디네이터가 받을 수 있음 (proto3 기본 동작)
+
+---
+
 ## Phase 4 — 벤치마크 + 분석 인프라
 
 **목표**: plan.md §6의 실험 시나리오 1~4 측정 가능한 harness + 자동 보고서.
@@ -480,7 +509,7 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 | | 항목 | 내용 | 예상 깊이 |
 |---|---|---|---|
-| **D0** | **Proto 확장** | `WorkerService`에 `Ping`, `MeasurePeer`, `ProfileLayers` 3개 RPC 추가. `HeartbeatRequest`에 `total_memory_bytes`, `device_class` 필드. `bash scripts/gen_proto.sh` 재생성. | 소 (1-2h) |
+| ~~**D0**~~ | ~~**Proto 확장**~~ | **완료** (위 Phase D0 섹션 참조) | — |
 | **D1** | **Worker-side 구현** | (a) `Ping` 에코 핸들러. (b) `MeasurePeer` — 워커가 peer worker의 gRPC client가 돼서 N라운드 ping, bw+lat 산출. (c) `ProfileLayers` — `radp.profiler.layer_profiler.profile_layers()` 호출, 모델 임시 로드/언로드. (d) heartbeat에 total_memory + device_class 포함. | 중 (3-4h) |
 | **D2** | **Coordinator ProfileOrchestrator** | 신규 [radp/coordinator/profile_orchestrator.py](radp/coordinator/profile_orchestrator.py). `wait_for_all_workers()` (heartbeat 대기 + DeviceProfile 수집), `collect_layer_profiles(model_id)` (병렬 `ProfileLayers` RPC), `collect_network_profile()` (full-mesh `MeasurePeer`). | 중 (3-4h) |
 | **D3** | **Coordinator startup 재설계** | server.py 부팅 흐름 변경: cluster.yaml 로드(토폴로지만) → gRPC 시작 → 워커 등록 대기 → ProfileOrchestrator 실행 → `Scheduler(spec).solve_alternating()` → 결과로 워커에 LoadStage/LoadBackup. CLI 플래그 `--schedule-mode={auto,manual}` 추가 (manual은 기존 동작). | 중 (2-3h) |

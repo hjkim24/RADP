@@ -20,6 +20,21 @@ service WorkerService {
 
   // Drop the KV cache for a finished (or aborted) request.
   rpc EvictRequest (EvictRequestRequest) returns (EvictRequestResponse);
+
+  // --- Phase D (profiling-based auto-scheduling) ---------------------------
+
+  // Echo bytes back. Coordinator times the round trip to derive its own
+  // network link to this worker.
+  rpc Ping (PingRequest) returns (PingResponse);
+
+  // Worker becomes a temporary gRPC client of `peer_address` and runs N
+  // ping rounds. Returns the measured bandwidth + latency. The coordinator
+  // uses this for full-mesh worker↔worker network profiling.
+  rpc MeasurePeer (MeasurePeerRequest) returns (MeasurePeerResponse);
+
+  // Run radp.profiler.layer_profiler.profile_layers on this worker against
+  // the named model. Model is loaded temporarily, profiled, and unloaded.
+  rpc ProfileLayers (ProfileLayersRequest) returns (ProfileLayersResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +107,10 @@ message HeartbeatRequest {
   string device_id          = 1;
   double free_memory_bytes  = 2;
   int64  ts_ns              = 3;
+  // --- Phase D additions (sent on every heartbeat; cheap, lets the
+  // coordinator track devices that hot-swap or come back with new specs) ---
+  double total_memory_bytes = 4;   // 0 if unknown
+  string device_class       = 5;   // e.g. "jetson-orin-nano-4gb"; "" if unknown
 }
 
 message HeartbeatResponse {
@@ -114,4 +133,42 @@ message GenerateRequest {
 message GenerateChunk {
   string text = 1;
   bool   done = 2;
+}
+
+// --- Phase D (profiling-based auto-scheduling) -----------------------------
+
+message PingRequest {
+  bytes payload  = 1;   // arbitrary blob; size it to measure bandwidth
+  int64 sent_ns  = 2;   // sender's monotonic timestamp (for one-way attribution)
+}
+message PingResponse {
+  bytes payload  = 1;   // echoed unchanged
+  int64 sent_ns  = 2;   // copy of request.sent_ns
+  int64 echo_ns  = 3;   // server-side monotonic timestamp at processing
+}
+
+message MeasurePeerRequest {
+  string peer_address  = 1;   // e.g., "115.145.158.109:50051"
+  int32  payload_bytes = 2;   // per-round payload size
+  int32  rounds        = 3;   // number of pings to average
+}
+message MeasurePeerResponse {
+  double bandwidth_bps   = 1;
+  double latency_seconds = 2;
+  bool   ok              = 3;
+  string error           = 4;
+}
+
+message ProfileLayersRequest {
+  string model_id   = 1;
+  int32  warmup     = 2;   // 0 → server default
+  int32  repeats    = 3;   // 0 → server default
+  int32  seq_length = 4;   // 0 → server default
+}
+message ProfileLayersResponse {
+  // JSON-encoded list[LayerProfile] (compatible with
+  // radp.profiler.layer_profiler.{save,load}_profile format).
+  bytes  serialized_profiles = 1;
+  bool   ok                  = 2;
+  string error               = 3;
 }
