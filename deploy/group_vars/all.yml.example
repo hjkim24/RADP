@@ -20,6 +20,11 @@ model_id: "facebook/opt-125m"
 model_dtype: "float16"           # float32 / float16 / bfloat16
 model_torch_device: "cuda"        # cpu / cuda
 
+# Reported in worker heartbeats so the coordinator can group/identify
+# heterogeneous hardware (used by Phase D2+ for DeviceProfile inference).
+# Leave empty if all workers are interchangeable.
+device_class: "jetson-orin-nano-4gb"
+
 radp_worker_port: 50051
 radp_coord_port: 50050
 heartbeat_timeout_seconds: 5.0

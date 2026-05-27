@@ -168,10 +168,19 @@ class CoordinatorClient:
                 break
         return chunks
 
-    def heartbeat(self, device_id: DeviceId, free_memory_bytes: float) -> None:
+    def heartbeat(
+        self,
+        device_id: DeviceId,
+        free_memory_bytes: float,
+        *,
+        total_memory_bytes: float = 0.0,
+        device_class: str = "",
+    ) -> None:
         req = radp_pb2.HeartbeatRequest(
             device_id=str(device_id),
             free_memory_bytes=float(free_memory_bytes),
             ts_ns=int(time.time_ns()),
+            total_memory_bytes=float(total_memory_bytes),
+            device_class=device_class,
         )
         self._require_stub().Heartbeat(req)

@@ -22,10 +22,12 @@ class HeartbeatSender:
         coordinator_address: str,
         *,
         interval_seconds: float = 1.0,
+        device_class: str = "",
     ) -> None:
         self.device_id = device_id
         self.coordinator_address = coordinator_address
         self.interval_seconds = interval_seconds
+        self.device_class = device_class
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -56,10 +58,11 @@ class HeartbeatSender:
             self._stop.wait(self.interval_seconds)
 
     def _send_one(self) -> None:
-        free_bytes = self._measure_free_memory()
+        mem = psutil.virtual_memory()
         with CoordinatorClient(self.coordinator_address) as c:
-            c.heartbeat(self.device_id, free_bytes)
-
-    @staticmethod
-    def _measure_free_memory() -> float:
-        return float(psutil.virtual_memory().available)
+            c.heartbeat(
+                self.device_id,
+                free_memory_bytes=float(mem.available),
+                total_memory_bytes=float(mem.total),
+                device_class=self.device_class,
+            )

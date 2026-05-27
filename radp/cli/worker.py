@@ -10,6 +10,7 @@ without long ExecStart arguments.
   --heartbeat-interval / RADP_HEARTBEAT_INTERVAL_S  (default: 1.0)
   --torch-device   / RADP_TORCH_DEVICE      (default: cpu)
   --dtype          / RADP_DTYPE             (default: float32)
+  --device-class   / RADP_DEVICE_CLASS      (default: "" — reported in heartbeat)
 """
 
 from __future__ import annotations
@@ -44,6 +45,9 @@ def _parse_args() -> argparse.Namespace:
         default=os.environ.get("RADP_DTYPE", "float32"),
         choices=["float32", "float16", "bfloat16"],
     )
+    p.add_argument(
+        "--device-class", default=os.environ.get("RADP_DEVICE_CLASS", "")
+    )
     args = p.parse_args()
     if not args.device_id:
         p.error("--device-id or RADP_DEVICE_ID is required")
@@ -60,6 +64,7 @@ def main() -> None:
         heartbeat_interval=args.heartbeat_interval,
         torch_device=args.torch_device,
         dtype=args.dtype,
+        device_class=args.device_class,
     )
     server.start()
 

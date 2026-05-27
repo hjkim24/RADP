@@ -6,8 +6,8 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ## 현재 상태 요약
 
-- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 완료** (총 16개 Phase)
-- **단위 테스트 60개 + slow 통합 테스트 14개 모두 통과**
+- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 + Phase D1 완료** (총 17개 Phase)
+- **단위 테스트 65개 + slow 통합 테스트 15개 모두 통과**
 - ruff ✓ / mypy strict (33 source files) ✓
 - 지원 모델: OPT, LLaMA, Mistral (단일 + sharded safetensors/bin 모두)
 - Mac CPU에서 OPT-125M / SmolLM-135M / SmolLM-1.7B (2-shard) 검증; Jetson은 **Ansible playbook 한 줄로 배포**
@@ -434,6 +434,49 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 ---
 
+## Phase D1 — Worker-side 구현 (Ping / MeasurePeer / ProfileLayers + heartbeat 확장)
+
+**목표**: D0에서 정의한 인터페이스에 실제 핸들러 본문을 채움. 워커가 ① 코디네이터의 echo 요청에 응답, ② peer worker의 gRPC client가 돼서 링크 측정, ③ 임시 모델 로드해서 layer 프로파일링, ④ 매 heartbeat에 total_memory + device_class를 함께 보고하게 만듦.
+
+**구현**:
+- **Ping handler** ([radp/worker/server.py](radp/worker/server.py)): payload + sent_ns 그대로 echo + 서버 측 `time.monotonic_ns()` 추가
+- **MeasurePeer handler + 새 모듈** [radp/worker/peer_measurer.py](radp/worker/peer_measurer.py):
+  - 워커가 peer의 임시 gRPC client (insecure_channel + WorkerServiceStub)
+  - 작은 payload(64B) `rounds`회 + 큰 payload(`payload_bytes`) `rounds`회 → 양쪽 median RTT
+  - **latency** = small_RTT_median / 2 (양방향 고정 오버헤드)
+  - **bandwidth** = `payload_bytes / max((big_median - small_median) / 2, ε)` — 큰 payload의 *추가* 전송 시간만으로 처리량 산출 (latency 영향 제거)
+  - 실패 시 gRPC error를 `MeasurePeerResponse(ok=False, error=...)`로 surface
+- **ProfileLayers handler**:
+  - `radp.profiler.layer_profiler.profile_layers()` 호출 (worker의 device_id/torch_device/dtype 사용)
+  - request의 warmup/repeats/seq_length는 0이면 default, >0이면 override
+  - 결과 `list[LayerProfile]`을 inline JSON 인코딩 → `bytes`로 반환 ([layer_profiler.save_profile](radp/profiler/layer_profiler.py)과 동일 스키마)
+- **HeartbeatSender 확장** ([radp/worker/heartbeat_sender.py](radp/worker/heartbeat_sender.py)):
+  - 생성자에 `device_class: str = ""` 추가
+  - `_send_one`이 `psutil.virtual_memory()`로 total + available 둘 다 한 번에 수집 → `CoordinatorClient.heartbeat()`에 전부 전달
+- **CoordinatorClient.heartbeat()** ([radp/common/protocol.py](radp/common/protocol.py)): `total_memory_bytes` + `device_class` keyword args 추가
+- **WorkerServer 생성자**: `device_class: str = ""` 추가, HeartbeatSender로 전달
+- **CLI worker** ([radp/cli/worker.py](radp/cli/worker.py)): `--device-class` flag + `RADP_DEVICE_CLASS` 환경변수 fallback
+- **Ansible 통합**:
+  - [deploy/roles/radp-worker/templates/radp-worker.service.j2](deploy/roles/radp-worker/templates/radp-worker.service.j2)에 `Environment=RADP_DEVICE_CLASS={{ device_class | default('') }}` 줄 추가
+  - [deploy/group_vars/all.yml.example](deploy/group_vars/all.yml.example)에 `device_class: "jetson-orin-nano-4gb"` 변수 추가
+
+**검증 결과** ([tests/test_worker_d1.py](tests/test_worker_d1.py)):
+- ✓ `test_ping_echoes_payload_and_sent_ns` — payload + sent_ns 그대로 보존
+- ✓ `test_measure_peer_between_workers` — 양방향 측정, localhost에서 bw > 10MB/s
+- ✓ `test_measure_peer_invalid_payload_raises` — payload_bytes ≤ 64인 입력 검증
+- ✓ `test_measure_peer_rpc_failure_surfaces` — 닫힌 포트 측정 시 ok=False + error 메시지
+- ✓ `test_heartbeat_request_supports_new_fields` — proto 직렬화 라운드트립
+- ✓ (slow) `test_profile_layers_returns_valid_json` — OPT-125M 12개 layer profile JSON 정상
+- ruff ✓ / mypy strict (34 source files) ✓ / 단위 테스트 65개 + slow 15개 모두 통과 (회귀 없음)
+
+**의도된 한계**:
+- 코디네이터의 `_CoordinatorServicer.Heartbeat`는 아직 `total_memory_bytes`/`device_class`를 읽지 않음 — D2의 `ProfileOrchestrator`가 사용하게 될 때 plumbing 추가
+- `ProfileLayers`는 모델을 매 호출마다 새로 로드 — 코디네이터가 같은 모델을 여러 번 profile 요청해도 재사용 X. D3에서 캐싱 검토 가능
+- `MeasurePeer`의 측정 방식은 in-process worker에 대해선 정확하지만, 실 LAN에서 매우 빠른 링크(>10Gbps)는 transit ≤ 0이 돼 bandwidth가 ∞로 떨어질 수 있음 — 이런 경우는 "병목 아님" 신호로 해석 (scheduler에서 T_comm ≈ latency만 됨)
+- `device_class` 자동 감지 없음 — 사용자가 group_vars나 env var로 명시. JetPack `/etc/nv_tegra_release` 파싱 같은 자동화는 별도 작업
+
+---
+
 ## Phase 4 — 벤치마크 + 분석 인프라
 
 **목표**: plan.md §6의 실험 시나리오 1~4 측정 가능한 harness + 자동 보고서.
@@ -510,7 +553,7 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 | | 항목 | 내용 | 예상 깊이 |
 |---|---|---|---|
 | ~~**D0**~~ | ~~**Proto 확장**~~ | **완료** (위 Phase D0 섹션 참조) | — |
-| **D1** | **Worker-side 구현** | (a) `Ping` 에코 핸들러. (b) `MeasurePeer` — 워커가 peer worker의 gRPC client가 돼서 N라운드 ping, bw+lat 산출. (c) `ProfileLayers` — `radp.profiler.layer_profiler.profile_layers()` 호출, 모델 임시 로드/언로드. (d) heartbeat에 total_memory + device_class 포함. | 중 (3-4h) |
+| ~~**D1**~~ | ~~**Worker-side 구현**~~ | **완료** (위 Phase D1 섹션 참조) | — |
 | **D2** | **Coordinator ProfileOrchestrator** | 신규 [radp/coordinator/profile_orchestrator.py](radp/coordinator/profile_orchestrator.py). `wait_for_all_workers()` (heartbeat 대기 + DeviceProfile 수집), `collect_layer_profiles(model_id)` (병렬 `ProfileLayers` RPC), `collect_network_profile()` (full-mesh `MeasurePeer`). | 중 (3-4h) |
 | **D3** | **Coordinator startup 재설계** | server.py 부팅 흐름 변경: cluster.yaml 로드(토폴로지만) → gRPC 시작 → 워커 등록 대기 → ProfileOrchestrator 실행 → `Scheduler(spec).solve_alternating()` → 결과로 워커에 LoadStage/LoadBackup. CLI 플래그 `--schedule-mode={auto,manual}` 추가 (manual은 기존 동작). | 중 (2-3h) |
 | **D4** | **cluster.yaml 스키마 정리** | auto 모드면 `placement`/`recovery` 필드 생략. `coordinator.schedule_mode`, `coordinator.slo`, `coordinator.profiling.{layer_warmup, layer_repeats, network_payload_bytes, network_rounds}` 신규. [cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2) + group_vars/all.yml 수정. | 소 (1h) |

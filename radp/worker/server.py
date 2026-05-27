@@ -9,7 +9,9 @@ Spawns a HeartbeatSender thread if a coordinator address is provided.
 
 from __future__ import annotations
 
+import json
 import threading
+import time
 from concurrent import futures
 from typing import Any
 
@@ -18,7 +20,9 @@ import grpc
 from radp.common.logging_utils import get_logger
 from radp.common.proto import radp_pb2, radp_pb2_grpc
 from radp.common.types import DeviceId, LayerIdx, RequestId
+from radp.profiler.layer_profiler import profile_layers
 from radp.worker.heartbeat_sender import HeartbeatSender
+from radp.worker.peer_measurer import measure_peer
 from radp.worker.stage_runner import StageRunner
 
 log = get_logger(__name__)
@@ -80,6 +84,69 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
         self._runner.evict_request(RequestId(request.request_id))
         return radp_pb2.EvictRequestResponse(ok=True)
 
+    # ------------------------------------------------------------------
+    # Phase D — profiling-based auto-scheduling
+    # ------------------------------------------------------------------
+
+    def Ping(self, request: Any, context: grpc.ServicerContext) -> Any:
+        return radp_pb2.PingResponse(
+            payload=request.payload,
+            sent_ns=request.sent_ns,
+            echo_ns=time.monotonic_ns(),
+        )
+
+    def MeasurePeer(self, request: Any, context: grpc.ServicerContext) -> Any:
+        try:
+            bandwidth, latency = measure_peer(
+                peer_address=request.peer_address,
+                payload_bytes=int(request.payload_bytes),
+                rounds=int(request.rounds),
+            )
+            return radp_pb2.MeasurePeerResponse(
+                bandwidth_bps=bandwidth,
+                latency_seconds=latency,
+                ok=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.exception("MeasurePeer to %s failed", request.peer_address)
+            return radp_pb2.MeasurePeerResponse(ok=False, error=str(e))
+
+    def ProfileLayers(self, request: Any, context: grpc.ServicerContext) -> Any:
+        try:
+            kwargs: dict[str, Any] = {
+                "dtype": self._runner.dtype,
+                "torch_device": self._runner.torch_device,
+            }
+            if request.warmup > 0:
+                kwargs["warmup"] = int(request.warmup)
+            if request.repeats > 0:
+                kwargs["repeat"] = int(request.repeats)
+            if request.seq_length > 0:
+                kwargs["seq_length"] = int(request.seq_length)
+            profiles = profile_layers(
+                model_id=request.model_id,
+                device_id=self._runner.device_id,
+                **kwargs,
+            )
+            payload = json.dumps(
+                [
+                    {
+                        "layer_idx": int(p.layer_idx),
+                        "memory_bytes": p.memory_bytes,
+                        "compute_time": {
+                            str(k): float(v) for k, v in p.compute_time.items()
+                        },
+                    }
+                    for p in profiles
+                ]
+            ).encode("utf-8")
+            return radp_pb2.ProfileLayersResponse(
+                serialized_profiles=payload, ok=True
+            )
+        except Exception as e:  # noqa: BLE001
+            log.exception("ProfileLayers(%s) failed", request.model_id)
+            return radp_pb2.ProfileLayersResponse(ok=False, error=str(e))
+
 
 class WorkerServer:
     """gRPC server hosting a StageRunner + optional heartbeat publisher."""
@@ -94,6 +161,7 @@ class WorkerServer:
         torch_device: str = "cpu",
         dtype: str = "float32",
         max_workers: int = 16,
+        device_class: str = "",
     ) -> None:
         self.device_id = device_id
         self.bind_address = bind_address
@@ -112,6 +180,7 @@ class WorkerServer:
                 device_id=device_id,
                 coordinator_address=coordinator_address,
                 interval_seconds=heartbeat_interval,
+                device_class=device_class,
             )
 
     def start(self) -> None:
