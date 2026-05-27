@@ -6,8 +6,8 @@ PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md
 
 ## 현재 상태 요약
 
-- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 ~ D3 완료** (총 19개 Phase)
-- **단위 테스트 75개 + slow 통합 테스트 17개 모두 통과**
+- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 ~ D4 완료** (총 20개 Phase)
+- **단위 테스트 79개 + slow 통합 테스트 17개 모두 통과**
 - ruff ✓ / mypy strict (33 source files) ✓
 - 지원 모델: OPT, LLaMA, Mistral (단일 + sharded safetensors/bin 모두)
 - Mac CPU에서 OPT-125M / SmolLM-135M / SmolLM-1.7B (2-shard) 검증; Jetson은 **Ansible playbook 한 줄로 배포**
@@ -554,6 +554,42 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 ---
 
+## Phase D4 — cluster.yaml + group_vars 스키마 정리
+
+**목표**: D3가 도입한 `schedule_mode` + SLO + profiling 파라미터를 Ansible 렌더 흐름에 흡수. auto 모드면 cluster.yaml에서 placement/recovery 줄이 아예 빠지고, manual 모드면 profiling 줄이 빠지는 — *모드별로 *필요한 키만 들어간 깔끔한 결과물*을 만들기.
+
+**구현**:
+- **[cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2)** 재설계:
+  - `coordinator` 블록에 `schedule_mode`, `activation_bytes`, `slo.{ttft_seconds, tbt_seconds}` 항상 렌더
+  - `{% if schedule_mode == 'auto' %}` 가드로 `coordinator.profiling.{layer_warmup, layer_repeats, layer_seq_length, network_payload_bytes, network_rounds, wait_timeout_seconds}` 추가
+  - `{% if schedule_mode == 'manual' %}` 가드로 `placement` / `recovery` 블록 렌더 (auto면 통째로 omit)
+  - `default()` 필터로 변수 없을 때 sensible default
+- **[group_vars/all.yml.example](deploy/group_vars/all.yml.example)** 재구성:
+  - 신규 섹션 "Scheduling mode (Phase D3)" — `schedule_mode`, `slo_*`, `activation_bytes`, `profiling_*` 변수
+  - `cluster_placement` / `cluster_recovery`를 "Manual placement / recovery" 섹션으로 옮기고 "auto 모드면 제거 가능" 주석
+  - 권장 기본값 `schedule_mode: "auto"`
+- **[group_vars/all.yml](deploy/group_vars/all.yml)** (gitignored 실 사용 파일) — auto로 flip, profiling/SLO 변수 추가. 기존 ring 백업은 그대로 두고 "auto 모드에서는 무시됨" 주석 처리
+- **[deploy/README.md](deploy/README.md)** — "스케줄링 모드" 섹션 신설, auto vs manual 비교표, auto 모드 부팅 로그 예시
+- **계약 검증 테스트** [tests/test_cluster_yaml_template.py](tests/test_cluster_yaml_template.py):
+  - 실제 `cluster.yaml.j2`를 Jinja2로 렌더 → 임시 파일에 쓰고 `CoordinatorConfig.from_yaml`로 파싱 → 모든 필드 정확
+  - auto 모드 yaml은 `placement:` / `recovery:` 키가 *없음* 확인
+  - manual 모드 yaml은 `profiling:` 키가 *없음* 확인 (SLO는 모드 공유라 항상 있음)
+
+**검증 결과**:
+- ✓ `test_template_renders_auto_mode` — slo/profiling/activation_bytes 모두 라운드트립
+- ✓ `test_template_renders_manual_mode` — placement/recovery 정상 파싱
+- ✓ `test_template_omits_placement_block_in_auto_mode`
+- ✓ `test_template_omits_profiling_block_in_manual_mode`
+- ✓ `ansible-playbook --syntax-check playbook.yml` 통과
+- ruff ✓ / mypy strict (35 source files) ✓ / 단위 테스트 79개 + slow 17개 모두 통과 (회귀 없음)
+
+**의도된 한계**:
+- 사용자 `group_vars/all.yml`은 gitignored라 본인 파일 직접 수정해야 함. example은 갱신됨
+- auto 모드에서도 `cluster_placement`/`cluster_recovery`를 yaml에 둘 수 있음 (silently 무시) — 명시적 경고는 D5에서 검토 가능
+- 모드별 변수 그룹화는 모두 평면 변수로 — `slo: { ttft: ... }` 같은 nested var 구조도 가능했지만 group_vars 평면화가 Ansible 관용 (override 쉬움)
+
+---
+
 ## Phase 4 — 벤치마크 + 분석 인프라
 
 **목표**: plan.md §6의 실험 시나리오 1~4 측정 가능한 harness + 자동 보고서.
@@ -633,7 +669,7 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 | ~~**D1**~~ | ~~**Worker-side 구현**~~ | **완료** (위 Phase D1 섹션 참조) | — |
 | ~~**D2**~~ | ~~**Coordinator ProfileOrchestrator**~~ | **완료** (위 Phase D2 섹션 참조) | — |
 | ~~**D3**~~ | ~~**Coordinator startup 재설계**~~ | **완료** (위 Phase D3 섹션 참조) | — |
-| **D4** | **cluster.yaml 스키마 정리** | auto 모드면 `placement`/`recovery` 필드 생략. `coordinator.schedule_mode`, `coordinator.slo`, `coordinator.profiling.{layer_warmup, layer_repeats, network_payload_bytes, network_rounds}` 신규. [cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2) + group_vars/all.yml 수정. | 소 (1h) |
+| ~~**D4**~~ | ~~**cluster.yaml 스키마 정리**~~ | **완료** (위 Phase D4 섹션 참조) | — |
 | **D5** | **(선택) 주기적 재측정 + 동적 재배치** | N분마다 ProfileOrchestrator 재실행 → diff 임계 이상이면 scheduler 재호출 → 워커 drain/swap. A3(Online 재배치)와 사실상 통합 가능. | 큼 |
 
 **검증 마일스톤**:

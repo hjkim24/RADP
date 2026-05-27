@@ -8,12 +8,27 @@ coordinator:
   bind: "0.0.0.0:{{ radp_coord_port }}"
   heartbeat_timeout_seconds: {{ heartbeat_timeout_seconds }}
   heartbeat_tick_seconds: {{ heartbeat_tick_seconds }}
+  schedule_mode: {{ schedule_mode | default('manual') }}
+  activation_bytes: {{ activation_bytes | default(1048576) }}
+  slo:
+    ttft_seconds: {{ slo_ttft_seconds | default(0.3) }}
+    tbt_seconds: {{ slo_tbt_seconds | default(0.1) }}
+{% if (schedule_mode | default('manual')) == 'auto' %}
+  profiling:
+    layer_warmup: {{ profiling_layer_warmup | default(1) }}
+    layer_repeats: {{ profiling_layer_repeats | default(3) }}
+    layer_seq_length: {{ profiling_layer_seq_length | default(32) }}
+    network_payload_bytes: {{ profiling_network_payload_bytes | default(1048576) }}
+    network_rounds: {{ profiling_network_rounds | default(10) }}
+    wait_timeout_seconds: {{ profiling_wait_timeout_seconds | default(60.0) }}
+{% endif %}
 
 workers:
 {% for h in groups['workers'] %}
   - id: {{ hostvars[h]['device_id'] }}
     address: "{{ hostvars[h]['ansible_host'] }}:{{ radp_worker_port }}"
 {% endfor %}
+{% if (schedule_mode | default('manual')) == 'manual' %}
 
 placement:
 {% for stage in cluster_placement %}
@@ -26,3 +41,4 @@ recovery:
 {% for j, k in cluster_recovery.items() %}
   {{ j }}: {{ k }}
 {% endfor %}
+{% endif %}

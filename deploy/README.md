@@ -13,7 +13,34 @@ cp group_vars/all.yml.example group_vars/all.yml  && $EDITOR group_vars/all.yml
 
 `inventory.ini`에 각 Jetson의 IP + `device_id`, 코디네이터 호스트 1개를 채워 넣습니다. `group_vars/all.yml`에서:
 - `jetson_torch_wheel_url`: NVIDIA 인덱스에서 본인 JetPack 버전 wheel URL (예시는 파일에 주석)
-- `model_id`, `cluster_placement`, `cluster_recovery`
+- `model_id`, `model_dtype`, `model_torch_device`
+- `schedule_mode`: 아래 참고
+- (manual 모드 한정) `cluster_placement`, `cluster_recovery`
+
+## 스케줄링 모드 (Phase D3)
+
+| Mode | 동작 | yaml에 적는 것 |
+|---|---|---|
+| `auto` (권장) | 코디네이터가 부팅 시 모든 워커에 `ProfileLayers` + 워커-워커 `MeasurePeer`를 돌려 layer/network/device profile을 수집 → Recovery-Aware DP로 Ψ + R 자동 결정 | `schedule_mode: auto` + `slo_*` + `profiling_*` 변수만. `cluster_placement`/`cluster_recovery`는 무시됨 (생략 가능) |
+| `manual` | 사용자가 적은 placement/recovery를 그대로 LoadStage | `schedule_mode: manual` + `cluster_placement` + `cluster_recovery` (둘 다 필수) |
+
+auto 모드 부팅 시 코디네이터 로그에 다음이 순서대로 찍힘:
+```
+coordinator listening on 0.0.0.0:50050 (schedule_mode=auto)
+auto-scheduling: waiting for 5 workers (timeout=60s)
+all 5 workers heartbeated: ['jetson-1', ..., 'jetson-5']
+auto-scheduling: profiling layers (facebook/opt-125m)
+layer profiles merged: 12 layers, 5 devices
+auto-scheduling: profiling network
+network profile built: 20/20 pairs successful
+auto-scheduling: solving DP (devices=5, layers=12)
+auto-scheduling: solution max_stage_time=0.0820s converged=True iterations=2
+  placement: jetson-1 ← layers[1..3]
+  ...
+  recovery:  jetson-1 → jetson-2 (backup)
+  ...
+deploying placement to 5 workers
+```
 
 ## 배포
 

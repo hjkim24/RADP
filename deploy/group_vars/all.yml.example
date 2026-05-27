@@ -15,7 +15,7 @@ radp_install_dir: "/home/{{ ansible_user }}/radp"
 # NVIDIA NGC container). The play will detect+warn.
 jetson_torch_wheel_url: ""
 
-# ---- Model + cluster topology -----------------------------------------------
+# ---- Model + device ---------------------------------------------------------
 model_id: "facebook/opt-125m"
 model_dtype: "float16"           # float32 / float16 / bfloat16
 model_torch_device: "cuda"        # cpu / cuda
@@ -25,14 +25,37 @@ model_torch_device: "cuda"        # cpu / cuda
 # Leave empty if all workers are interchangeable.
 device_class: "jetson-orin-nano-4gb"
 
+# ---- Ports + heartbeat ------------------------------------------------------
 radp_worker_port: 50051
 radp_coord_port: 50050
 heartbeat_timeout_seconds: 5.0
 heartbeat_tick_seconds: 1.0
 
-# Pipeline placement — start/end are 1-based, inclusive.
-# Edit to match your model's layer count and fleet size.
-# (OPT-125M has 12 layers; the example below splits 4-4-4 across 3 workers.)
+# ---- Scheduling mode (Phase D3) --------------------------------------------
+# "auto"   — coordinator profiles the fleet at startup (ProfileLayers +
+#            MeasurePeer) and computes Ψ + R via the Recovery-Aware DP.
+#            cluster_placement / cluster_recovery below are IGNORED.
+# "manual" — you set cluster_placement + cluster_recovery yourself; the
+#            coordinator deploys exactly what you specify.
+schedule_mode: "auto"
+
+# SLO bounds used as DP constraints (auto mode only; ignored in manual)
+slo_ttft_seconds: 0.3
+slo_tbt_seconds: 0.1
+activation_bytes: 1048576    # rough per-stage activation size in bytes
+
+# Profiling knobs (auto mode only). Defaults are sensible for OPT-style
+# models on edge hardware; tune up if you want tighter measurement.
+profiling_layer_warmup: 1
+profiling_layer_repeats: 3
+profiling_layer_seq_length: 32
+profiling_network_payload_bytes: 1048576
+profiling_network_rounds: 10
+profiling_wait_timeout_seconds: 60.0
+
+# ---- Manual placement / recovery -------------------------------------------
+# Only used when schedule_mode == "manual". You can remove these blocks
+# entirely in auto mode. Example below splits 12 layers across 3 workers.
 cluster_placement:
   - device: jetson-1
     start: 1
@@ -44,7 +67,6 @@ cluster_placement:
     start: 9
     end: 12
 
-# Recovery table — each j's single backup target (Phase 3).
 cluster_recovery:
   jetson-1: jetson-2
   jetson-2: jetson-3
