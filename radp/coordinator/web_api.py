@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from radp.common.logging_utils import get_logger
+from radp.common.types import DeviceId
 
 if TYPE_CHECKING:
     from radp.coordinator.server import CoordinatorServer
@@ -48,6 +49,10 @@ class _GenerateRequest(BaseModel):
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
     seed: Optional[int] = None  # noqa: UP045
     eos_token_id: Optional[int] = None  # noqa: UP045
+
+
+class _FailureRequest(BaseModel):
+    device_id: str
 
 log = get_logger(__name__)
 
@@ -196,6 +201,70 @@ def make_app(server: CoordinatorServer) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/api/inject_failure")
+    def post_inject_failure(req: _FailureRequest) -> Any:
+        """Simulate a worker failure by adding the device to the gateway's
+        `_dead` set and rebuilding the execution plan.
+
+        Notes:
+          * The remote worker process is NOT killed — this is purely a
+            routing-side simulation. The next decode step on a victim stage
+            will route to the backup per R, exactly as a real gRPC failure
+            would after mark_dead. Reversible via /api/revive_device.
+          * If the baseline has R = {} for this device, the next Generate
+            attempt will surface a NoRecoveryError as an SSE error frame —
+            that IS the demo's "catastrophic baseline" scenario.
+        """
+        gw = server.gateway
+        if gw is None:
+            return JSONResponse(
+                {"detail": "gateway not ready"}, status_code=503
+            )
+        try:
+            changed = gw.mark_dead(DeviceId(req.device_id))
+        except Exception as e:  # NoRecoveryError or other
+            return JSONResponse(
+                {"detail": f"mark_dead failed: {e}",
+                 "device_id": req.device_id}, status_code=409
+            )
+        return {
+            "device_id": req.device_id,
+            "changed": changed,
+            "dead_devices": sorted(str(d) for d in getattr(gw, "_dead", set())),
+        }
+
+    @app.post("/api/revive_device")
+    def post_revive_device(req: _FailureRequest) -> Any:
+        """Reverse of /api/inject_failure — remove device from `_dead` and
+        rebuild the execution plan. See gateway.mark_alive() for KV-cache
+        caveats around mid-stream revives.
+        """
+        gw = server.gateway
+        if gw is None:
+            return JSONResponse(
+                {"detail": "gateway not ready"}, status_code=503
+            )
+        changed = gw.mark_alive(DeviceId(req.device_id))
+        return {
+            "device_id": req.device_id,
+            "changed": changed,
+            "dead_devices": sorted(str(d) for d in getattr(gw, "_dead", set())),
+        }
+
+    @app.post("/api/clear_all_failures")
+    def post_clear_all_failures() -> Any:
+        """Revive every currently-dead device in one call (panic clear)."""
+        gw = server.gateway
+        if gw is None:
+            return JSONResponse(
+                {"detail": "gateway not ready"}, status_code=503
+            )
+        before = sorted(str(d) for d in getattr(gw, "_dead", set()))
+        for d in list(getattr(gw, "_dead", set())):
+            gw.mark_alive(d)
+        after = sorted(str(d) for d in getattr(gw, "_dead", set()))
+        return {"revived": before, "dead_devices_after": after}
 
     if _STATIC_DIR.exists():
         app.mount(

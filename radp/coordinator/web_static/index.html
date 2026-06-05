@@ -134,6 +134,23 @@
   </div>
 
   <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Failure injection
+      <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px;">
+        simulated via gateway.mark_dead — remote worker stays running
+      </span>
+    </h2>
+    <div id="failure-controls" style="display:flex;flex-wrap:wrap;gap:6px;">loading…</div>
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+      <button id="fail-clear-all" style="
+          padding:5px 12px;background:transparent;color:var(--text);border:1px solid var(--border);
+          border-radius:4px;cursor:pointer;font:inherit;font-size:12px;">
+        Revive all
+      </button>
+      <span id="fail-status" style="font-size:12px;color:var(--muted);">no dead devices</span>
+    </div>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
     <h2>Generate (live streaming)</h2>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
       <textarea id="gen-prompt" rows="2" style="
@@ -312,6 +329,37 @@ function render(coordInfo, heartbeats, gateway, cluster) {
     recBody.innerHTML = '<tr><td colspan="3" class="err">empty</td></tr>';
   }
 
+  // Failure injection panel — one toggle button per worker.
+  const failDiv = document.getElementById('failure-controls');
+  const failStatus = document.getElementById('fail-status');
+  if (gateway) {
+    const deadSet = new Set(gateway.dead_devices || []);
+    failDiv.innerHTML = '';
+    for (const w of gateway.workers) {
+      const isDead = deadSet.has(w.id);
+      const btn = document.createElement('button');
+      btn.textContent = isDead
+        ? `↺ revive ${w.id}`
+        : `✕ kill ${w.id}`;
+      btn.dataset.deviceId = w.id;
+      btn.dataset.action = isDead ? 'revive' : 'kill';
+      btn.style.cssText = `
+        padding:5px 10px;border-radius:4px;cursor:pointer;font:inherit;font-size:12px;
+        border:1px solid ${isDead ? 'var(--red)' : 'var(--border)'};
+        background:${isDead ? 'rgba(248,81,73,0.15)' : 'transparent'};
+        color:${isDead ? 'var(--red)' : 'var(--text)'};`;
+      btn.addEventListener('click', onFailureToggle);
+      failDiv.appendChild(btn);
+    }
+    if (deadSet.size === 0) {
+      failStatus.textContent = 'no dead devices';
+      failStatus.style.color = 'var(--muted)';
+    } else {
+      failStatus.textContent = `dead: ${[...deadSet].join(', ')}`;
+      failStatus.style.color = 'var(--red)';
+    }
+  }
+
   // Status line
   const aliveCount = gateway
     ? gateway.workers.filter(w => {
@@ -335,6 +383,42 @@ async function tick() {
 
 tick();
 setInterval(tick, POLL_MS);
+
+// ───────────────────────────── Failure injection ──────────────────────────
+
+async function onFailureToggle(ev) {
+  const btn = ev.currentTarget;
+  const deviceId = btn.dataset.deviceId;
+  const action = btn.dataset.action;
+  const endpoint = action === 'kill' ? '/api/inject_failure' : '/api/revive_device';
+  btn.disabled = true;
+  btn.style.opacity = '0.5';
+  try {
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId }),
+    });
+    if (!r.ok) {
+      const detail = await r.json().catch(() => ({}));
+      console.warn('failure toggle rejected:', detail);
+      document.getElementById('fail-status').textContent =
+        `${endpoint} failed: ${detail.detail || r.statusText}`;
+      document.getElementById('fail-status').style.color = 'var(--red)';
+    }
+  } catch (e) {
+    console.error('failure toggle error', e);
+  } finally {
+    // Force a tick so the panel reflects the new dead set immediately,
+    // without waiting for the next poll cycle.
+    tick();
+  }
+}
+
+document.getElementById('fail-clear-all').addEventListener('click', async () => {
+  await fetch('/api/clear_all_failures', { method: 'POST' });
+  tick();
+});
 
 // ───────────────────────────── Generate panel ─────────────────────────────
 

@@ -152,6 +152,33 @@ class RequestGateway:
         log.warning("execution plan updated; dead=%s", sorted(self._dead))
         return True
 
+    def mark_alive(self, device_id: DeviceId) -> bool:
+        """Reverse of mark_dead — remove the device from `_dead` and rebuild
+        the execution plan with the new (smaller) dead set.
+
+        Used by the web "revive" control to undo a simulated failure. Returns
+        True if the device was actually in the dead set (state changed),
+        False if it was already alive.
+
+        Caveat for mid-stream revives: the device's KV cache won't reflect
+        any decode steps the gateway routed onto the backup while it was
+        dead, so subsequent tokens generated via the revived device may
+        diverge from what the same prompt would produce on a fresh prefill.
+        Use between requests for a clean reset.
+        """
+        with self._plan_lock:
+            if device_id not in self._dead:
+                return False
+            self._dead.discard(device_id)
+            # Rebuilding with a strictly smaller dead set can never raise
+            # NoRecoveryError (if the previous plan was viable, this one is
+            # at least as viable), so we don't try/except.
+            self._execution_plan = build_execution_plan(
+                self.placement, self.recovery, self._dead
+            )
+        log.info("device revived; dead=%s", sorted(self._dead))
+        return True
+
     def current_plan(self) -> Placement:
         with self._plan_lock:
             return list(self._execution_plan)
