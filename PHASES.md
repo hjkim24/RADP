@@ -1045,6 +1045,66 @@ ours recovery: mean **678 ms**, p50 **692 ms**, p95 **726 ms** (n=3).
 
 ---
 
+## Phase EXP-D2.1 — N=3 통계 보강 (7-worker 3-tier, on-6 합류)
+
+**목표**: EXP-D2의 N=1 failure trial은 통계 신뢰도가 약함. on-6가 OS 재부팅으로 자체 회복했으니 fleet 다시 7-worker로 확장하고 N=3 failure trial로 페이퍼 클레임 정량 확정.
+
+**구현**:
+- on-6 health check (ping + ssh + uptime 2시간 = 재부팅 흔적 + 디스크/메모리 정상) → fleet 합류, CUDA 모드 유지
+- ao-1은 디스크 100% (이전 934 MB가 0 byte로 더 줄어듦, bstarcom의 team_quant 21 GB 정리 없이는 사용 불가) → 보류
+- coord 재시작 → 새 auto_schedule (7 worker, 3 CUDA Nano + 1 AGX CPU + 3 Nano CPU)
+- N=3 failure trial × 2 baseline (greedy / ours) — 정상 운영 + 회복 모두 측정
+
+**검증 결과** (victim=ao-2, normal 10 req × 30 tok, failure 3 trials × 60 tok, kill_after 15, 2026-06-06):
+
+| Metric | greedy | **ours** | Δ |
+|---|---|---|---|
+| Normal TBT p50 | 302.3 ms | **282.6 ms** | **-6.5%** |
+| Normal TBT p95 | 366.0 ms | 352.0 ms | -3.8% |
+| Normal TBT p99 | 407.8 ms | 389.1 ms | -4.6% |
+| Normal TTFT p50 | 524.9 ms | 519.8 ms | -1.0% (tie) |
+| Throughput mean | 3.14 tok/s | **3.40 tok/s** | **+8.3%** |
+| Failure result | **3/3 catastrophic** | **3/3 graceful** | binary |
+| Tokens emitted (failure) | 17, 17, 17 (perfect consistency) | 60/60 × 3 | |
+| **Recovery step latency** | N/A | mean **617 ms**, p50 **600**, p95 **670** | tight |
+| Recovery range | N/A | 573 - 678 ms | spread 105 ms (small variance) |
+| Spike vs pre-p50 | N/A | mean +329 ms (**2.16×**) | |
+
+각 cell의 n=300 TBT 샘플 (10 request × 30 token). 결과 JSON: [experiments/results/a3b_opt350m_3tier_n3.json](experiments/results/a3b_opt350m_3tier_n3.json)
+
+**Placement 비교**:
+```
+greedy : on-6[1-8]    on-3[9]      on-1[10-15]  ao-2[16]  on-5[17]  on-4[18]  on-2[19-24]
+         8 layer       1            6            1         1         1         6
+         (CUDA 3 노드 분산: 8+6+6 = 20 layer)
+
+ours   : on-6[1-16]   on-3[17]     on-1[18-20]  ao-2[21]  on-5[22]  on-4[23]  on-2[24]
+         16 layer      1            3            1         1         1         1
+         (CUDA 1 노드 몰빵: on-6에 16 layer, 다른 CUDA 3+1)
+```
+
+**핵심 발견**:
+
+1. **DP가 라이브에서 일관되게 greedy 이김** — N=3에서도 -6.5% TBT 유지. EXP-D2의 -8.4%와 같은 방향, 신뢰도 ↑
+2. **회복 latency 분포가 매우 tight**: range 573-678ms (105ms spread), p95 670ms < 1초. 페이퍼에서 "회복이 SLO 안 망가뜨림" 클레임 가능
+3. **Catastrophic 패턴 완벽 일관**: greedy의 모든 trial에서 정확히 17 tokens 후 사망 (kill_after 15 + in-flight 2). 시스템 결정성 강한 증거
+4. **DP의 *stage concentration*이 라이브 우위 원천**: on-6에 16 layer 몰아주고 다른 CUDA에 3+1+1 → pipeline transition 비용 절감 (greedy의 분산보다 효율적). 알고리즘 측에선 둘 다 floor=42ms로 tie였지만 실측은 다름
+
+**Cleanup race condition 수정 검증**:
+- 마지막 trial 후 cleanup이 worker restart → heartbeat 도착 대기 → revive_device 순서로 작동
+- 로그: `waited for fresh heartbeat: ok=True` → `gateway revive: dead_devices=[]` → 클러스터 정상 종료 상태 ✓
+- 이전 EXP-D2에서 본 0.5초 후 재-dead 문제 재현 안 됨
+
+**페이퍼 메시지 (확정)**:
+> "On a 3-tier heterogeneous edge cluster (3 CUDA Nano + 1 CPU AGX + 3 CPU Nano, 24-layer OPT-350M), Recovery-Aware DP achieves **6.5% lower median TBT** (282.6 vs 302.3 ms) and **8.3% higher throughput** (3.40 vs 3.14 tok/s) than the throughput-weighted greedy heuristic in normal operation, with **n=300 token samples per condition**. Under worker failure, ours preserves **all 180 tokens across 3 trials** (60/60 × 3) at a tight recovery cost of **600 ms median (95th-percentile 670 ms)**, while greedy loses **100% of tokens** beyond the 17-token in-flight buffer due to its R={} design. The algorithmic advantage and recovery advantage stem from the same R-Ψ joint optimization — and the live-measurement TBT gap reverses the trend (greedy faster) observed under the previously-broken weight loader in EXP-D1."
+
+**의도된 한계**:
+- 단일 victim (ao-2) — 7-worker 다른 victim들(on-1, on-2, on-6, CUDA 큰 stage)의 회복 비용은 별도 sweep 필요
+- ao-1은 여전히 fleet 밖 (디스크 문제) — 페이퍼 fleet 묘사에서 "7 of 8 workers" 명시 필요
+- 3 CPU Nano는 인위적 강제 (EXP-D2 한계와 동일)
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
