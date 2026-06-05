@@ -42,3 +42,6 @@ logs/
 deploy/inventory.ini
 deploy/group_vars/all.yml
 .venv-*/
+
+# Generated artifacts
+experiments/REPORT.html
