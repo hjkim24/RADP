@@ -133,11 +133,15 @@
     state: present
   tags: [install, update]
 
-- name: Generate gRPC stubs (idempotent — script only writes if missing)
+# Always regenerate — protoc is deterministic, so re-running is a no-op
+# when radp.proto is unchanged. The previous `creates:` guard skipped this
+# step on hosts that already had radp_pb2.py from an older proto source,
+# silently leaving them on a stale schema (missed total_memory_bytes etc).
+- name: Generate gRPC stubs
   ansible.builtin.command: "{{ radp_install_dir }}/.venv/bin/python -m grpc_tools.protoc -I radp/common/proto --python_out=radp/common/proto --grpc_python_out=radp/common/proto radp/common/proto/radp.proto"
   args:
     chdir: "{{ radp_install_dir }}"
-    creates: "{{ radp_install_dir }}/radp/common/proto/radp_pb2.py"
+  changed_when: false
   tags: [install, update]
 
 - name: Patch generated stub for package-relative import

@@ -104,12 +104,20 @@ class OPTArchitecture:
         past_length: int,
         aux: dict[str, nn.Module],
     ) -> torch.Tensor:
-        out: Any = block(
-            hidden,
-            attention_mask=attention_mask,
-            past_key_values=cache,
-            use_cache=True,
-        )
+        # transformers 4.x OPTDecoderLayer expects `past_key_value` (singular);
+        # 5.x renamed it to `past_key_values` (plural). Detect at call site so
+        # the same radp build works against either transformers major.
+        import inspect
+        sig = inspect.signature(block.forward)
+        kwargs: dict[str, Any] = {
+            "attention_mask": attention_mask,
+            "use_cache": True,
+        }
+        if "past_key_values" in sig.parameters:
+            kwargs["past_key_values"] = cache
+        elif "past_key_value" in sig.parameters:
+            kwargs["past_key_value"] = cache
+        out: Any = block(hidden, **kwargs)
         return out[0] if isinstance(out, tuple) else out  # type: ignore[no-any-return]
 
 
@@ -179,15 +187,22 @@ class _RoPEArchitecture:
         )
         position_ids = positions.unsqueeze(0)  # [1, seq_len]
         position_embeddings = aux["rotary_emb"](hidden, position_ids)
-        out: Any = block(
-            hidden,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=cache,
-            use_cache=True,
-            cache_position=positions,
-            position_embeddings=position_embeddings,
-        )
+        # Same plural/singular dance as OPT — accept whichever the installed
+        # transformers actually wants.
+        import inspect
+        sig = inspect.signature(block.forward)
+        kwargs: dict[str, Any] = {
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+            "use_cache": True,
+            "cache_position": positions,
+            "position_embeddings": position_embeddings,
+        }
+        if "past_key_values" in sig.parameters:
+            kwargs["past_key_values"] = cache
+        elif "past_key_value" in sig.parameters:
+            kwargs["past_key_value"] = cache
+        out: Any = block(hidden, **kwargs)
         return out[0] if isinstance(out, tuple) else out  # type: ignore[no-any-return]
 
 

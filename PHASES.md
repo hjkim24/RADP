@@ -337,6 +337,29 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 - ao-2의 JP5→JP6 업그레이드는 NVIDIA SDK Manager + 호스트 PC (또는 ao-1을 임시 호스트로 활용) 필요. 미완 상태에선 ao-2도 CPU torch + python3.9로 운영 가능 (단 worker로서 성능 저하)
 - systemd 서비스 시작 + end-to-end 추론 (장애 시나리오 포함) 검증은 전체 함대 배포 후 진행 예정
 
+**End-to-end 시스템 통합 검증 (2026-06-05)**:
+
+함대 (7 워커 + 1 코디네이터)에 `ansible-playbook playbook.yml --tags config,service` 한 번에 systemd 유닛 렌더 + 시동. 모든 8 호스트 active. 통합 과정에서 발견·픽스한 4건:
+
+1. **transformers 5.x ↔ NVIDIA Jetson torch 2.5.0a0 비호환**:
+   - transformers 5.x가 `torch.float8_e8m0fnu` 사용 (torch 2.7+)
+   - transformers 4.51+이 `check_torch_load_is_safe()` (torch 2.6+) 강제 (CVE-2025-32434)
+   - → `pyproject.toml`에 `transformers>=4.40,<4.51`로 핀해서 양쪽 다 회피. transformers 4.50.3로 수렴.
+2. **OPTDecoderLayer.forward() kwarg 이름 변경**:
+   - transformers 4.x: `past_key_value` (단수). 5.x: `past_key_values` (복수)
+   - `architectures.py`에서 `inspect.signature`로 런타임 분기 → 두 버전 모두 작동
+3. **`creates:` 가드의 부작용으로 proto stub 갱신 안 됨**:
+   - 이전 install에서 만들어진 `radp_pb2.py`가 존재한다는 이유로 새 `radp.proto` 반영 안 됨
+   - → `creates:` 제거 + `changed_when: false`로 항상 regen (protoc 결정적이라 안전)
+4. **SLO `tbt_seconds`가 너무 빡빡**:
+   - 0.1초로는 7 워커 분산 시 max_stage_time 0.125초 초과
+   - → group_vars의 `slo_tbt_seconds: 1.0`, `slo_ttft_seconds: 3.0`로 완화
+
+검증 결과 (코디네이터 로그):
+- 워커 7대 heartbeat 등록 → ProfileLayers (12 layer × 7 device) → MeasurePeer (42/42 pair 성공) → DP 해 (max_stage_time=0.125s, 2 iter 수렴) → 모든 stage LoadStage + 모든 backup LoadBackup → 코디네이터 OPT-125M embed/lm_head 로드 완료
+- **End-to-end Generate RPC** 통과: `"The quick brown fox"` → `" is a good one.\nI've been using it for a while now"`
+- 7 워커 (Orin Nano CUDA × 5 + AGX Orin CUDA × 1 + AGX Orin CPU × 1) + 코디네이터 (AGX Xavier CPU)가 모두 토큰 생성에 참여 → 이종 환경 분산 추론 동작 확인
+
 ---
 
 ## Phase B2 — Sharded safetensors / bin 지원

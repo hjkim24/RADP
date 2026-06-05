@@ -6,7 +6,11 @@ requires-python = ">=3.9"
 readme = "README.md"
 dependencies = [
   "torch>=2.1",
-  "transformers>=4.40",
+  # transformers 5.x calls torch.float8_e8m0fnu (torch 2.7+), but NVIDIA's
+  # Jetson torch wheel ships torch 2.5.0a0 → AttributeError at model load.
+  # transformers 4.51+ also requires torch >= 2.6 for torch.load (CVE-2025-32434).
+  # So pin below 4.51 to support both torch 2.5 (Jetson) and torch 2.8 (PyPI CPU).
+  "transformers>=4.40,<4.51",
   "accelerate",
   "grpcio>=1.60",
   "protobuf>=4.25",
