@@ -355,12 +355,39 @@ def load_stage_blocks(
     reader = _open_weight_reader(weights_loc, torch_device)
     try:
         all_keys = reader.keys()
+        # HF checkpoints for the same model family don't always agree on
+        # whether the state dict keys start with "model." — opt-125m's
+        # pytorch_model.bin does, opt-350m's model.safetensors does NOT
+        # (key is "decoder.layers.0.self_attn.k_proj.weight" with no leading
+        # "model."). Both layouts exist on HF Hub for the same model id at
+        # different snapshots. The arch returns the canonical "model."-
+        # prefixed form; if that prefix never appears in the file, strip
+        # "model." and try the bare form. Detect once, apply to every layer.
+        canonical_prefix = arch.weight_prefix(int(start) - 1)
+        if not any(k.startswith(canonical_prefix) for k in all_keys):
+            stripped = (
+                canonical_prefix[len("model."):]
+                if canonical_prefix.startswith("model.") else canonical_prefix
+            )
+            if any(k.startswith(stripped) for k in all_keys):
+                log.info(
+                    "checkpoint uses bare key layout (no 'model.' prefix); "
+                    "stripping it from weight_prefix for this load"
+                )
+                _strip_model = True
+            else:
+                _strip_model = False
+        else:
+            _strip_model = False
+
         for global_idx in range(int(start), int(end) + 1):
             layer = arch.make_block(config, layer_idx=global_idx - 1)
             layer.to(dtype=torch_dtype, device=torch_device)
             layer.eval()
 
             prefix = arch.weight_prefix(global_idx - 1)
+            if _strip_model and prefix.startswith("model."):
+                prefix = prefix[len("model."):]
             local_state: dict[str, torch.Tensor] = {}
             for k in all_keys:
                 if k.startswith(prefix):
