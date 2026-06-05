@@ -655,6 +655,76 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 ---
 
+## Phase EXP-A1 — Live fleet baseline benchmark
+
+**목표**: 8-worker 실 함대(Jetson Orin Nano ×6 + AGX Orin ×2)에서 auto 스케줄링으로 결정된 placement의 정상 운영 TTFT/TBT/throughput 측정. Phase 4의 in-process harness가 측정할 수 없는 *실제 네트워크 + Jetson GPU*에서의 수치 확보.
+
+**구현**:
+- [experiments/run_e2e_remote.py](experiments/run_e2e_remote.py) — gRPC 클라이언트로 coordinator의 Generate 스트림 호출, per-token 도착 시각 측정, p50/p95/p99 계산. coordinator의 `/tmp/radp_scheduler_stats.json` 사이드카를 Ansible slurp로 가져와 placement/recovery/phase 타이밍/profile까지 한 JSON으로 묶음
+
+**검증 결과** (OPT-125M, 20 요청 × 30 토큰, warmup 3, 2026-06-05):
+| 항목 | 값 |
+|---|---|
+| TTFT mean / p50 / p95 | 283 / 276 / 324 ms |
+| TBT mean / p50 / p95 / p99 (n=600) | 217 / 220 / 289 / 321 ms |
+| Throughput mean | 4.42 tok/s |
+| DP max_stage_time (스케줄러 상한) | 113.6 ms |
+| Auto-schedule phase | wait=4ms · layers=35170ms · net=3059ms · DP=13ms |
+| Placement (8 stage) | on-6[1-3] · on-5[4] · on-1[5] · ao-1[6] · on-2[7-8] · ao-2[9] · on-3[10] · on-4[11-12] |
+
+**해석**:
+- 12 layer × 8 stage 분산이라 stage당 평균 27ms (compute는 1-3ms 수준) → 네트워크 + 직렬화 dominant. 작은 모델 + 긴 파이프라인에서 통신이 병목이라는 페이퍼 메시지 정량 입증
+- DP가 강한 노드(AGX Orin ao-1/ao-2)에 layer 1개씩만 할당하여 약한 노드 부담을 줄임 — 이기종 인식 동작 확인
+- 결과 JSON([experiments/results/auto_baseline_first.json](experiments/results/auto_baseline_first.json))은 향후 A2-A4 비교의 reference baseline
+
+**의도된 한계**:
+- 단일 요청만 측정 (concurrent 미포함 → A4)
+- 단일 모델 (OPT-125M 만; Llama-7B INT4는 D 트랙)
+- coord 재시작 없이 연속 실행이라 첫 요청의 TTFT는 cold-cache 효과 일부 포함
+
+---
+
+## Phase EXP-A2 — Live fleet 장애 주입 + 복구 측정
+
+**목표**: Recovery-Aware DP의 복구 정확성 + 비용을 실 함대에서 정량 측정. 단일 worker SIGKILL 시 cache-replay 복구 경로가:
+- (i) 실제로 backup으로 라우팅되는지
+- (ii) 복구 1회 latency penalty 가 얼마인지
+- (iii) post-recovery throughput이 회복되는지
+- (iv) 토큰 손실이 없는지
+
+**구현**:
+- [experiments/run_failure_remote.py](experiments/run_failure_remote.py) — coordinator의 SSE `/api/generate` 엔드포인트로 Generate 스트리밍, fire-and-forget 스레드로 `ansible <victim> systemctl kill -s KILL radp-worker` 발사, per-token stage-routing trace 캡처
+  - `_find_recovery_step()`: 토큰의 stages 리스트에서 victim 디바이스가 사라지는 첫 step을 자동 식별 (`killed_at + 1` 가정보다 robust — kill 발사와 실제 복구 사이에 평균 5 토큰이 in-flight이기 때문)
+  - `--restart-victim` + `--restart-coord` + `--ready-timeout` 플래그로 trial 간 cluster reset 자동화 (gateway의 `_dead` set은 `mark_alive` API가 없어 coordinator 재시작 + auto_schedule 재실행으로만 클리어 가능)
+
+**(찾아낸 버그) `th.join(timeout=10)` 메인 스레드 블로킹**: 초기 구현에서 kill 스레드를 join하면서 stop_worker(ansible 1.2s) 동안 SSE 스트림 reader가 멈춤 → 그 사이 coordinator가 생산한 토큰들이 소켓 버퍼에 쌓였다가 join 종료 후 한꺼번에 flush되어 모두 동일 t_recv로 기록됨. 이로 인해 첫 분석에서 "recovery spike = +15ms (1.1x)" 같은 거짓 결론 도출. fire-and-forget(`th.start()` 만) + 최후 reap으로 수정.
+
+**검증 결과** (OPT-125M, victim=ao-1, max_tokens=60, kill_after_tokens=15, 2026-06-05):
+| 항목 | 값 |
+|---|---|
+| Pre-kill TBT p50 (n=19) | 216 ms |
+| Kill 발사 → 복구 감지 사이 in-flight 토큰 | 5 |
+| **Recovery step latency** | **682 ms** (+466 ms, **3.16×**) |
+| Post-recovery TBT p50 (n=39) | 216 ms (즉시 정상화) |
+| **토큰 손실** | **0 / 60** |
+| Pre-kill layer 6 라우팅 | ao-1[6-6] |
+| Recovery step 라우팅 | **on-1[6-6]** (R(ao-1)=on-1 백업 정확히 발동) |
+| 결과 JSON | [experiments/results/a2_kill_ao1_first.json](experiments/results/a2_kill_ao1_first.json) |
+
+**해석**:
+- Recovery 비용 = 단일 step penalty (~470 ms) 뿐. cache-replay가 prefill 재실행을 피해 latency가 작음
+- on-1이 layer 5와 layer 6 모두 처리하지만 stage invoke time이 14-17 ms로 유지 → 1개 추가 layer는 측정 가능한 throughput 저하 없음. (소형 모델 + 통신 bound 시스템 특성)
+- gRPC 채널 영속화 + SIGKILL이라 *next RPC fails fast*: 가설했던 heartbeat timeout 5s 대기 없이 즉시 mark_dead 발동
+- gateway의 `_dead` set은 단조 — 다음 trial을 위해선 coord 재시작 필요 (스크립트가 자동화)
+
+**의도된 한계**:
+- 단일 trial — 통계적 분산 위해선 N회 반복 필요 (스크립트가 reset 자동화로 가능)
+- 단일 장애 (1 worker) — 동시 다중 장애는 백로그 A2 항목
+- mid-pipeline victim (ao-1[6]) 만 — head/tail victim별 비교는 추후 sweep
+- coord 자체 장애는 측정 안 함 (single point of failure로 의도적 제외)
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
