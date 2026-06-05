@@ -753,6 +753,58 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 ---
 
+## Phase EXP-A3a — Baseline placement 비교 (알고리즘, live profile)
+
+**목표**: A1에서 캡처한 *실측 profile*(device throughput, layer compute time, network bandwidth)로 4개 placement 전략을 동일 입력에 대해 계산. 각 알고리즘의 예측 max_stage_time + 메모리 feasibility 비교. live 배포 전 sanity check + 페이퍼 알고리즘 비교 표 후보 데이터.
+
+**구현**:
+- [experiments/a3_baselines.py](experiments/a3_baselines.py):
+  - `cluster_spec_from_sidecar()` — 사이드카 JSON(`device_profiles`/`layer_profiles`/`network_profile`)로 `ClusterSpec` 재구성
+  - `compute_all_baselines()` — 동일 spec에 대해 4 전략 실행:
+    1. **greedy** — `greedy_placement` (PETALS-style 처리량 가중 분할), R={}
+    2. **uniform** — `round_robin_placement` (균등 분배), R={}
+    3. **jupiter_dp** — `Scheduler.solve(recovery={})` (DP는 같되 backup 메모리 예약 없음), R={}
+    4. **ours** — `Scheduler.solve_alternating()` (R-Ψ 공동 최적화), R 자동 도출
+  - `_feasibility()` — primary stage 메모리 + backup 부담 메모리 각각 디바이스 cap 비교 (`with_backup_ok`는 R={}일 땐 primary와 동일)
+  - 비교 표 + 상세 placement 출력 + JSON 저장
+
+**검증 결과** (A1 sidecar 입력, OPT-125M, 12 layer × 8 device):
+
+| 베이스라인 | max_stage | 스테이지 수 | 메모리 (primary / +backup) |
+|---|---|---|---|
+| greedy | 113.7 ms | 8 | ok / ok |
+| uniform | 113.7 ms | 8 | ok / ok |
+| jupiter_dp | 113.6 ms | 8 | ok / ok |
+| ours | 113.6 ms | 8 | ok / ok |
+
+**결정적 발견**:
+
+1. **Ours와 jupiter_dp의 placement Ψ가 완전히 동일** (on-6[1-3], on-5[4], on-1[5], ao-1[6], on-2[7-8], ao-2[9], on-3[10], on-4[11-12]) — 차이는 오직 R-table만 존재 (ours는 8개 매핑, jupiter_dp는 R={}).
+
+2. **모든 베이스라인의 max_stage_time이 +0.1% 이내 수렴** — 알고리즘 차이가 정상 운영 metric에 거의 안 드러남.
+
+**해석 (현재 setting의 한계)**:
+
+이 무차별성은 **OPT-125M의 작은 모델 크기에서 비롯됨**:
+- layer당 14 MB → 8GB Nano에 ~570 layer 들어가는 여유
+- backup 메모리 예약이 Ψ를 제약하는 regime이 전혀 아님
+- 12 layer × 8 device 환경은 분할 자유도도 낮음
+
+**기대되는 차별화 regime**:
+- Llama-7B INT4 (~3.5GB) on 4GB Nano: backup 1 layer 추가만으로 일부 디바이스 over-cap → ours의 R-aware DP가 jupiter_dp와 *다른 Ψ*를 선택해야 함
+- 더 깊은 모델 (32-80 layer) + 더 적은 device → 분할 자유도 ↑ → 알고리즘 차이 증폭
+- 압축된 device 메모리 — 백업 예약이 binding constraint이 되는 환경
+
+**페이퍼 메시지 (이 발견 자체가 유의미)**:
+> "메모리 여유 regime에선 Recovery-Aware DP의 placement가 no-recovery DP와 일치하여 정상 운영 *zero overhead*를 달성. 우월성은 R 결정 + 백업 사전 로딩에 집중됨. tight memory regime에서는 placement도 분기될 것이며 그 경계는 D 트랙(모델 확장)에서 측정."
+
+**의도된 한계**:
+- 알고리즘 예측 ≠ 실측. 100 ms 수준의 시스템 오버헤드(gRPC / GIL / 직렬화)는 모델에 안 잡힘
+- 이 분석은 *placement Ψ*만 비교 — 장애 시 회복 동작 차이(우리가 페이퍼에서 강조할)는 라이브 측정(A3b)이 필요
+- 단일 모델/profile만 테스트 — 모델/프로파일 sweep은 D 트랙
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
