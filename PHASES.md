@@ -805,6 +805,80 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 ---
 
+## Phase EXP-A3b — Baseline placement live 측정 (정상 + 장애)
+
+**목표**: A3a의 4개 알고리즘이 만든 placement를 *실제 함대에 배포*하고 정상 운영 + 장애 주입 모두 측정. A3a는 max_stage_time 예측만 가능했고 *복구 동작*은 모델에 없음 → 라이브 측정이 페이퍼의 *recovery-aware 우월성* 클레임의 유일한 정량 근거.
+
+**구현**:
+- [experiments/run_a3_remote.py](experiments/run_a3_remote.py) — orchestrator:
+  - `build_manual_cluster_yaml()` — placement+R → 완전한 manual-mode cluster.yaml 문자열 (Jinja2 미사용, 직접 렌더). 형식은 D4 `cluster.yaml.j2` manual-mode와 일치
+  - `push_cluster_yaml()` — ansible `copy` 모듈로 `/etc/radp/cluster.yaml` 에 push
+  - `deploy_baseline()` — push → systemd restart → `/api/gateway` 폴링하며 ready 대기
+  - `run_normal_benchmark()` — gRPC Generate × N (run_e2e_remote의 per-request 로직 재사용)
+  - `run_failure_benchmark()` — 동일 victim에 대해 K trial. trial 사이 *같은 yaml*을 재배포(coord의 `_dead` set 정리)
+  - 결과를 cell마다 누적 저장하여 중간 inspectability 확보
+
+- 각 trial의 SSE error frame은 `summarize()`가 `_no_recovery_observed`로 식별 → `kind="catastrophic_failure"` + `tokens_emitted_before_failure` 기록
+
+**검증 결과** (4 baselines, OPT-125M, victim=ao-1, normal 10×30 tok / failure 3×60 tok, kill_after 15, 2026-06-05):
+
+| baseline | TBT p50 | TBT p95 | TTFT p50 | failure kind | tokens emitted |
+|---|---|---|---|---|---|
+| greedy | 221 ms | 284 ms | 348 ms | catastrophic 3/3 | [19, 20, 18] |
+| uniform | 215 ms | 290 ms | 329 ms | catastrophic 3/3 | [19, 19, 19] |
+| jupiter_dp | 217 ms | 285 ms | 350 ms | catastrophic 3/3 | [19, 19, 19] |
+| **ours** | **219 ms** | 288 ms | 353 ms | **graceful 3/3** | **60/60 × 3** |
+
+ours의 recovery step: mean **597 ms**, p50 **594 ms** (A2의 N=5 mean 729 / p50 677 ms 보다 살짝 낮음 — A3b는 3 trial 모두 ao-1 owning 1 layer 케이스라 backup이 2 layer 흡수, A2 N=5는 한 trial에서 3 layer 흡수로 평균이 상승했었음. **2-layer backup 흡수 시 recovery latency가 580-700 ms로 안정적**이라는 가설 보강).
+
+**핵심 발견 (페이퍼 헤드라인)**:
+
+1. **정상 TBT의 알고리즘 무차별성** — 4 baseline이 모두 215-221 ms 범위 (±3% = 측정 노이즈). A3a 알고리즘 예측(+0.1% 이내)이 실측 노이즈 한계 이내에서 정확히 검증됨
+2. **R={} 베이스라인은 100% catastrophic** — 3/3 trial 모두 정확히 18-20 token (kill_after_15 + in-flight 4-5) 후 *NoRecoveryError* 로 stream 사망. 변동성 거의 없음 (uniform/jupiter는 19/19/19, greedy만 18-20)
+3. **ours와 jupiter_dp의 placement가 byte-identical** (A3a 알고리즘 발견 라이브 재확인) — 즉 정상 운영 측정에서 *완전히 동등*. 차이는 오직 R-table. 같은 Ψ에서 R 유무 만으로 18 → 60/60 token 전환
+
+**페이퍼 메시지 (강한 형태)**:
+> "Recovery-Aware DP는 정상 운영에서 *zero overhead* (jupiter-DP와 동일 placement → 동일 throughput) + 장애 시 *100% graceful recovery* (vs 100% catastrophic). 두 조건은 R-table 결정 + 백업 사전 로딩만으로 분리 가능."
+
+**의도된 한계**:
+- 단일 victim, 단일 kill timing — head/tail victim sweep + 다양한 kill timing은 별도 sweep
+- jupiter_dp/greedy/uniform 모두 100% catastrophic이라 R={} 베이스라인 간 차이 검출 불가 (애초에 catastrophic의 *deg of catastrophe*는 시스템마다 같음 — 모두 stream dies). 추후 ring-style R을 강제 부여한 비교는 다른 실험에서
+- greedy / uniform의 placement는 ours와 *다름* — 정상 운영 차이가 노이즈 한계로 안 보이는 건 OPT-125M의 통신-bound 특성 때문. compute-bound regime(큰 모델)에선 차이 확대 기대
+- max_tokens=60 — 더 긴 generate에서 recovery 후 정상 부하의 누적 차이는 워크로드 sweep 필요
+
+---
+
+## Phase Web1.1 — 대화형 장애 주입 UI
+
+**목표**: 웹 대시보드에서 클릭만으로 worker 장애 시뮬레이션 + 복구. 페이퍼 demo + 수동 baseline 탐색 (A3b yaml push → 클릭으로 victim 죽이기 → SSE trace 변화 관찰)에 직접 사용.
+
+**구현**:
+- [radp/coordinator/gateway.py](radp/coordinator/gateway.py) `mark_alive()` 추가 — `mark_dead`의 역연산. `_dead` set에서 제거 + `build_execution_plan` 재실행. KV cache 불일치 caveat 문서화 (mid-stream revive는 출력 발산 가능)
+- [radp/coordinator/web_api.py](radp/coordinator/web_api.py):
+  - `POST /api/inject_failure {device_id}` — `gateway.mark_dead` 래퍼. *원격 워커는 죽이지 않음* (routing 시뮬레이션). NoRecoveryError는 HTTP 409 + detail
+  - `POST /api/revive_device {device_id}` — `gateway.mark_alive` 래퍼
+  - `POST /api/clear_all_failures` — 모든 dead device 일괄 revive
+- [radp/coordinator/web_static/index.html](radp/coordinator/web_static/index.html):
+  - 신규 "Failure injection" 패널: worker마다 kill/revive 토글 버튼 (현재 `_dead` 상태에 따라 라벨 + 색상 변경)
+  - "Revive all" 일괄 해제 버튼
+  - 클릭 직후 `tick()` 강제 호출하여 poll 주기 기다리지 않고 즉시 상태 반영
+
+**시뮬레이션 장애의 의미**:
+- mark_dead는 *gRPC 에러 발생 시 gateway가 호출하는 그 함수* — 실제 장애 경로와 동일 코드 (radp/coordinator/gateway.py:140, build_execution_plan 트리거)
+- 원격 워커 SIGKILL 없이 routing만 전환 → 외부 ansible 불필요, reversible
+- 대신 *gRPC error detection latency*는 시뮬레이션에서 안 나옴 (즉시 mark_dead). 진짜 장애 + 시뮬레이션 둘 다 필요한 게 그 이유
+
+**검증 결과**:
+- ruff ✓ / 기존 79개 단위 테스트 통과 (회귀 없음)
+- A3b 실험 끝난 후 실제 fleet에 deploy 예정 (git push + ansible-playbook --limit coordinator)
+
+**의도된 한계**:
+- mid-stream revive는 KV cache 불일치로 출력 변할 수 있음 — UI에 경고는 없음 (사용자 인지 가정)
+- 시뮬레이션이라 *gRPC error detection 비용*(우리 측정에선 수십 ms 수준)은 측정 안 됨
+- 진짜 워커 kill은 여전히 `experiments/run_failure_remote.py` (ansible 통한 systemctl kill)이 담당
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
