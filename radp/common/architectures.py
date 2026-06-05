@@ -75,12 +75,16 @@ class OPTArchitecture:
         past_kv_length: int,
     ) -> torch.Tensor:
         inputs_embeds = decoder.embed_tokens(input_ids)
+        # OPT-350M is the lone OPT variant with word_embed_proj_dim ≠ hidden_size
+        # (512 ≠ 1024). Its `project_in` lifts the embedding into the decoder's
+        # hidden space, and HF transformers applies it BEFORE adding pos_embeds.
+        # Applying it after the sum produced a 512-vs-1024 mismatch.
+        if getattr(decoder, "project_in", None) is not None:
+            inputs_embeds = decoder.project_in(inputs_embeds)
         pos_embeds = decoder.embed_positions(
             attention_mask_2d, past_key_values_length=past_kv_length
         )
         hidden: torch.Tensor = inputs_embeds + pos_embeds
-        if getattr(decoder, "project_in", None) is not None:
-            hidden = decoder.project_in(hidden)
         return hidden
 
     def head(self, decoder: Any, lm_head: nn.Module, hidden: torch.Tensor) -> torch.Tensor:
