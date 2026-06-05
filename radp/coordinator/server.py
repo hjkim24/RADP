@@ -14,7 +14,9 @@ Two startup modes, selected by `CoordinatorConfig.schedule_mode`:
 
 from __future__ import annotations
 
+import json
 import threading
+import time
 from concurrent import futures
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -380,25 +382,33 @@ class CoordinatorServer:
             len(self._addr_lookup),
             self.config.profiling_wait_timeout_seconds,
         )
+        t_wait_start = time.perf_counter()
         records = orch.wait_for_workers(
             timeout_seconds=self.config.profiling_wait_timeout_seconds
         )
+        wait_ms = (time.perf_counter() - t_wait_start) * 1000
 
         log.info("auto-scheduling: profiling layers (%s)", self.config.model_id)
+        t_layers_start = time.perf_counter()
         layer_profiles = orch.collect_layer_profiles(
             self.config.model_id,
             warmup=self.config.profiling_layer_warmup,
             repeats=self.config.profiling_layer_repeats,
             seq_length=self.config.profiling_layer_seq_length,
         )
+        layers_ms = (time.perf_counter() - t_layers_start) * 1000
 
         log.info("auto-scheduling: profiling network")
+        t_network_start = time.perf_counter()
         network = orch.collect_network_profile(
             payload_bytes=self.config.profiling_network_payload_bytes,
             rounds=self.config.profiling_network_rounds,
         )
+        network_ms = (time.perf_counter() - t_network_start) * 1000
 
+        t_devprofiles_start = time.perf_counter()
         devices = ProfileOrchestrator.build_device_profiles(records, layer_profiles)
+        devprofiles_ms = (time.perf_counter() - t_devprofiles_start) * 1000
         spec = ClusterSpec(
             devices=devices,
             layers=layer_profiles,
@@ -412,7 +422,9 @@ class CoordinatorServer:
 
         log.info("auto-scheduling: solving DP (devices=%d, layers=%d)",
                  len(devices), len(layer_profiles))
+        t_dp_start = time.perf_counter()
         result = Scheduler(spec).solve_alternating()
+        dp_ms = (time.perf_counter() - t_dp_start) * 1000
         log.info(
             "auto-scheduling: solution max_stage_time=%.4fs converged=%s iterations=%d",
             result.max_stage_time, result.converged, result.iterations,
@@ -425,7 +437,106 @@ class CoordinatorServer:
 
         self.placement = list(result.placement)
         self.recovery = dict(result.recovery)
+        self._write_scheduler_stats_sidecar(
+            wait_ms=wait_ms,
+            layers_ms=layers_ms,
+            network_ms=network_ms,
+            devprofiles_ms=devprofiles_ms,
+            dp_ms=dp_ms,
+            result=result,
+            spec=spec,
+            records=records,
+        )
         return result
+
+    def _write_scheduler_stats_sidecar(
+        self,
+        *,
+        wait_ms: float,
+        layers_ms: float,
+        network_ms: float,
+        devprofiles_ms: float,
+        dp_ms: float,
+        result: AlternatingResult,
+        spec: ClusterSpec,
+        records: dict[DeviceId, Any],
+    ) -> None:
+        """Dump every measurement auto_schedule made to /tmp/radp_scheduler_stats.json.
+
+        Benchmarks read this to get the placement, recovery, profile data,
+        and per-phase wall clock without parsing the journal. Path is fixed
+        so deploys don't need to thread it through env vars. Best-effort —
+        any failure here is logged and swallowed; the coordinator must not
+        die just because the stats file couldn't be written.
+        """
+        try:
+            stats = {
+                "timestamp_ns": time.time_ns(),
+                "model_id": self.config.model_id,
+                "phase_ms": {
+                    "wait_for_workers": wait_ms,
+                    "collect_layer_profiles": layers_ms,
+                    "collect_network_profile": network_ms,
+                    "build_device_profiles": devprofiles_ms,
+                    "scheduler_solve": dp_ms,
+                    "total": wait_ms + layers_ms + network_ms + devprofiles_ms + dp_ms,
+                },
+                "scheduler_result": {
+                    "max_stage_time_seconds": result.max_stage_time,
+                    "iterations": result.iterations,
+                    "converged": result.converged,
+                },
+                "placement": [
+                    {
+                        "device": str(s.device),
+                        "start": int(s.start_layer),
+                        "end": int(s.end_layer),
+                    }
+                    for s in result.placement
+                ],
+                "recovery": {str(j): str(k) for j, k in result.recovery.items()},
+                "device_profiles": [
+                    {
+                        "id": str(d.id),
+                        "total_memory_bytes": d.total_memory_bytes,
+                        "compute_throughput": d.compute_throughput,
+                    }
+                    for d in spec.devices
+                ],
+                "layer_profiles": [
+                    {
+                        "layer_idx": int(lp.layer_idx),
+                        "memory_bytes": lp.memory_bytes,
+                        "compute_time": {
+                            str(d): float(t) for d, t in lp.compute_time.items()
+                        },
+                    }
+                    for lp in spec.layers
+                ],
+                "network_profile": {
+                    "bandwidth_bps": {
+                        f"{src}->{dst}": v
+                        for (src, dst), v in spec.network.bandwidth.items()
+                    },
+                    "latency_seconds": {
+                        f"{src}->{dst}": v
+                        for (src, dst), v in spec.network.latency.items()
+                    },
+                },
+                "heartbeat_classifiers": {
+                    str(d): {
+                        "free_memory_bytes": r.free_memory_bytes,
+                        "total_memory_bytes": r.total_memory_bytes,
+                        "device_class": r.device_class,
+                    }
+                    for d, r in records.items()
+                },
+            }
+            path = Path("/tmp/radp_scheduler_stats.json")
+            path.write_text(json.dumps(stats, indent=2))
+            log.info("scheduler stats written to %s", path)
+        except Exception:  # noqa: BLE001
+            log.exception("failed to write scheduler stats sidecar")
 
     def wait_for_termination(self) -> None:
         if self._server is None:
