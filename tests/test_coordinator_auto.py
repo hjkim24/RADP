@@ -216,7 +216,7 @@ def test_auto_schedule_produces_valid_placement(
     sorted_stages = sorted(result.placement, key=lambda s: s.start_layer)
     assert int(sorted_stages[0].start_layer) == 1
     assert int(sorted_stages[-1].end_layer) == 12
-    for prev, curr in zip(sorted_stages, sorted_stages[1:], strict=False):
+    for prev, curr in zip(sorted_stages, sorted_stages[1:]):
         assert int(curr.start_layer) == int(prev.end_layer) + 1
     # Recovery covers every placed device
     assert set(result.recovery.keys()) == {DeviceId("w-a"), DeviceId("w-b")}

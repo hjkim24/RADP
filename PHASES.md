@@ -315,9 +315,26 @@ ansible workers -a "journalctl -u radp-worker -n 50"
   - **`stdout_callback = yaml`** (community.general 12.0.0에서 제거됨) → `default + result_format=yaml`로 교체
 - 나머지 4 worker + coordinator 전체 배포는 추가 보드 도착 후 일괄 진행 예정
 
+**함대 확장 + 이기종 JetPack 지원 (2026-06-05)**:
+- 함대 구조 변경: **on-1 ~ on-5** (Jetson Orin Nano × 5) + **ao-1, ao-2** (AGX Orin × 2) + **ax-1** (AGX Xavier coordinator)
+  - 명명 규칙: `on-N` = Orin Nano, `ao-N` = AGX Orin, `ax-N` = AGX Xavier
+  - 인벤토리 그룹 재구성: `[workers_orin_nano]` + `[workers_agx_orin]` → `[workers:children]`로 통합
+- **이기종 JetPack 운영 지원**:
+  - on-1~5 + ao-1: JP6.1 / Ubuntu 22.04 / Python 3.10 / NVIDIA CUDA torch wheel
+  - ax-1 (AGX Xavier, **JP6 미지원 SoC**) + ao-2 (JP6 업그레이드 대기): JP5.0 / Ubuntu 20.04 / Python 3.9 / **PyPI CPU torch**
+  - `pyproject.toml`의 `requires-python`을 `>=3.10` → `>=3.9`로 낮춤 (모든 코드가 `from __future__ import annotations` 사용 중이라 무손실)
+  - ruff target-version `py310` → `py39`로 동기화 (3.10+ 런타임 기능 사용 시 lint가 잡음). mypy는 3.10 유지 (최신 mypy가 3.9 target 거부)
+- **Ansible 분기**:
+  - 신규 변수 `radp_python_executable` (default `python3`, JP5 호스트에서 `python3.9` override)
+  - `jetson_torch_wheel_url`이 비어있는 호스트는 PyPI의 generic `torch>=2.1,<3.0` (CPU only) 설치 — 코디네이터의 embed/lm_head/sampling은 CPU로 충분
+  - JP5 호스트는 `apt install python3.9 python3.9-venv python3.9-dev` 별도 task 자동 실행
+  - host 변수 (`ansible_python_interpreter`, `jetson_torch_wheel_url`, `radp_python_executable`)로 모든 분기 처리 → playbook/role 본문은 그대로
+- 8/8 `ansible all -m ping` SUCCESS 확인. radp 단위 테스트 75개 Python 3.9 venv에서도 통과 (slow integration은 transformers 4.x↔5.x API 차이로 일부 실패하나 ax-1은 코디네이터 전용이라 block forward path 미실행 — 실 운영 무영향)
+
 **의도된 한계**:
 - `jetson_torch_wheel_url`은 사용자가 JetPack 버전에 맞게 수동 설정 (auto-detect 미구현; `direct_url.json`에서 추적은 가능)
-- JetPack 4 (Python 3.6)는 비지원 — pyproject의 `requires-python = ">=3.10"`이라 JetPack 6+ 권장
+- AGX Xavier (tegra194 SoC)는 **NVIDIA가 JP6를 공식 비지원** — JP5.x가 마지막. 펌웨어/커널 빌드 자체가 없어 우회 불가
+- ao-2의 JP5→JP6 업그레이드는 NVIDIA SDK Manager + 호스트 PC (또는 ao-1을 임시 호스트로 활용) 필요. 미완 상태에선 ao-2도 CPU torch + python3.9로 운영 가능 (단 worker로서 성능 저하)
 - systemd 서비스 시작 + end-to-end 추론 (장애 시나리오 포함) 검증은 전체 함대 배포 후 진행 예정
 
 ---

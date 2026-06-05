@@ -20,6 +20,21 @@
   become: true
   tags: [install]
 
+# JP5 hosts (ax-1, ao-2-pre-flash) need python3.9 + python3.9-venv since
+# Ubuntu 20.04's default python3 is 3.8 (which radp's >=3.9 requirement
+# rejects). We detect by checking radp_python_executable, defaulted in
+# group_vars/all.yml.
+- name: Install python3.9 + venv (Ubuntu 20.04 / JetPack 5 hosts)
+  ansible.builtin.apt:
+    name:
+      - python3.9
+      - python3.9-venv
+      - python3.9-dev
+    state: present
+  become: true
+  when: radp_python_executable == "python3.9"
+  tags: [install]
+
 - name: Enable NTP time sync (heartbeat timing depends on it)
   ansible.builtin.systemd:
     name: systemd-timesyncd
@@ -47,7 +62,7 @@
   tags: [install, update]
 
 - name: Create Python venv
-  ansible.builtin.command: "python3 -m venv {{ radp_install_dir }}/.venv"
+  ansible.builtin.command: "{{ radp_python_executable }} -m venv {{ radp_install_dir }}/.venv"
   args:
     creates: "{{ radp_install_dir }}/.venv/bin/python"
   tags: [install]
@@ -65,6 +80,18 @@
     virtualenv: "{{ radp_install_dir }}/.venv"
     state: present
   when: jetson_torch_wheel_url | length > 0
+  tags: [install]
+
+# Fallback for hosts without a Jetson CUDA wheel (e.g. AGX Xavier on JP5,
+# or any AGX Orin still on JP5 pre-flash). Plain PyPI torch is CPU-only on
+# aarch64; that's fine for the coordinator (embed + lm_head + sampling) and
+# acceptable as a placeholder for not-yet-upgraded workers.
+- name: Install generic CPU PyTorch from PyPI (fallback)
+  ansible.builtin.pip:
+    name: "torch>=2.1,<3.0"
+    virtualenv: "{{ radp_install_dir }}/.venv"
+    state: present
+  when: jetson_torch_wheel_url | length == 0
   tags: [install]
 
 - name: Verify torch is available (any source)

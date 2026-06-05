@@ -28,7 +28,7 @@ def test_sliced_weights_match_full_model() -> None:
     sliced = load_stage_blocks(model_id, start, end, dtype="float32", torch_device="cpu")
     assert len(sliced) == int(end) - int(start) + 1
 
-    for ref, got in zip(full_layers, sliced, strict=True):
+    for ref, got in zip(full_layers, sliced):
         ref_state = ref.state_dict()
         got_state = got.state_dict()
         assert set(ref_state.keys()) == set(got_state.keys())

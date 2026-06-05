@@ -49,7 +49,7 @@ def test_sharded_load_stage_blocks_matches_full_model() -> None:
     full_layers = list(get_transformer_layers(full.model))[int(start) - 1 : int(end)]
 
     assert len(sliced) == len(full_layers)
-    for ref, got in zip(full_layers, sliced, strict=True):
+    for ref, got in zip(full_layers, sliced):
         ref_state = ref.state_dict()
         got_state = got.state_dict()
         assert set(ref_state.keys()) == set(got_state.keys())

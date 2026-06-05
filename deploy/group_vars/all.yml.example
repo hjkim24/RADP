@@ -5,6 +5,11 @@ radp_repo_url: "https://github.com/hjkim24/RADP.git"
 radp_ref: "main"
 radp_install_dir: "/home/{{ ansible_user }}/radp"
 
+# Override per-host in inventory for JetPack 5 boards (Ubuntu 20.04) — they
+# need explicit `python3.9` since their default `python3` is 3.8, which
+# radp's >=3.9 requirement rejects.
+radp_python_executable: "python3"
+
 # ---- Jetson-specific PyTorch wheel ------------------------------------------
 # Pick the wheel matching your JetPack version from NVIDIA's index:
 #   JetPack 6 (Python 3.10, CUDA 12.x):

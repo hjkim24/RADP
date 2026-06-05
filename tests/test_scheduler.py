@@ -42,7 +42,7 @@ def test_heterogeneous_favors_fast(heterogeneous_spec_3x6: ClusterSpec) -> None:
     starts_ends = [(s.start_layer, s.end_layer) for s in result.placement]
     assert starts_ends[0][0] == 1
     assert starts_ends[-1][1] == 6
-    for (_, e), (s2, _) in zip(starts_ends, starts_ends[1:], strict=False):
+    for (_, e), (s2, _) in zip(starts_ends, starts_ends[1:]):
         assert s2 == e + 1
 
 
