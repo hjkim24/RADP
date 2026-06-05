@@ -23,7 +23,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 import uvicorn
 from fastapi import FastAPI
@@ -37,14 +37,17 @@ if TYPE_CHECKING:
     from radp.coordinator.server import CoordinatorServer
 
 
+# NOTE: pydantic evaluates these annotations at *class-creation time*, not
+# just at type-check time, so `int | None` would break on Python 3.9 even
+# with `from __future__ import annotations`. Use Optional[...] explicitly.
 class _GenerateRequest(BaseModel):
     prompt: str
     max_tokens: int = Field(default=20, ge=1, le=2048)
     temperature: float = Field(default=0.0, ge=0.0, le=4.0)
     top_k: int = Field(default=0, ge=0)
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
-    seed: int | None = None
-    eos_token_id: int | None = None
+    seed: Optional[int] = None  # noqa: UP045
+    eos_token_id: Optional[int] = None  # noqa: UP045
 
 log = get_logger(__name__)
 
