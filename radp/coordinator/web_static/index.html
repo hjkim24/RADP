@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RADP Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --amber: #d29922;
+    --backup: #6e7681;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  h1 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
+  .subtitle { color: var(--muted); margin-bottom: 16px; font-size: 12px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 12px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+  }
+  .panel h2 {
+    font-size: 13px; font-weight: 600;
+    margin: 0 0 8px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+    color: var(--accent);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td {
+    text-align: left; padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--muted); font-weight: 500;
+    font-size: 11px; text-transform: uppercase;
+  }
+  tr:last-child td { border-bottom: none; }
+  .dot {
+    display: inline-block;
+    width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle;
+  }
+  .dot.green { background: var(--green); }
+  .dot.red { background: var(--red); }
+  .dot.amber { background: var(--amber); }
+  .dot.gray { background: var(--backup); }
+  .kv { display: flex; justify-content: space-between; padding: 3px 0; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-weight: 500; }
+  .pipe {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    align-items: center;
+  }
+  .pipe-node {
+    background: rgba(88, 166, 255, 0.1);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    padding: 4px 8px; border-radius: 4px;
+    font-size: 12px;
+  }
+  .pipe-arrow { color: var(--muted); font-weight: bold; }
+  .footer {
+    margin-top: 12px; text-align: right;
+    color: var(--muted); font-size: 11px;
+  }
+  .pre { white-space: pre; font-family: inherit; }
+  .err {
+    color: var(--amber); font-style: italic; font-size: 12px;
+  }
+  .pill {
+    display: inline-block;
+    padding: 1px 6px; border-radius: 10px;
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--accent); font-size: 11px;
+  }
+  .pill.warn { background: rgba(210, 153, 34, 0.15); color: var(--amber); }
+</style>
+</head>
+<body>
+
+<h1>RADP Cluster Dashboard</h1>
+<div class="subtitle" id="subtitle">connecting…</div>
+
+<div class="grid">
+
+  <div class="panel">
+    <h2>Coordinator</h2>
+    <div id="coord-info">loading…</div>
+  </div>
+
+  <div class="panel">
+    <h2>Scheduler (last auto_schedule)</h2>
+    <div id="sched-summary">loading…</div>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Hosts</h2>
+    <table id="hosts-table"><thead><tr>
+      <th>id</th><th>class</th><th>address</th>
+      <th>heartbeat</th><th>mem free / total</th><th>status</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Placement (pipeline order)</h2>
+    <div id="placement" class="pipe">loading…</div>
+  </div>
+
+  <div class="panel">
+    <h2>Recovery (j → backup k)</h2>
+    <table id="recovery-table"><tbody></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>Phase wall clock (last)</h2>
+    <div id="phases">no auto_schedule run yet</div>
+  </div>
+
+</div>
+
+<div class="footer" id="footer">—</div>
+
+<script>
+const POLL_MS = 2000;
+
+function fmt(n, suffix='') {
+  if (n === null || n === undefined) return '—';
+  if (typeof n !== 'number') return String(n);
+  if (suffix === 'GB') return (n / 1e9).toFixed(1) + ' GB';
+  if (suffix === 'MB') return (n / 1e6).toFixed(0) + ' MB';
+  if (suffix === 'ms') return n.toFixed(1) + ' ms';
+  if (suffix === '%') return n.toFixed(1) + '%';
+  return n.toFixed(2);
+}
+function ageMs(ts_ns) {
+  if (!ts_ns) return null;
+  return Date.now() - (ts_ns / 1e6);
+}
+
+async function fetchJSON(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+function render(coordInfo, heartbeats, gateway, cluster) {
+  const sub = document.getElementById('subtitle');
+
+  // Coordinator panel
+  const coordDiv = document.getElementById('coord-info');
+  if (!gateway) {
+    coordDiv.innerHTML = '<div class="err">coordinator not reachable</div>';
+  } else {
+    const ready = gateway.ready
+      ? '<span class="pill">ready</span>'
+      : '<span class="pill warn">bootstrapping</span>';
+    coordDiv.innerHTML = `
+      <div class="kv"><span class="k">model</span><span class="v">${gateway.model_id}</span></div>
+      <div class="kv"><span class="k">mode</span><span class="v">${gateway.schedule_mode}</span></div>
+      <div class="kv"><span class="k">torch</span><span class="v">${gateway.torch_device} / ${gateway.dtype}</span></div>
+      <div class="kv"><span class="k">bind</span><span class="v">${gateway.bind_address}</span></div>
+      <div class="kv"><span class="k">status</span><span class="v">${ready}</span></div>
+      <div class="kv"><span class="k">workers</span><span class="v">${gateway.workers.length}</span></div>
+    `;
+  }
+
+  // Scheduler summary
+  const schedDiv = document.getElementById('sched-summary');
+  if (!cluster) {
+    schedDiv.innerHTML = '<div class="err">no sidecar (manual mode or first boot)</div>';
+  } else {
+    const r = cluster.scheduler_result || {};
+    const conv = r.converged ? '✓' : '✗';
+    schedDiv.innerHTML = `
+      <div class="kv"><span class="k">max_stage_time</span><span class="v">${fmt(r.max_stage_time_seconds * 1000, 'ms')}</span></div>
+      <div class="kv"><span class="k">iterations</span><span class="v">${r.iterations}</span></div>
+      <div class="kv"><span class="k">converged</span><span class="v">${conv}</span></div>
+      <div class="kv"><span class="k">model</span><span class="v">${cluster.model_id}</span></div>
+      <div class="kv"><span class="k">stamped</span><span class="v">${cluster.timestamp_ns ? new Date(cluster.timestamp_ns / 1e6).toLocaleTimeString() : '—'}</span></div>
+    `;
+  }
+
+  // Phases
+  const phasesDiv = document.getElementById('phases');
+  if (cluster && cluster.phase_ms) {
+    const p = cluster.phase_ms;
+    phasesDiv.innerHTML = `
+      <div class="kv"><span class="k">wait_for_workers</span><span class="v">${fmt(p.wait_for_workers, 'ms')}</span></div>
+      <div class="kv"><span class="k">collect_layer_profiles</span><span class="v">${fmt(p.collect_layer_profiles, 'ms')}</span></div>
+      <div class="kv"><span class="k">collect_network_profile</span><span class="v">${fmt(p.collect_network_profile, 'ms')}</span></div>
+      <div class="kv"><span class="k">build_device_profiles</span><span class="v">${fmt(p.build_device_profiles, 'ms')}</span></div>
+      <div class="kv"><span class="k">scheduler_solve</span><span class="v">${fmt(p.scheduler_solve, 'ms')}</span></div>
+      <div class="kv" style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px;"><span class="k">total</span><span class="v">${fmt(p.total, 'ms')}</span></div>
+    `;
+  }
+
+  // Hosts table
+  const hostsBody = document.querySelector('#hosts-table tbody');
+  hostsBody.innerHTML = '';
+  if (gateway) {
+    const hbMap = heartbeats || {};
+    const deadSet = new Set(gateway.dead_devices || []);
+    for (const w of gateway.workers) {
+      const hb = hbMap[w.id];
+      const age = hb ? ageMs(hb.last_ts_ns) : null;
+      let dotClass = 'gray';
+      let statusText = 'no heartbeat';
+      if (deadSet.has(w.id)) { dotClass = 'red'; statusText = 'DEAD (gateway)'; }
+      else if (age !== null && age < 5000) { dotClass = 'green'; statusText = 'active'; }
+      else if (age !== null && age < 15000) { dotClass = 'amber'; statusText = 'stale'; }
+      else if (age !== null) { dotClass = 'red'; statusText = 'timed out'; }
+
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td><strong>${w.id}</strong></td>
+        <td>${hb ? hb.device_class || '—' : '—'}</td>
+        <td>${w.address}</td>
+        <td>${age !== null ? (age / 1000).toFixed(1) + 's ago' : '—'}</td>
+        <td>${hb ? fmt(hb.free_memory_bytes, 'GB') + ' / ' + fmt(hb.total_memory_bytes, 'GB') : '—'}</td>
+        <td><span class="dot ${dotClass}"></span>${statusText}</td>
+      `;
+      hostsBody.appendChild(row);
+    }
+  }
+
+  // Placement pipeline
+  const placeDiv = document.getElementById('placement');
+  if (gateway && gateway.placement.length) {
+    const parts = [];
+    gateway.placement.forEach((s, i) => {
+      if (i > 0) parts.push('<span class="pipe-arrow">→</span>');
+      const isDead = (gateway.dead_devices || []).includes(s.device);
+      const style = isDead ? 'style="border-color:var(--red);color:var(--red);background:rgba(248,81,73,0.1);"' : '';
+      parts.push(`<span class="pipe-node" ${style}>${s.device} [${s.start}..${s.end}]</span>`);
+    });
+    placeDiv.innerHTML = parts.join(' ');
+  } else if (gateway) {
+    placeDiv.innerHTML = '<span class="err">no placement (still bootstrapping)</span>';
+  } else {
+    placeDiv.innerHTML = '<span class="err">coordinator unreachable</span>';
+  }
+
+  // Recovery table
+  const recBody = document.querySelector('#recovery-table tbody');
+  recBody.innerHTML = '';
+  if (gateway && Object.keys(gateway.recovery).length) {
+    for (const [j, k] of Object.entries(gateway.recovery)) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${j}</td><td class="pipe-arrow">→</td><td>${k}</td>`;
+      recBody.appendChild(tr);
+    }
+  } else {
+    recBody.innerHTML = '<tr><td colspan="3" class="err">empty</td></tr>';
+  }
+
+  // Status line
+  const aliveCount = gateway
+    ? gateway.workers.filter(w => {
+        const hb = (heartbeats || {})[w.id];
+        return hb && ageMs(hb.last_ts_ns) < 5000;
+      }).length
+    : 0;
+  const totalCount = gateway ? gateway.workers.length : 0;
+  sub.textContent = `workers ${aliveCount}/${totalCount} alive · last update ${new Date().toLocaleTimeString()}`;
+  document.getElementById('footer').textContent = `polling every ${POLL_MS}ms`;
+}
+
+async function tick() {
+  const [gw, hb, cl] = await Promise.all([
+    fetchJSON('/api/gateway'),
+    fetchJSON('/api/heartbeats'),
+    fetchJSON('/api/cluster'),
+  ]);
+  render(null, hb, gw, cl);
+}
+
+tick();
+setInterval(tick, POLL_MS);
+</script>
+
+</body>
+</html>

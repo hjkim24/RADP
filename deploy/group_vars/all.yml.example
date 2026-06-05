@@ -36,6 +36,12 @@ radp_coord_port: 50050
 heartbeat_timeout_seconds: 5.0
 heartbeat_tick_seconds: 1.0
 
+# Coordinator dashboard (read-only HTTP). 0 disables.
+# When enabled, point your browser at http://<coord-host>:<coord_web_port>/
+# from anywhere inside the lab VPN. Daemon thread inside the same
+# radp-coordinator process — no extra systemd unit.
+coord_web_port: 8080
+
 # ---- Scheduling mode (Phase D3) --------------------------------------------
 # "auto"   — coordinator profiles the fleet at startup (ProfileLayers +
 #            MeasurePeer) and computes Ψ + R via the Recovery-Aware DP.

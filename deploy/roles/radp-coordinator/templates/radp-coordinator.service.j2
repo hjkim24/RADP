@@ -9,6 +9,7 @@ User={{ ansible_user }}
 Group={{ ansible_user }}
 WorkingDirectory={{ radp_install_dir }}
 Environment=RADP_CONFIG=/etc/radp/cluster.yaml
+Environment=RADP_WEB_PORT={{ coord_web_port | default(0) }}
 Environment=HF_HOME=/home/{{ ansible_user }}/.cache/huggingface
 ExecStart={{ radp_install_dir }}/.venv/bin/radp-coordinator
 Restart=on-failure

@@ -213,8 +213,14 @@ class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: i
 
 
 class CoordinatorServer:
-    def __init__(self, config: CoordinatorConfig) -> None:
+    def __init__(
+        self,
+        config: CoordinatorConfig,
+        *,
+        web_port: int | None = None,
+    ) -> None:
         self.config = config
+        self.web_port = web_port
         self._addr_lookup: dict[DeviceId, str] = {
             w.device_id: w.address for w in config.workers
         }
@@ -226,6 +232,7 @@ class CoordinatorServer:
         self.detector: FailureDetector | None = None
         self._server: grpc.Server | None = None
         self._gateway_lock = threading.Lock()
+        self._web_thread: threading.Thread | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -364,6 +371,10 @@ class CoordinatorServer:
             "coordinator listening on %s (schedule_mode=%s)",
             self.config.bind_address, self.config.schedule_mode,
         )
+
+        if self.web_port:
+            from radp.coordinator.web_api import start_web_api
+            self._web_thread = start_web_api(self, self.web_port)
 
     def auto_schedule(self) -> AlternatingResult:
         """Run ProfileOrchestrator + Scheduler to populate placement + recovery.

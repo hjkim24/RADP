@@ -17,6 +17,10 @@ dependencies = [
   "numpy<2",  # NVIDIA's Jetson torch wheels are NumPy 1.x ABI; 2.x breaks import
   "pyyaml",
   "psutil>=5.9",
+  # Coordinator web dashboard (Phase Web0). Embedded uvicorn thread in
+  # the radp-coordinator process; tiny RAM footprint.
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
 ]
 
 [project.optional-dependencies]

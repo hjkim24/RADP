@@ -1,6 +1,8 @@
 """`radp-coordinator` CLI entry point (Phase 2).
 
-  --config / RADP_CONFIG    (required)  Path to coordinator YAML.
+  --config   / RADP_CONFIG    (required)  Path to coordinator YAML.
+  --web-port / RADP_WEB_PORT  (optional)  Read-only dashboard port.
+                                          0 / unset → disable.
 """
 
 from __future__ import annotations
@@ -23,6 +25,12 @@ def _parse_args() -> argparse.Namespace:
         default=os.environ.get("RADP_CONFIG"),
         help="Path to coordinator YAML config (env: RADP_CONFIG).",
     )
+    p.add_argument(
+        "--web-port",
+        type=int,
+        default=int(os.environ.get("RADP_WEB_PORT") or 0),
+        help="Read-only dashboard port (0 to disable; env: RADP_WEB_PORT).",
+    )
     args = p.parse_args()
     if not args.config:
         p.error("--config or RADP_CONFIG is required")
@@ -33,7 +41,7 @@ def main() -> None:
     configure_logging()
     args = _parse_args()
     config = CoordinatorConfig.from_yaml(args.config)
-    server = CoordinatorServer(config)
+    server = CoordinatorServer(config, web_port=args.web_port or None)
 
     def _on_signal(signum: int, _frame: FrameType | None) -> None:
         log.info("received signal %d, shutting down", signum)
