@@ -2,36 +2,54 @@
 # Shared setup: OS packages, time sync, code sync, Python venv with the
 # right Jetson torch wheel, radp install, gRPC stubs.
 
+# NOTE on apt vs apt-get: we use raw apt-get here (not the ansible.builtin.apt
+# module) because Ansible's apt module needs python3-apt bindings for the
+# same interpreter Ansible itself runs on. Ubuntu 20.04 only ships
+# python3-apt built for python3.8 ABI, so when we point Ansible at
+# python3.9 (JP5 hosts), the apt module can't import it. Shell-based apt-get
+# is interpreter-agnostic. Idempotency comes from `changed_when` parsing.
 - name: Install OS packages
-  ansible.builtin.apt:
-    name:
-      - python3
-      - python3-venv
-      - python3-pip
-      - git
-      - libopenblas-base
-      - libopenmpi-dev
-      - libomp-dev
-      - cmake
-      - netcat-openbsd
-    state: present
-    update_cache: true
-    cache_valid_time: 3600
+  ansible.builtin.shell: |
+    set -e
+    needed="python3 python3-venv python3-pip git libopenblas-base libopenmpi-dev libomp-dev cmake netcat-openbsd"
+    missing=""
+    for pkg in $needed; do
+      dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+    done
+    if [ -z "$missing" ]; then
+      echo "ALREADY_INSTALLED"
+    else
+      DEBIAN_FRONTEND=noninteractive apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing
+    fi
+  args:
+    executable: /bin/bash
   become: true
+  register: _os_pkgs
+  changed_when: "'ALREADY_INSTALLED' not in _os_pkgs.stdout"
   tags: [install]
 
 # JP5 hosts (ax-1, ao-2-pre-flash) need python3.9 + python3.9-venv since
 # Ubuntu 20.04's default python3 is 3.8 (which radp's >=3.9 requirement
-# rejects). We detect by checking radp_python_executable, defaulted in
-# group_vars/all.yml.
+# rejects). Triggered by the radp_python_executable=python3.9 host var.
 - name: Install python3.9 + venv (Ubuntu 20.04 / JetPack 5 hosts)
-  ansible.builtin.apt:
-    name:
-      - python3.9
-      - python3.9-venv
-      - python3.9-dev
-    state: present
+  ansible.builtin.shell: |
+    set -e
+    needed="python3.9 python3.9-venv python3.9-dev"
+    missing=""
+    for pkg in $needed; do
+      dpkg -s "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+    done
+    if [ -z "$missing" ]; then
+      echo "ALREADY_INSTALLED"
+    else
+      DEBIAN_FRONTEND=noninteractive apt-get install -y $missing
+    fi
+  args:
+    executable: /bin/bash
   become: true
+  register: _py39_pkgs
+  changed_when: "'ALREADY_INSTALLED' not in _py39_pkgs.stdout"
   when: radp_python_executable == "python3.9"
   tags: [install]
 
