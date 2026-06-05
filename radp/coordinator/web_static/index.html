@@ -111,10 +111,14 @@
   </div>
 
   <div class="panel" style="grid-column: 1 / -1;">
-    <h2>Hosts</h2>
+    <h2>Hosts
+      <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px;">
+        profile = compute_throughput (normalized) · mean ms per layer (last ProfileLayers)
+      </span>
+    </h2>
     <table id="hosts-table"><thead><tr>
       <th>id</th><th>class</th><th>address</th>
-      <th>heartbeat</th><th>mem free / total</th><th>status</th>
+      <th>heartbeat</th><th>mem free / total</th><th>profile</th><th>status</th>
     </tr></thead><tbody></tbody></table>
   </div>
 
@@ -270,6 +274,33 @@ function render(coordInfo, heartbeats, gateway, cluster) {
     `;
   }
 
+  // Per-device profile lookup from the last auto_schedule sidecar:
+  //   throughput  = compute_throughput (normalized; higher = faster device)
+  //   meanLayerMs = average per-layer compute time measured for this device
+  //   maxLayerMs  = slowest layer measured (often dominates a stage's cost)
+  // Returns null fields when the sidecar is absent (manual mode / pre-schedule).
+  const profByDevice = {};
+  if (cluster) {
+    for (const d of (cluster.device_profiles || [])) {
+      profByDevice[d.id] = { throughput: d.compute_throughput, layerTimes: [] };
+    }
+    for (const lp of (cluster.layer_profiles || [])) {
+      for (const [dev, t] of Object.entries(lp.compute_time || {})) {
+        if (!profByDevice[dev]) profByDevice[dev] = { throughput: null, layerTimes: [] };
+        profByDevice[dev].layerTimes.push(t);
+      }
+    }
+  }
+  function profileCell(devId) {
+    const p = profByDevice[devId];
+    if (!p || (p.throughput == null && p.layerTimes.length === 0)) return '—';
+    const tp = p.throughput != null ? p.throughput.toFixed(2) : '?';
+    if (!p.layerTimes.length) return tp;
+    const mean = p.layerTimes.reduce((a, b) => a + b, 0) / p.layerTimes.length * 1000;
+    const max = Math.max(...p.layerTimes) * 1000;
+    return `${tp} · ${mean.toFixed(1)} ms/L (max ${max.toFixed(1)})`;
+  }
+
   // Hosts table
   const hostsBody = document.querySelector('#hosts-table tbody');
   hostsBody.innerHTML = '';
@@ -293,6 +324,7 @@ function render(coordInfo, heartbeats, gateway, cluster) {
         <td>${w.address}</td>
         <td>${age !== null ? (age / 1000).toFixed(1) + 's ago' : '—'}</td>
         <td>${hb ? fmt(hb.free_memory_bytes, 'GB') + ' / ' + fmt(hb.total_memory_bytes, 'GB') : '—'}</td>
+        <td style="font-size:11px;">${profileCell(w.id)}</td>
         <td><span class="dot ${dotClass}"></span>${statusText}</td>
       `;
       hostsBody.appendChild(row);
