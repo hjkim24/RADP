@@ -161,11 +161,21 @@ def push_cluster_yaml(coord_host: str, yaml_str: str) -> tuple[float, bool, str]
 
 
 def restart_coord(coord_host: str) -> tuple[float, bool, str]:
+    """SIGKILL + start instead of `state=restarted`.
+
+    `systemctl restart` waits for SIGTERM to be acknowledged (up to the
+    unit's TimeoutStopSec, default 90s). When the coord is mid-deploy or
+    mid-RPC it ignores SIGTERM, and the ansible call blows past our
+    subprocess timeout. SIGKILL on the cgroup is unconditional + instant,
+    so the worst case becomes "old python dies cleanly, systemd kicks off
+    a fresh one". Cleaner end state.
+    """
     t0 = time.perf_counter()
     cp = subprocess.run(
-        ["ansible", coord_host, "-b", "-m", "systemd",
-         "-a", "name=radp-coordinator state=restarted"],
-        cwd=_DEPLOY_DIR, capture_output=True, text=True, timeout=60, check=False,
+        ["ansible", coord_host, "-b", "-m", "shell",
+         "-a", "systemctl kill -s KILL radp-coordinator; "
+               "systemctl start radp-coordinator"],
+        cwd=_DEPLOY_DIR, capture_output=True, text=True, timeout=120, check=False,
     )
     return time.perf_counter() - t0, cp.returncode == 0, cp.stderr
 
@@ -489,12 +499,16 @@ def main() -> None:
     p.add_argument("--failure-max-tokens", type=int, default=60)
     p.add_argument("--failure-kill-after", type=int, default=15)
     p.add_argument("--ready-timeout", type=float, default=180.0)
+    p.add_argument("--no-final-cleanup", action="store_true",
+                   help="skip the post-run cleanup (victim worker restart + "
+                        "gateway revive). Default: do cleanup so the cluster "
+                        "is left in a runnable state when the script exits.")
     p.add_argument("--out", default="a3_remote")
     args = p.parse_args()
 
     sidecar_path = Path(args.sidecar)
     log.info("loading baselines from %s", sidecar_path)
-    sidecar, baselines = _load_baselines_from_sidecar(sidecar_path)
+    _sidecar, baselines = _load_baselines_from_sidecar(sidecar_path)
     log.info("baselines computed: %s", list(baselines.keys()))
 
     log.info("fetching current gateway info from %s", args.coord_web)
@@ -575,6 +589,40 @@ def main() -> None:
                  cell["name"], n_tbt, f_kind, n_tok)
     log.info("=" * 72)
     log.info("wrote %s", out_path)
+
+    # Post-run cleanup: each baseline's failure benchmark kills the victim
+    # worker on each trial, and `run_failure_benchmark` does NOT reset after
+    # the *last* trial of the *last* baseline (so coord ends with the victim
+    # still in its `_dead` set + the worker process stopped). Without this
+    # cleanup, the cluster is left in a non-runnable state. Cheaper than a
+    # full coord restart: just restart the victim's systemd unit and POST
+    # to /api/revive_device so the gateway's `_dead` set drops it.
+    if not args.no_final_cleanup and out["cells"]:
+        log.info("[final cleanup] restarting victim worker + reviving in coord")
+        cp = subprocess.run(
+            ["ansible", args.victim, "-b", "-m", "systemd",
+             "-a", "name=radp-worker state=started"],
+            cwd=_DEPLOY_DIR, capture_output=True, text=True, timeout=30, check=False,
+        )
+        worker_ok = cp.returncode == 0
+        log.info("  worker restart: ok=%s", worker_ok)
+        try:
+            body = json.dumps({"device_id": args.victim}).encode()
+            req = urllib.request.Request(
+                f"http://{args.coord_web}/api/revive_device",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310
+                resp = json.loads(r.read().decode("utf-8"))
+            log.info("  gateway revive: dead_devices=%s", resp.get("dead_devices"))
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+            log.warning("  gateway revive failed (coord unreachable?): %s", e)
+        out["final_cleanup"] = {
+            "victim_restart_ok": worker_ok,
+        }
+        out_path.write_text(json.dumps(out, indent=2))
 
 
 if __name__ == "__main__":

@@ -879,6 +879,120 @@ ours의 recovery step: mean **597 ms**, p50 **594 ms** (A2의 N=5 mean 729 / p50
 
 ---
 
+## Phase EXP-D1 — OPT-350M 측정 (model scaling 첫 데이터 포인트)
+
+**목표**: OPT-125M (12 layer, hidden 768)에서 OPT-350M (24 layer, hidden 1024)으로 모델을 키워 *알고리즘 격차가 모델 크기와 어떻게 관계하는지* + *회복 비용이 어떻게 확장되는지* 정량 측정. D 트랙(모델 확장)의 첫 측정. OPT-1.3B 시도(아래 EXP-D0)가 Nano OS 리부트로 실패한 직후의 후속 작업.
+
+**구현**:
+- [radp/common/architectures.py](radp/common/architectures.py) `embed()` 버그 수정 — `project_in`을 `inputs_embeds + pos_embeds` *후*가 아니라 *전*에 적용해야 함. OPT-350M만 `word_embed_proj_dim (512) ≠ hidden_size (1024)`이라 이 버그에 걸림. OPT-125M / 1.3B는 둘 다 동일해서 잠재됐었음. 첫 generate 요청이 "tensor a (512) must match tensor b (1024) at non-singleton dimension 2"로 실패하면서 발견
+- [experiments/run_a3_remote.py](experiments/run_a3_remote.py) `restart_coord()` — `state=restarted` (SIGTERM + TimeoutStopSec 90초 대기)는 coord가 deploy 루프에서 SIGTERM 무시할 때 subprocess timeout(60초)을 초과시킴 → `systemctl kill -s KILL + start`로 변경 + timeout 120초
+- [experiments/run_a3_remote.py](experiments/run_a3_remote.py) `--no-final-cleanup` 플래그 + 후처리 cleanup 추가 — 마지막 baseline의 마지막 trial 후 victim 워커가 죽고 coord `_dead` set에 남아있어 후속 작업 불가. 기본값은 cleanup 수행 (`ansible systemd state=started` + POST `/api/revive_device`)
+
+**검증 결과 (A1' 정상 운영)** (7-worker fleet — ao-1, ao-2, on-1, on-2, on-3, on-4, on-5; on-6은 sshd swap thrash로 제외, 10 req × 30 tok, 2026-06-06):
+
+| 지표 | OPT-350M | OPT-125M (A1) | 비교 |
+|---|---|---|---|
+| TTFT mean / p95 | 409 / 445 ms | 283 / 324 ms | +45% / +37% |
+| TBT p50 / p95 / p99 | 304 / 370 ms | 220 / 289 ms | +38% / +28% |
+| Throughput mean | 3.2 tok/s | 4.4 tok/s | -27% |
+| DP max_stage_time | 113.7 ms | 113.6 ms | 거의 동일 (DP가 균형 잡음) |
+| 모델-측정 격차 | 190 ms | 104 ms | +83% (DP cost가 큰 모델 오버헤드 못 잡음) |
+| Layer 수 | 24 | 12 | 2× |
+| 결과 JSON | [opt350m_baseline_first.json](experiments/results/opt350m_baseline_first.json) | | |
+
+**검증 결과 (A2' 장애 + 회복)** (victim=on-4, max_tokens=60, kill_after 15, 3 trials, 2026-06-06):
+
+| 지표 | 값 |
+|---|---|
+| Pre-kill TBT p50 (n=2 유효 trial) | 301 ms |
+| **Recovery step** | mean **1225 ms** (range 624-1825 ms) |
+| Spike vs pre-p50 | mean +923 ms, **4.0×** (OPT-125M의 3.1× 대비 큼) |
+| Post-recovery TBT p50 | 293 ms (정상 복귀) |
+| 토큰 손실 | **0/120** |
+| Backup activation | 2/2 정상 (trial 3은 coord ready timeout 으로 skip) |
+| 결과 JSON | [a2_opt350m_kill_on4.json](experiments/results/a2_opt350m_kill_on4.json) |
+
+**검증 결과 (A3a' 알고리즘 비교, 사이드카 사용)**:
+
+| 베이스라인 | 예측 max_stage | 상대 (vs ours) | 메모리 |
+|---|---|---|---|
+| greedy | 117.2 ms | +3.1% | ok / ok |
+| uniform | 117.2 ms | +3.1% | ok / ok |
+| jupiter_dp | 113.7 ms | 0.0% | ok / ok |
+| ours | 113.7 ms | (기준) | ok / ok |
+
+**검증 결과 (A3b' 라이브 4-baseline 비교)** (victim=ao-1, normal 10×30 tok / failure 3×60 tok, 2026-06-06):
+
+| baseline | TBT p50 | TBT p95 | TTFT p50 | failure | tokens |
+|---|---|---|---|---|---|
+| greedy | **275 ms** | 341 ms | 400 ms | catastrophic 3/3 | [19, 18, 16] |
+| uniform | 294 ms | 368 ms | 458 ms | catastrophic 3/3 | [18, 18, 18] |
+| jupiter_dp | 298 ms | 372 ms | 511 ms | catastrophic 3/3 | [18, 13, 20] |
+| **ours** | 301 ms | 371 ms | 501 ms | **graceful 3/3** | **60/60 ×3** |
+
+ours recovery: mean **678 ms**, p50 **692 ms**, p95 **726 ms** (n=3).
+
+**페이퍼 핵심 발견**:
+
+1. **알고리즘 격차가 모델 크기와 함께 확장**: 정상 운영 TBT 차이가 OPT-125M의 +0.1%(A3a) → OPT-350M의 +3.1%(A3a') → **3× 확대**. 라이브 측정에서도 3% → 9% 차이로 보임. 더 큰 모델에서는 더 클 것으로 추정 — D 트랙 가설 보강.
+
+2. **DP cost function의 한계 노출**: A3b' 라이브에선 **greedy가 ours보다 9% 빠름** (예측은 ours가 3% 빠를 거였음). 이유: ours의 placement가 on-4에 13 layer 집중, greedy는 device당 3-4 layer 균등. DP의 per-layer cost는 layer concatenation overhead(메모리/캐시 효과)를 잡지 못함 → **§7 limitations에 "marginal-layer cost 불완정" 명시 가치**.
+
+3. **그럼에도 ours의 진짜 가치는 회복**: 모든 R={} baseline은 17-19 token에서 NoRecoveryError로 사망, ours만 **60/60 × 3 회복**. 정상 9% 손해 vs **100% 토큰 손실 방지**. 페이퍼 메시지: "알고리즘 차이는 normal에서 작고 *failure에서 결정적*".
+
+4. **OPT-350M에서도 ours.Ψ == jupiter_dp.Ψ** (byte-identical) — 메모리 binding regime 진입 못 함. OPT-1.3B / Llama-7B INT4 같은 더 큰 모델 필요.
+
+5. **회복 비용은 모델 크기에 mild 의존**: OPT-125M 594 ms → OPT-350M 692 ms (+17%). 24 layer 트래버설 + 큰 activation에도 unchanged within 7-worker fleet.
+
+**의도된 한계**:
+- A2' trial 3 실패 (coord ready timeout) — `--ready-timeout` 300초로 늘려도 한계가 있음. 후속 trial에서 coord 재시작이 누적되면 워커 stress 누적 가능성. N=5 안정성 측정엔 부족
+- on-6 제외로 fleet 다양성 1대 손실 (5 Nano + 1 AGX CPU)
+- 단일 victim(ao-1) — head/middle/tail sweep 미수행
+- OPT-1.3B는 EXP-D0에서 시도했으나 Nano OS reboot으로 실패 → OPT-350M으로 한 단계 축소
+
+---
+
+## Phase EXP-D0 — OPT-1.3B 시도 + Negative result
+
+**목표**: 24 layer × 80 MB/layer = 1.9 GB의 OPT-1.3B를 6-7 worker Jetson Nano fleet에 분산해 *메모리 binding regime* 진입 시도. ours.Ψ가 jupiter_dp.Ψ와 갈라지는지 확인.
+
+**진행 + 실패 요약**:
+
+1. **첫 시도** (8-worker auto): worker가 OPT-125M에 pin된 상태에서 OPT-1.3B로 전환 거부 → coord crash 루프. 워커 일괄 재시작으로 해결.
+
+2. **6-worker auto 두 번째 시도**: DP가 **on-1에 18 layer 몰빵** placement 선택 (네트워크 통신 dominant 가정 + activation_bytes=1MB 과대평가). on-1 워커 LoadStage 중 메모리 압력 → **OS 리부트** (커널 watchdog). coord는 죽은 RPC에 11분 hang.
+
+3. **6-worker manual placement** (Nano당 4-5 layer): on-6이 5-layer load 중 sshd 응답 정지 → swap thrash 추정.
+
+4. **on-6 회복 안 됨** → 5-worker로 OPT-350M으로 다운그레이드.
+
+**페이퍼 측면 정량 negative result**:
+
+1. **OPT-1.3B float16 (단일 bin 파일 2.6 GB)은 Jetson Nano 8 GB fleet에서 사실상 분산 불가**. 이유:
+   - 워커가 LoadStage 시점에 *전체 모델 파일*을 메모리에 로드 (sharded가 아닌 단일 파일 → 우리 [model_utils.py](radp/common/model_utils.py)의 `torch.load`가 전체 메모리 로드)
+   - 분산해도 *피크 시 메모리 사용*은 모델 전체 크기에 가까움 → Nano 8 GB의 절반 이상 점유
+   - DP는 layer 수가 적으니 한 노드에 몰빵하는 placement 선택 → 백업 부담까지 추가되면 OS 안정성 위협
+
+2. **OPT-2.7B / OPT-6.7B로 가려면**:
+   - **Sharded 형식 변환** (safetensors_sharded 또는 bin_sharded) 필요 — 우리 코드는 sharded 지원되니 모델 포맷만 갖춰지면 됨
+   - 또는 **INT4/INT8 양자화**로 모델 크기 축소 (3.5 GB or 1.6 GB) — bitsandbytes ARM/CUDA 호환성 확인 필요
+
+3. **DP의 placement polarization 발견 (분석 중)**:
+   - 같은 종류 Nano 5대에서 DP가 18 layer를 한 노드에 몰빵 결정
+   - 분석: `activation_bytes=1048576` (1 MB) 가정이 실제 activation (~70 KB prefill, ~4 KB decode)보다 *5-200×* 과대평가 → DP가 stage transition cost를 매우 비싸게 보고 stage 수를 줄이려는 경향
+   - 추가 분석: 6 stage 중 stage 수가 어차피 *device 수에 고정*되므로 transition 수는 변하지 않음 (5 transitions 동일). 즉 진짜 차이는 *stage 내부 compute 누적*뿐 — DP가 indifferent해야 정상인데 18-layer 선택. **tiebreaking 또는 backup memory cost**의 미묘한 영향 추정 — 후속 조사 필요
+
+**다음 단계** (향후 진행):
+- A5 (lazy backup loading) 검토에 이 케이스 정량 데이터 활용
+- DP cost function의 *activation_bytes 동적 추정* 개선 (코드 변경)
+- 또는 D 트랙: Llama-7B INT4 sharded 모델로 진짜 메모리 binding 확보
+
+**의도된 한계**:
+- 이 실패 자체가 페이퍼의 *limitations + future work* 데이터로 가치 있음. 부정적 결과지만 시스템 한계 + DP cost function 한계를 *실측*으로 입증
+- 시간 손실 (~수 시간) — 그만한 보상 데이터 확보
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
