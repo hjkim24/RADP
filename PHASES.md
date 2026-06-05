@@ -900,6 +900,7 @@ ours의 recovery step: mean **597 ms**, p50 **594 ms** (A2의 N=5 mean 729 / p50
 | **A2** | **동시 다중 장애 대응** | `R(j): DeviceId → list[DeviceId]`로 확장. 1차/2차 백업 후보. 동시 2-node 장애에서도 복구. 메모리 제약 다시 검토 필요. | 중 |
 | **A3** | **Online 재배치** | 부하 변화/노드 추가·제거 시 placement 동적 재최적화. 진행 중인 요청 마이그레이션 정책 필요. | 큼 |
 | **A4** | **Proactive 예측 복구** | 하드웨어 텔레메트리(온도, 메모리 압력 등) → 장애 사전 감지 → 미리 backup promotion. plan.md §8 "향후 연구 방향". | 큼 |
+| **A5** | **Lazy backup loading + soft memory reservation** | 현재(eager proactive): backup 가중치를 deploy 시점에 메모리에 미리 적재 → 회복 ~600 ms, 0 token loss, 단 평상시 backup 영역 메모리 점유. 대안(lazy proactive): DP 단계에서 backup 메모리 *예약*만 하고 가중치 로딩은 장애 시점으로 미룸 → 평상시 그 영역을 더 큰 KV cache / 더 긴 컨텍스트 / 더 많은 동시 요청에 활용 가능. 트레이드오프: 회복 시 디스크 → 메모리 로드 비용 (~5-30 s) + 진행 중 요청의 KV cache 폐기로 인한 부분 손실. **2026-06-06 사용자 제안.** D 트랙(모델 확장) 후 별도 실험으로 정량 비교 — eager(현재) vs lazy(이 안), 큰 모델 + concurrent 워크로드에서 throughput 이득 vs 회복 latency 손실 vs 토큰 손실률을 측정. plan.md §7 (limitations) / §8 (future work)에 정책 비교 표로 포함 검토. | 중-큼 |
 
 ### B. 운영 검증 / 실데이터 (논문 실험 데이터)
 
