@@ -606,6 +606,33 @@ def main() -> None:
         )
         worker_ok = cp.returncode == 0
         log.info("  worker restart: ok=%s", worker_ok)
+
+        # Wait for the victim's heartbeat to land in the coord BEFORE calling
+        # revive. Order matters: failure_detector keeps the victim in its
+        # _fired set until record(hb) discards it, and on a stale heartbeat
+        # it will mark_dead again the next tick. If we revive immediately
+        # after `state=started` (worker still booting, no heartbeat yet),
+        # the very next failure_detector tick re-fires and the gateway
+        # bounces back to dead — exactly what we just observed live.
+        heartbeat_fresh = False
+        deadline = time.perf_counter() + 30.0
+        while time.perf_counter() < deadline:
+            try:
+                with urllib.request.urlopen(  # noqa: S310
+                    f"http://{args.coord_web}/api/heartbeats", timeout=5
+                ) as r:
+                    hbs = json.loads(r.read().decode("utf-8"))
+                hb = hbs.get(args.victim)
+                if hb is not None:
+                    age_s = (time.time_ns() - int(hb["last_ts_ns"])) / 1e9
+                    if age_s < 3.0:
+                        heartbeat_fresh = True
+                        break
+            except (urllib.error.URLError, ConnectionError, TimeoutError):
+                pass  # coord transiently slow; keep polling
+            time.sleep(0.5)
+        log.info("  waited for fresh heartbeat: ok=%s", heartbeat_fresh)
+
         try:
             body = json.dumps({"device_id": args.victim}).encode()
             req = urllib.request.Request(
@@ -621,6 +648,7 @@ def main() -> None:
             log.warning("  gateway revive failed (coord unreachable?): %s", e)
         out["final_cleanup"] = {
             "victim_restart_ok": worker_ok,
+            "heartbeat_fresh": heartbeat_fresh,
         }
         out_path.write_text(json.dumps(out, indent=2))
 

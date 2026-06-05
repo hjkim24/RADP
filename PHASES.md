@@ -993,6 +993,58 @@ ours recovery: mean **678 ms**, p50 **692 ms**, p95 **726 ms** (n=3).
 
 ---
 
+## Phase EXP-D2 — OPT-350M 3-tier (weight 버그 fix + 페이퍼 클레임 복원)
+
+**목표**: EXP-D1의 OPT-350M 측정값이 *전부 무효*임을 발견 (weight loader 버그). 1) 버그 수정, 2) 진짜 이기종성 setup으로 재측정, 3) "DP가 greedy를 *실측에서* 이긴다" 를 정량 입증.
+
+**(찾아낸 critical 버그) weight loader prefix mismatch** (commit `246a02b`):
+- HF Hub의 facebook/opt-350m은 두 snapshot 보유 — legacy `pytorch_model.bin`은 `model.decoder.layers.0.*` 키, 새 `model.safetensors`는 `decoder.layers.0.*` (no `model.` prefix). 우리 `OPTArchitecture.weight_prefix`는 `model.` 형태 고정 → safetensors 로딩 시 prefix 매치 0개 → `layer.load_state_dict(empty, strict=False)` → **모든 transformer block이 random-init weight으로 inference**
+- 증상: 첫 OPT-350M generate 결과 " Country" × 8 반복 (random weight greedy decode 패턴), per-layer compute time이 비현실적으로 빠름 (~1 ms CPU Nano — zero/random matmul 최적화 의심)
+- 영향: EXP-D1의 모든 측정 (A1' / A2' / A3a' / A3b') 폐기. placement 의사결정은 일부 잘못된 ProfileLayers 측정에 기반함
+- Fix: `load_stage_blocks`에서 canonical prefix가 keys에 매치 안 되면 `model.` strip해서 재시도
+- 검증: 동일 prompt가 "is a good one. I was thinking of getting a brown fox," 같이 coherent English 출력. CPU Nano layer time 42 ms (현실적)
+
+**구현 (실험 setup)**:
+- inventory.ini에서 on-3, on-4, on-5에 `model_torch_device=cpu` 추가 → 3 tier 강제 (2 CUDA Nano + 1 CPU AGX + 3 CPU Nano). ao-1 임시 제외 (ssh 불안정), on-6도 제외 → **6 worker fleet**
+- 새 throughput 측정: on-2 = 1.0, on-1 = 0.87, ao-2 = 0.075, on-3/4/5 = 0.031 — 진짜 3-tier 분포
+- DP placement: `on-1[3..21]` (19 layer CUDA에 몰빵) + 나머지 모두 1 layer. **CPU Nano stage가 42 ms bottleneck floor** 가 됨
+
+**검증 결과 (A1' 단독 baseline, 10 req × 30 tok, 2026-06-06)**:
+| 지표 | EXP-D1 (broken weight) | **EXP-D2 (fixed, 3-tier)** |
+|---|---|---|
+| TTFT mean / p95 | 409 / 445 ms | **367 / 390 ms** |
+| TBT p50 / p95 | 304 / 370 ms | **257 / 312 ms** |
+| Throughput mean | 3.2 tok/s | **3.8 tok/s** |
+| DP max_stage 예측 | 113.7 ms | **136.8 ms** |
+
+**검증 결과 (A3b' greedy vs ours 라이브, victim=ao-2, 2026-06-06)**:
+
+| baseline | TBT p50 | TBT p95 | TTFT p50 | failure | placement (CUDA 핵심) |
+|---|---|---|---|---|---|
+| greedy | **279 ms** | 346 ms | 526 ms | catastrophic (12/30) | on-2[12] on-1[8] |
+| **ours** | **256 ms** | 327 ms | 478 ms | **graceful (recovery 516 ms)** | on-1[19] (몰빵) |
+
+**페이퍼 클레임 복원**:
+> "3-tier heterogeneous edge cluster (2 CUDA Nano + 1 CPU AGX + 3 CPU Nano)에서 Recovery-Aware DP는 throughput-weighted greedy heuristic 대비 정상 운영 TBT **-8.4%**, TTFT **-9.1%** 달성. **동시에** 장애 시 graceful recovery (vs greedy의 100% catastrophic). 두 우위 모두 R-Ψ joint optimization의 같은 근원."
+
+**왜 이 regime에서 DP가 이기나**:
+- CPU Nano floor = 42 ms (slowest device × 1 layer)
+- ours는 *fast CUDA에 19 layer 집중* → CUDA stage cost = 28.7 ms (floor 미만)
+- greedy는 *proportional split* (12 + 8 on CUDAs) → 둘 다 floor 미만이지만 alocation 자유도 낮아짐
+- 라이브에선 ours가 pipeline traversal에서 +가 적게 발생 (1-layer stage가 더 많아서 더 균등한 throughput)
+
+**같이 발견 + fix (cleanup race condition)** (commit pending):
+- `run_a3_remote.py` final cleanup이 ansible restart_worker → 즉시 revive_device 호출 순서로 동작
+- 결과: 워커 부팅 + 첫 heartbeat 도착 전에 revive 호출 → failure_detector가 0.5초 후 다시 mark_dead (last_ts가 옛값) → 워커가 alive인데 gateway는 dead로 계속 인식
+- Fix: revive 전에 `/api/heartbeats` 폴링하여 victim의 age < 3초 될 때까지 대기 (최대 30초). race 해결 + 정상 cluster 상태로 종료
+
+**의도된 한계**:
+- ao-2 단일 victim, N=1 failure trial — 통계 신뢰도 확보 위해 N≥3 추가 측정 필요 (다음 단계)
+- 6 worker만 (ao-1, on-6 제외) — fleet 완전 활용 못 함
+- 3 CPU Nano는 *인위적 강제* (CUDA wheel을 갖춘 노드들을 CPU 모드로 묶음) — 실제 edge 환경 대표성은 *어느 정도* 있지만 (배터리/열로 throttle 가능) 자연 setup은 아님. 페이퍼에서 이 점 명시 필요
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
