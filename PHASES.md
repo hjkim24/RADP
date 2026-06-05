@@ -699,29 +699,57 @@ ansible workers -a "journalctl -u radp-worker -n 50"
 
 **(찾아낸 버그) `th.join(timeout=10)` 메인 스레드 블로킹**: 초기 구현에서 kill 스레드를 join하면서 stop_worker(ansible 1.2s) 동안 SSE 스트림 reader가 멈춤 → 그 사이 coordinator가 생산한 토큰들이 소켓 버퍼에 쌓였다가 join 종료 후 한꺼번에 flush되어 모두 동일 t_recv로 기록됨. 이로 인해 첫 분석에서 "recovery spike = +15ms (1.1x)" 같은 거짓 결론 도출. fire-and-forget(`th.start()` 만) + 최후 reap으로 수정.
 
-**검증 결과** (OPT-125M, victim=ao-1, max_tokens=60, kill_after_tokens=15, 2026-06-05):
+**검증 결과 (단일 trial pilot)** (OPT-125M, victim=ao-1, max_tokens=60, kill_after_tokens=15, 2026-06-05):
 | 항목 | 값 |
 |---|---|
 | Pre-kill TBT p50 (n=19) | 216 ms |
 | Kill 발사 → 복구 감지 사이 in-flight 토큰 | 5 |
-| **Recovery step latency** | **682 ms** (+466 ms, **3.16×**) |
+| Recovery step latency | 682 ms (+466 ms, 3.16×) |
 | Post-recovery TBT p50 (n=39) | 216 ms (즉시 정상화) |
-| **토큰 손실** | **0 / 60** |
+| 토큰 손실 | 0 / 60 |
 | Pre-kill layer 6 라우팅 | ao-1[6-6] |
-| Recovery step 라우팅 | **on-1[6-6]** (R(ao-1)=on-1 백업 정확히 발동) |
+| Recovery step 라우팅 | on-1[6-6] (R(ao-1)=on-1 백업 정확히 발동) |
 | 결과 JSON | [experiments/results/a2_kill_ao1_first.json](experiments/results/a2_kill_ao1_first.json) |
 
-**해석**:
-- Recovery 비용 = 단일 step penalty (~470 ms) 뿐. cache-replay가 prefill 재실행을 피해 latency가 작음
-- on-1이 layer 5와 layer 6 모두 처리하지만 stage invoke time이 14-17 ms로 유지 → 1개 추가 layer는 측정 가능한 throughput 저하 없음. (소형 모델 + 통신 bound 시스템 특성)
-- gRPC 채널 영속화 + SIGKILL이라 *next RPC fails fast*: 가설했던 heartbeat timeout 5s 대기 없이 즉시 mark_dead 발동
-- gateway의 `_dead` set은 단조 — 다음 trial을 위해선 coord 재시작 필요 (스크립트가 자동화)
+**검증 결과 (5-trial sweep)** (위와 동일 파라미터, `--trials 5`, 2026-06-05):
+
+스크립트의 `--trials N` + `reset_cluster_for_next_trial()` 로 매 trial 사이 victim 재기동 + coord 재시작 (auto_schedule 재실행)을 자동 수행. 매 trial마다 재프로파일링되므로 ao-1이 owning하는 layer가 1-2, 6, 7, 8, 9로 변동. R-table은 5/5 trial에서 모두 `ao-1 → ao-2` (동일 device class 선호).
+
+| 지표 | 값 |
+|---|---|
+| Recovery step latency | mean **729 ms**, p50 **677 ms**, p95 **883 ms** (range 669-930 ms) |
+| Spike over pre-kill p50 | mean +509 ms, p50 +461 ms, p95 +653 ms |
+| Spike factor | mean **3.30×**, p50 3.14×, p95 3.86× |
+| Pre-kill TBT p50 (trial 평균) | 221 ms |
+| Post-recovery TBT p50 (trial 평균) | 226 ms (~+5 ms 미세 저하) |
+| In-flight tokens | mean 4.6, p50 4, max 7 |
+| 토큰 손실 | **0 / 300** (5 trial × 60) |
+| Backup activation | **5 / 5** trial 모두 정상 |
+| 결과 JSON | [experiments/results/a2_kill_ao1_n5.json](experiments/results/a2_kill_ao1_n5.json) |
+
+**Backup 부담 분석** — recovery cost가 *백업이 새로 떠안는 layer 수*에 강하게 의존:
+| Trial | Victim layer | Backup 총 layer 부담 | Recovery step |
+|---|---|---|---|
+| 1 | ao-1[8] | ao-2: [1] + [8] = 2 | 695 ms |
+| 2 | ao-1[1-2] | ao-2: [1-2] + [8] = **3** | **930 ms** |
+| 3 | ao-1[6] | ao-2: [5] + [6] = 2 | 669 ms |
+| 4 | ao-1[7] | ao-2: [7] + [8] = 2 | 676 ms |
+| 5 | ao-1[9] | ao-2: [8] + [9] = 2 | 677 ms |
+
+2-layer 케이스 4개의 표준편차 ±13 ms (669-695 ms) — 매우 안정적. 3-layer 케이스 한 개가 +250 ms — **층당 ~250 ms** 의 한계 비용. compute가 ms 수준임을 고려할 때 추가 layer 비용의 대부분은 cache-replay 직렬화 + RPC overhead.
+
+**해석 / 페이퍼 메시지**:
+- Recovery 비용 = 단일 step penalty. cache-replay가 prefill 재실행 회피하여 latency가 작음
+- p95 < 900 ms — pipeline TBT의 ~4× 미만으로 bounded
+- Post-recovery throughput 손실 측정 한계 이내 — 백업이 1-2 layer 추가 떠맡아도 stage invoke time이 ms 수준이라 무시 가능
+- gRPC 영속 채널 + SIGKILL → next RPC fast-fails (heartbeat timeout 5s 대기 안 함)
+- gateway `_dead` set은 단조 → 다중 trial은 coord 재시작 필요 (스크립트 자동화)
 
 **의도된 한계**:
-- 단일 trial — 통계적 분산 위해선 N회 반복 필요 (스크립트가 reset 자동화로 가능)
-- 단일 장애 (1 worker) — 동시 다중 장애는 백로그 A2 항목
-- mid-pipeline victim (ao-1[6]) 만 — head/tail victim별 비교는 추후 sweep
-- coord 자체 장애는 측정 안 함 (single point of failure로 의도적 제외)
+- N=5 trial은 분포 추정에 충분하지만 형식적 신뢰구간엔 부족 — 통계 검증 필요시 N≥20 권장
+- 단일 victim (ao-1) — head/middle/tail 위치별 영향 분리는 victim sweep으로 추후
+- 동일 device class (AGX Orin) 백업만 관찰 — 이종 backup(예: ao→on)은 placement 분포 상 발생하지 않음
+- 단일 장애 (1 worker 동시) — 다중 동시 장애는 백로그 A2 항목
 
 ---
 

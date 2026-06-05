@@ -315,6 +315,89 @@ def _percentile(xs: list[float], q: float) -> float:
     return s[f] if f == c else s[f] + (s[c] - s[f]) * (k - f)
 
 
+def aggregate_trials(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-trial summaries into mean / p50 / p95 distributions.
+
+    Skips trials whose summary failed to identify a recovery step
+    (_no_recovery_observed / _empty) — those are flagged separately.
+    """
+    valid = [s for s in summaries if "recovery_step_seconds" in s]
+    skipped = len(summaries) - len(valid)
+
+    def _stats(values: list[float]) -> dict[str, Any]:
+        if not values:
+            return {"n": 0, "mean": float("nan"), "p50": float("nan"),
+                    "p95": float("nan"), "values": []}
+        return {
+            "n": len(values),
+            "mean": statistics.fmean(values),
+            "p50": _percentile(values, 0.5),
+            "p95": _percentile(values, 0.95),
+            "min": min(values),
+            "max": max(values),
+            "values": values,
+        }
+
+    return {
+        "n_valid": len(valid),
+        "n_skipped": skipped,
+        "recovery_step_seconds": _stats([s["recovery_step_seconds"] for s in valid]),
+        "spike_over_pre_p50_seconds": _stats(
+            [s["spike_over_pre_p50_seconds"] for s in valid
+             if "spike_over_pre_p50_seconds" in s]
+        ),
+        "spike_factor": _stats(
+            [s["spike_factor"] for s in valid if "spike_factor" in s]
+        ),
+        "pre_kill_tbt_p50_seconds": _stats([s["pre_kill_tbt"]["p50"] for s in valid]),
+        "post_recovery_tbt_p50_seconds": _stats(
+            [s["post_recovery_tbt"]["p50"] for s in valid]
+        ),
+        "tokens_in_flight_during_kill": _stats(
+            [float(s.get("tokens_in_flight_during_kill") or 0) for s in valid]
+        ),
+    }
+
+
+def reset_cluster_for_next_trial(
+    *, coord_web: str, coord_host: str, victim: str, ready_timeout: float
+) -> dict[str, Any]:
+    """Restart victim worker + restart coordinator + wait until ready.
+
+    The coordinator restart is what actually clears the gateway's _dead set
+    (no mark_alive API exists), so this is MANDATORY between trials —
+    otherwise the next trial would start with the previous victim already
+    marked dead and a stale execution plan still in effect.
+    """
+    info: dict[str, Any] = {}
+    log.info("[reset] restarting victim worker %s", victim)
+    dt, ok, _ = start_worker(victim)
+    info["restart_victim"] = {"ok": ok, "seconds": dt}
+    log.info("[reset] start_worker(%s): ok=%s dt=%.2fs", victim, ok, dt)
+
+    log.info("[reset] restarting coordinator %s", coord_host)
+    dt, ok, _ = restart_coordinator(coord_host)
+    info["restart_coord"] = {"ok": ok, "seconds": dt}
+    if not ok:
+        log.error("[reset] restart_coordinator failed — aborting reset")
+        info["aborted"] = True
+        return info
+
+    log.info("[reset] waiting up to %.0fs for coordinator ready", ready_timeout)
+    wait_s, ready, final = wait_for_coordinator_ready(
+        coord_web, timeout_seconds=ready_timeout
+    )
+    info["wait_for_ready"] = {
+        "ok": ready, "seconds": wait_s,
+        "final_dead_devices": final.get("dead_devices") if final else None,
+    }
+    if ready:
+        log.info("[reset] coordinator ready in %.1fs", wait_s)
+    else:
+        log.warning("[reset] coordinator NOT ready after %.1fs", wait_s)
+    return info
+
+
 def _stages_signature(tok: dict[str, Any]) -> tuple[tuple[str, int, int], ...]:
     """Hashable signature of a token's stage routing — used to detect the
     moment the execution plan flips to a backup."""
@@ -426,119 +509,128 @@ def main() -> None:
                    help="total tokens to generate (more = better post-recovery sample)")
     p.add_argument("--kill-after-tokens", type=int, default=15,
                    help="kill the worker AFTER this many tokens have been received")
-    p.add_argument("--restart-victim", action="store_true",
-                   help="restart the worker via systemd after the trial (post-cleanup)")
-    p.add_argument("--restart-coord", action="store_true",
-                   help="restart the coordinator (clears gateway _dead state + reruns "
-                        "auto_schedule) and wait for ready=True. Use this between trials.")
+    p.add_argument("--trials", type=int, default=1,
+                   help="number of trials (cluster auto-reset between each)")
+    p.add_argument("--final-reset", action="store_true",
+                   help="also reset cluster after the LAST trial (default: leave coord "
+                        "in post-kill state so the user can inspect / debug)")
     p.add_argument("--ready-timeout", type=float, default=180.0,
-                   help="seconds to wait for coordinator ready after restart")
-    p.add_argument("--reset-cluster", action="store_true",
-                   help="shorthand: --restart-victim AND --restart-coord (full reset)")
+                   help="seconds to wait for coordinator ready after each reset")
     p.add_argument("--out", default="failure_remote")
     args = p.parse_args()
 
     if args.kill_after_tokens < 2 or args.kill_after_tokens >= args.max_tokens:
         raise SystemExit("kill_after_tokens must be in [2, max_tokens)")
+    if args.trials < 1:
+        raise SystemExit("--trials must be >= 1")
 
-    log.info("fetching pre-trial scheduler sidecar from %s", args.coord_host)
-    sidecar_before = fetch_sidecar(args.coord_host)
-    if sidecar_before:
-        # Top-level `placement` is a list of {device,start,end}; group by device.
-        victim_layers = [
-            (s["start"], s["end"]) for s in sidecar_before.get("placement", [])
-            if s.get("device") == args.victim
-        ]
-        if victim_layers:
-            log.info("victim %s currently owns layer ranges %s", args.victim, victim_layers)
-        else:
-            log.warning("victim %s NOT in current placement — kill will have no routing effect", args.victim)
-        recovery = sidecar_before.get("recovery", {})
-        if args.victim in recovery:
-            log.info("victim's backup per R: %s", recovery[args.victim])
-
-    trial = run_trial(
-        coord_web=args.coord_web,
-        victim=args.victim,
-        prompt=args.prompt,
-        max_tokens=args.max_tokens,
-        kill_after_tokens=args.kill_after_tokens,
-    )
-    summary = summarize(trial)
-
-    log.info("=" * 60)
-    if "_empty" in summary or "_no_recovery_observed" in summary:
-        log.warning("trial produced no useful breakdown: %s", summary)
-    else:
-        log.info("TTFT             : %.3fs", summary["ttft_seconds"])
-        log.info("kill fired at    : token idx %s",
-                 summary.get("kill_fired_at_token_idx"))
-        log.info("recovery seen at : token idx %d (%d tokens were in flight)",
-                 summary["recovery_token_idx"],
-                 summary.get("tokens_in_flight_during_kill") or 0)
-        log.info("pre-kill   TBT   : p50=%.3fs p95=%.3fs (n=%d)",
-                 summary["pre_kill_tbt"]["p50"],
-                 summary["pre_kill_tbt"]["p95"],
-                 summary["pre_kill_tbt"]["n"])
-        log.info("recovery step    : %.3fs  (spike +%.3fs over pre-p50, %.1fx)",
-                 summary["recovery_step_seconds"],
-                 summary.get("spike_over_pre_p50_seconds", float("nan")),
-                 summary.get("spike_factor", float("nan")))
-        log.info("post-rec   TBT   : p50=%.3fs p95=%.3fs (n=%d)",
-                 summary["post_recovery_tbt"]["p50"],
-                 summary["post_recovery_tbt"]["p95"],
-                 summary["post_recovery_tbt"]["n"])
-        log.info("tokens emitted   : %d / requested %d",
-                 trial["tokens_emitted"], trial["max_tokens_requested"])
-    log.info("=" * 60)
-
-    out: dict[str, Any] = {
-        "coord_web": args.coord_web,
-        "coord_host": args.coord_host,
-        "trial": trial,
-        "summary": summary,
-        "scheduler_before": sidecar_before,
-    }
     out_path = RESULTS_DIR / f"{args.out}.json"
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, indent=2))
-    log.info("wrote %s", out_path)
 
-    if args.reset_cluster:
-        args.restart_victim = True
-        args.restart_coord = True
+    trials_data: list[dict[str, Any]] = []
+    all_summaries: list[dict[str, Any]] = []
 
-    cleanup: dict[str, Any] = {}
-    if args.restart_victim:
-        log.info("restarting victim worker %s via systemd", args.victim)
-        dt, ok, _ = start_worker(args.victim)
-        log.info("start_worker(%s): ok=%s dt=%.3fs", args.victim, ok, dt)
-        cleanup["restart_victim"] = {"ok": ok, "seconds": dt}
-
-    if args.restart_coord:
-        log.info("restarting coordinator %s via systemd (clears _dead state)", args.coord_host)
-        dt, ok, _ = restart_coordinator(args.coord_host)
-        cleanup["restart_coord"] = {"ok": ok, "seconds": dt}
-        log.info("restart_coordinator(%s): ok=%s dt=%.3fs", args.coord_host, ok, dt)
-        if ok:
-            log.info("waiting up to %.0fs for coordinator to come ready...", args.ready_timeout)
-            wait_s, ready, final = wait_for_coordinator_ready(
-                args.coord_web, timeout_seconds=args.ready_timeout,
-            )
-            cleanup["wait_for_ready"] = {
-                "ok": ready, "seconds": wait_s,
-                "final_dead_devices": final.get("dead_devices") if final else None,
-            }
-            if ready:
-                log.info("coordinator ready in %.1fs (no dead devices)", wait_s)
+    for trial_idx in range(args.trials):
+        log.info("########### TRIAL %d / %d ###########", trial_idx + 1, args.trials)
+        sidecar_before = fetch_sidecar(args.coord_host)
+        if sidecar_before:
+            victim_layers = [
+                (s["start"], s["end"]) for s in sidecar_before.get("placement", [])
+                if s.get("device") == args.victim
+            ]
+            if victim_layers:
+                log.info("victim %s owns layer ranges %s", args.victim, victim_layers)
             else:
-                log.warning("coordinator NOT ready after %.1fs (last state: %s)",
-                            wait_s, final)
-    if cleanup:
-        # Re-write the output JSON with cleanup info appended (the trial JSON
-        # was already saved above, but cleanup status is useful for the log).
-        out["cleanup"] = cleanup
+                log.warning("victim %s NOT in current placement — kill has no routing effect",
+                            args.victim)
+            recovery = sidecar_before.get("recovery", {})
+            if args.victim in recovery:
+                log.info("victim's backup per R: %s", recovery[args.victim])
+
+        trial = run_trial(
+            coord_web=args.coord_web,
+            victim=args.victim,
+            prompt=args.prompt,
+            max_tokens=args.max_tokens,
+            kill_after_tokens=args.kill_after_tokens,
+        )
+        summary = summarize(trial)
+
+        log.info("--- trial %d summary ---", trial_idx + 1)
+        if "_empty" in summary or "_no_recovery_observed" in summary:
+            log.warning("trial %d: %s", trial_idx + 1, summary)
+        else:
+            log.info("recovery step=%.3fs (+%.3fs, %.2fx) | pre p50=%.3fs | post p50=%.3fs"
+                     " | in-flight=%d | tokens %d/%d",
+                     summary["recovery_step_seconds"],
+                     summary.get("spike_over_pre_p50_seconds", float("nan")),
+                     summary.get("spike_factor", float("nan")),
+                     summary["pre_kill_tbt"]["p50"],
+                     summary["post_recovery_tbt"]["p50"],
+                     summary.get("tokens_in_flight_during_kill") or 0,
+                     trial["tokens_emitted"], trial["max_tokens_requested"])
+
+        trials_data.append({
+            "trial_idx": trial_idx,
+            "trial": trial,
+            "summary": summary,
+            "scheduler_before": sidecar_before,
+        })
+        all_summaries.append(summary)
+
+        # Reset between trials (mandatory: gateway _dead set is monotone).
+        # Skip after the final trial unless user explicitly asked.
+        need_reset = (trial_idx + 1 < args.trials) or args.final_reset
+        if need_reset:
+            cleanup_info = reset_cluster_for_next_trial(
+                coord_web=args.coord_web,
+                coord_host=args.coord_host,
+                victim=args.victim,
+                ready_timeout=args.ready_timeout,
+            )
+            trials_data[-1]["cleanup"] = cleanup_info
+            if cleanup_info.get("aborted") and trial_idx + 1 < args.trials:
+                log.error("reset failed — aborting remaining trials")
+                break
+
+        # Save after every trial so a long run can be inspected mid-flight
+        # (and so an abort still leaves the completed trials on disk).
+        out: dict[str, Any] = {
+            "coord_web": args.coord_web,
+            "coord_host": args.coord_host,
+            "n_trials_requested": args.trials,
+            "n_trials_completed": len(trials_data),
+            "victim": args.victim,
+            "max_tokens": args.max_tokens,
+            "kill_after_tokens": args.kill_after_tokens,
+            "trials": trials_data,
+            "aggregate": aggregate_trials(all_summaries),
+        }
         out_path.write_text(json.dumps(out, indent=2))
+
+    # Final report
+    agg = out["aggregate"]
+    log.info("=" * 60)
+    log.info("AGGREGATE over %d / %d trials (skipped=%d)",
+             agg["n_valid"], args.trials, agg["n_skipped"])
+    if agg["n_valid"]:
+        rec = agg["recovery_step_seconds"]
+        spk = agg["spike_over_pre_p50_seconds"]
+        fac = agg["spike_factor"]
+        log.info("recovery step     : mean=%.3fs p50=%.3fs p95=%.3fs (min=%.3f max=%.3f)",
+                 rec["mean"], rec["p50"], rec["p95"], rec["min"], rec["max"])
+        log.info("spike over pre-p50: mean=%.3fs p50=%.3fs p95=%.3fs",
+                 spk["mean"], spk["p50"], spk["p95"])
+        log.info("spike factor      : mean=%.2fx p50=%.2fx p95=%.2fx",
+                 fac["mean"], fac["p50"], fac["p95"])
+        log.info("pre-kill   p50    : mean=%.3fs", agg["pre_kill_tbt_p50_seconds"]["mean"])
+        log.info("post-recov p50    : mean=%.3fs", agg["post_recovery_tbt_p50_seconds"]["mean"])
+        log.info("in-flight tokens  : mean=%.1f p50=%.1f max=%.0f",
+                 agg["tokens_in_flight_during_kill"]["mean"],
+                 agg["tokens_in_flight_during_kill"]["p50"],
+                 agg["tokens_in_flight_during_kill"]["max"])
+    log.info("=" * 60)
+    log.info("wrote %s", out_path)
 
 
 if __name__ == "__main__":
