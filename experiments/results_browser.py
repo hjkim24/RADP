@@ -262,8 +262,8 @@ function render(name, p) {
   else if (shape === 'a3b_cells')     body = renderA3bCells(p);
   else if (shape === 'algorithmic')   body = renderAlgorithmic(p);
   else if (shape === 'a3_baselines')  body = renderA3Baselines(p);
-  else                                body = '<div class="empty">알 수 없는 형태</div>';
-  body += renderRawJson(p);
+  else                                body = renderUnknown(p);
+  body += renderRawJson(p, shape === 'unknown');
   main.innerHTML = header + body;
   // 차트들을 실제 렌더링 (DOM에 들어간 후 호출)
   if (shape === 'baseline')          mountBaseline(p);
@@ -603,10 +603,52 @@ function renderPlacement(placement, recovery) {
   return html;
 }
 
+// ===== unknown — top-level summary + JSON drawer auto-open =====
+function renderUnknown(p) {
+  if (!p || typeof p !== 'object') {
+    return `<div class="panel"><div class="empty">스칼라 값: ${JSON.stringify(p)}</div></div>`;
+  }
+  const entries = Array.isArray(p)
+    ? p.slice(0, 100).map((v, i) => [i, v])
+    : Object.entries(p);
+  let rows = '';
+  for (const [k, v] of entries) {
+    let typeLabel = typeof v;
+    let preview = '';
+    if (v === null) { typeLabel = 'null'; preview = '—'; }
+    else if (Array.isArray(v)) {
+      typeLabel = `array[${v.length}]`;
+      preview = v.length === 0 ? '[]'
+        : typeof v[0] === 'object' ? `[${typeof v[0]} × ${v.length}]`
+        : JSON.stringify(v.slice(0, 5)) + (v.length > 5 ? ' …' : '');
+    }
+    else if (typeof v === 'object') {
+      typeLabel = `object`;
+      preview = `keys: ${Object.keys(v).slice(0, 6).join(', ')}${Object.keys(v).length > 6 ? ' …' : ''}`;
+    }
+    else if (typeof v === 'number') {
+      typeLabel = 'number';
+      preview = String(v);
+    }
+    else { preview = String(v).slice(0, 80); }
+    rows += `<tr><td><code>${escapeHtml(String(k))}</code></td>
+                 <td><span class="small-label">${typeLabel}</span></td>
+                 <td><code style="color:var(--muted);font-size:11px">${escapeHtml(preview)}</code></td></tr>`;
+  }
+  return `<div class="panel">
+    <div class="small-label">알 수 없는 형태 — top-level 키 목록</div>
+    <table style="margin-top:6px"><thead><tr><th>키</th><th>타입</th><th>미리보기</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    <div class="empty" style="padding:8px;margin-top:8px;font-size:12px">
+      원시 JSON drawer가 아래에 자동으로 펼쳐져 있습니다.
+    </div>
+  </div>`;
+}
+
 // ===== raw JSON drawer =====
-function renderRawJson(p) {
+function renderRawJson(p, openByDefault) {
   const json = JSON.stringify(p, null, 2);
-  return `<details><summary>원시 JSON (${(json.length/1024).toFixed(1)} KB)</summary>
+  return `<details ${openByDefault ? 'open' : ''}><summary>원시 JSON (${(json.length/1024).toFixed(1)} KB)</summary>
     <pre class="json">${escapeHtml(json)}</pre></details>`;
 }
 function escapeHtml(s) {
@@ -658,9 +700,27 @@ def make_app() -> FastAPI:
         path = RESULTS_DIR / name
         if not path.exists():
             raise HTTPException(status_code=404, detail="file not found")
-        return JSONResponse(json.loads(path.read_text()))
+        # Some result files contain NaN / Infinity (statistics.fmean over an
+        # empty list returns NaN, _percentile too). Python's json.loads parses
+        # them, but FastAPI's JSONResponse uses strict json.dumps that
+        # rejects non-finite floats. Sanitize before sending.
+        payload = json.loads(path.read_text())
+        return JSONResponse(_sanitize(payload))
 
     return app
+
+
+def _sanitize(obj: Any) -> Any:
+    """Recursively replace NaN/Infinity floats with None for JSON
+    compliance (strict json.dumps rejects them)."""
+    import math
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
 
 
 def main() -> None:
