@@ -133,6 +133,44 @@
     <div id="phases">no auto_schedule run yet</div>
   </div>
 
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>Generate (live streaming)</h2>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;">
+      <textarea id="gen-prompt" rows="2" style="
+          flex: 1 1 320px; min-width: 200px;
+          background: var(--bg); color: var(--text);
+          border: 1px solid var(--border); border-radius: 4px;
+          padding: 6px; font: inherit; resize: vertical;"
+        placeholder="Prompt…">The quick brown fox</textarea>
+      <div style="display:flex;flex-direction:column;gap:4px;font-size:12px;">
+        <label>max_tokens
+          <input id="gen-max" type="number" value="30" min="1" max="2048"
+            style="width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px;"></label>
+        <label>temperature
+          <input id="gen-temp" type="number" value="0.0" min="0" max="4" step="0.1"
+            style="width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px;"></label>
+        <label>seed (opt)
+          <input id="gen-seed" type="number" placeholder=""
+            style="width:80px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px;"></label>
+      </div>
+      <button id="gen-send" style="
+          padding: 8px 16px; background: var(--accent); color: var(--bg);
+          border: none; border-radius: 4px; cursor: pointer; font: inherit;
+          font-weight: 600;">Send</button>
+    </div>
+    <div id="gen-summary" style="margin-top:8px;font-size:12px;color:var(--muted);">idle</div>
+    <div id="gen-output" style="
+        margin-top:8px;padding:8px;background:var(--bg);border:1px solid var(--border);
+        border-radius:4px;min-height:60px;white-space:pre-wrap;font-size:13px;"></div>
+    <details id="gen-trace-wrap" style="margin-top:8px;display:none;">
+      <summary style="cursor:pointer;color:var(--muted);font-size:12px;">per-stage breakdown (last token)</summary>
+      <table id="gen-trace-table" style="margin-top:6px;width:auto;">
+        <thead><tr><th>device</th><th>layers</th><th>invoke</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </details>
+  </div>
+
 </div>
 
 <div class="footer" id="footer">—</div>
@@ -297,6 +335,120 @@ async function tick() {
 
 tick();
 setInterval(tick, POLL_MS);
+
+// ───────────────────────────── Generate panel ─────────────────────────────
+
+const genBtn = document.getElementById('gen-send');
+const genPrompt = document.getElementById('gen-prompt');
+const genMax = document.getElementById('gen-max');
+const genTemp = document.getElementById('gen-temp');
+const genSeed = document.getElementById('gen-seed');
+const genOut = document.getElementById('gen-output');
+const genSummary = document.getElementById('gen-summary');
+const genTraceWrap = document.getElementById('gen-trace-wrap');
+const genTraceTbody = document.querySelector('#gen-trace-table tbody');
+
+genBtn.addEventListener('click', async () => {
+  const prompt = genPrompt.value;
+  if (!prompt.trim()) return;
+
+  const body = {
+    prompt,
+    max_tokens: parseInt(genMax.value) || 30,
+    temperature: parseFloat(genTemp.value) || 0.0,
+  };
+  const seedVal = genSeed.value.trim();
+  if (seedVal) body.seed = parseInt(seedVal);
+
+  genBtn.disabled = true;
+  genBtn.textContent = 'streaming…';
+  genOut.textContent = '';
+  genTraceWrap.style.display = 'none';
+  genTraceTbody.innerHTML = '';
+  genSummary.textContent = 'sending…';
+
+  let resp;
+  try {
+    resp = await fetch('/api/generate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    genSummary.innerHTML = `<span style="color:var(--red)">network error: ${e}</span>`;
+    genBtn.disabled = false; genBtn.textContent = 'Send';
+    return;
+  }
+  if (!resp.ok) {
+    const text = await resp.text();
+    genSummary.innerHTML = `<span style="color:var(--red)">HTTP ${resp.status}: ${text.slice(0, 200)}</span>`;
+    genBtn.disabled = false; genBtn.textContent = 'Send';
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let ttftMs = null;
+  const tbts = [];
+  let lastStages = null;
+  const sendStart = performance.now();
+
+  while (true) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, {stream: true});
+    const frames = buf.split('\n\n');
+    buf = frames.pop();
+    for (const frame of frames) {
+      if (!frame.startsWith('data: ')) continue;
+      let ev;
+      try { ev = JSON.parse(frame.slice(6)); } catch (e) { continue; }
+      if (ev.kind === 'token') {
+        genOut.textContent += ev.text;
+        const stepMs = ev.step_seconds * 1000;
+        if (ev.is_first) {
+          ttftMs = stepMs;
+        } else {
+          tbts.push(stepMs);
+        }
+        lastStages = ev.stages;
+        const tbtP50 = tbts.length ? percentile(tbts, 0.5) : null;
+        const tbtP95 = tbts.length ? percentile(tbts, 0.95) : null;
+        genSummary.innerHTML =
+          `<strong>TTFT</strong> ${ttftMs ? ttftMs.toFixed(0) : '—'}ms · ` +
+          `<strong>TBT</strong> p50 ${tbtP50 !== null ? tbtP50.toFixed(0) : '—'}ms · ` +
+          `p95 ${tbtP95 !== null ? tbtP95.toFixed(0) : '—'}ms · ` +
+          `tokens ${1 + tbts.length} · last step ${stepMs.toFixed(0)}ms`;
+      } else if (ev.kind === 'done') {
+        const wall = ev.wall_seconds;
+        const tps = ev.n_tokens / wall;
+        genSummary.innerHTML += ` · <strong>total</strong> ${wall.toFixed(2)}s · ` +
+          `<strong>${tps.toFixed(1)} tok/s</strong>`;
+        if (lastStages && lastStages.length) {
+          for (const s of lastStages) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${s.device}</td><td>[${s.start}..${s.end}]</td><td>${(s.invoke_seconds*1000).toFixed(2)} ms</td>`;
+            genTraceTbody.appendChild(tr);
+          }
+          genTraceWrap.style.display = '';
+        }
+      } else if (ev.kind === 'error') {
+        genSummary.innerHTML += ` · <span style="color:var(--red)">error: ${ev.message}</span>`;
+      }
+    }
+  }
+
+  genBtn.disabled = false; genBtn.textContent = 'Send';
+});
+
+function percentile(xs, q) {
+  const s = [...xs].sort((a, b) => a - b);
+  const k = (s.length - 1) * q;
+  const f = Math.floor(k);
+  if (f === s.length - 1) return s[f];
+  return s[f] + (s[f + 1] - s[f]) * (k - f);
+}
 </script>
 
 </body>

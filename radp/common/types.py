@@ -77,6 +77,23 @@ class SLO:
 
 
 @dataclass(frozen=True)
+class StageTiming:
+    """Per-stage wall clock observed at the coordinator for one pipeline step.
+
+    Captured by RequestGateway._run_pipeline. `invoke_seconds` is the full
+    gRPC round-trip (encode + RunStage RPC + decode), so it covers both
+    activation transfer and worker-side compute. The split between the two
+    isn't measurable from the coordinator alone — that would need worker-
+    side timestamps in the RunStage response (future work).
+    """
+
+    device: DeviceId
+    start_layer: int
+    end_layer: int
+    invoke_seconds: float
+
+
+@dataclass(frozen=True)
 class DPResult:
     """Output of the Recovery-Aware DP."""
 

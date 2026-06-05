@@ -21,7 +21,8 @@ from __future__ import annotations
 import contextlib
 import itertools
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,6 +42,7 @@ from radp.common.types import (
     RecoveryTable,
     RequestId,
     Stage,
+    StageTiming,
 )
 from radp.coordinator.activation_cache import ActivationCache
 from radp.coordinator.recovery_plan import build_execution_plan
@@ -58,6 +60,23 @@ log = get_logger(__name__)
 class _RequestState:
     past_length: int        # tokens accumulated in worker KV cache for this request
     generated_token_ids: list[int]
+
+
+@dataclass(frozen=True)
+class StreamingToken:
+    """One emitted token plus the wall clock of the step that produced it.
+
+    `is_first=True` for the prefill output (first token of the response);
+    `is_first=False` for every subsequent decode-loop iteration. `step_seconds`
+    is end-to-end (embed + pipeline + lm_head + sample) — i.e., the latency
+    a client would see between successive tokens in a streaming response.
+    """
+
+    token_id: int
+    text: str
+    is_first: bool
+    stages: list[StageTiming]
+    step_seconds: float
 
 
 class RequestGateway:
@@ -142,6 +161,78 @@ class RequestGateway:
     # ------------------------------------------------------------------
     def new_request_id(self) -> RequestId:
         return RequestId(next(self._request_counter))
+
+    def generate_streaming(
+        self,
+        prompt: str,
+        max_tokens: int,
+        *,
+        temperature: float = 0.0,
+        top_k: int = 0,
+        top_p: float = 1.0,
+        eos_token_id: int | None = None,
+        seed: int | None = None,
+    ) -> Iterator[StreamingToken]:
+        """Yield tokens as they are produced (real streaming).
+
+        Unlike :meth:`generate`, this surfaces each decode step's wall clock
+        and per-stage timings to the consumer immediately — which is what
+        makes TTFT (first yield = prefill done) and TBT (between yields =
+        single decode step) actually measure what they claim to measure.
+
+        Recovery: stage-level recovery inside :meth:`_run_pipeline` still
+        works (mark_dead + cache-replay onto backup). The outer "full
+        re-prefill" retry from :meth:`generate` is intentionally absent
+        here — once tokens have been streamed to the client, replaying
+        them would emit duplicates.
+        """
+        request_id = self.new_request_id()
+        device = torch.device(self.torch_device)
+        generator: torch.Generator | None = None
+        if seed is not None:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(int(seed))
+
+        def sampler(logits: torch.Tensor) -> int:
+            return sample_next_token(
+                logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                generator=generator,
+            )
+
+        tokenizer = self.handle.tokenizer
+        try:
+            t0 = time.perf_counter()
+            stage_timings = self._prefill(request_id, prompt, sampler=sampler)
+            state = self._requests[request_id]
+            first_token_id = state.generated_token_ids[-1]
+            yield StreamingToken(
+                token_id=first_token_id,
+                text=tokenizer.decode([first_token_id]),
+                is_first=True,
+                stages=stage_timings,
+                step_seconds=time.perf_counter() - t0,
+            )
+            if eos_token_id is not None and first_token_id == eos_token_id:
+                return
+            for _ in range(max_tokens - 1):
+                t_step = time.perf_counter()
+                stage_timings = self._decode_step(request_id, sampler=sampler)
+                token_id = state.generated_token_ids[-1]
+                yield StreamingToken(
+                    token_id=token_id,
+                    text=tokenizer.decode([token_id]),
+                    is_first=False,
+                    stages=stage_timings,
+                    step_seconds=time.perf_counter() - t_step,
+                )
+                if eos_token_id is not None and token_id == eos_token_id:
+                    return
+        finally:
+            self._evict_everywhere(request_id)
+            self._requests.pop(request_id, None)
 
     def generate(
         self,
@@ -236,7 +327,7 @@ class RequestGateway:
         prompt: str,
         *,
         sampler: Callable[[torch.Tensor], int] = lambda x: int(torch.argmax(x).item()),
-    ) -> None:
+    ) -> list[StageTiming]:
         log.info("request=%d PREFILL prompt_len=%d", request_id, len(prompt))
         inputs = self.handle.tokenizer(prompt, return_tensors="pt")
         input_ids: torch.Tensor = inputs["input_ids"].to(self.torch_device)
@@ -249,7 +340,7 @@ class RequestGateway:
             attention_mask_4d = _prepare_4d_causal_attention_mask(
                 attention_mask_2d, input_ids.shape, hidden, past_key_values_length=0
             )
-            hidden, _ = self._run_pipeline(
+            hidden, _, timings = self._run_pipeline(
                 request_id, hidden, attention_mask_4d, is_prefill=True
             )
             logits = self._head(hidden)
@@ -258,13 +349,14 @@ class RequestGateway:
         self._requests[request_id] = _RequestState(
             past_length=seq_len, generated_token_ids=[next_id]
         )
+        return timings
 
     def _decode_step(
         self,
         request_id: RequestId,
         *,
         sampler: Callable[[torch.Tensor], int] = lambda x: int(torch.argmax(x).item()),
-    ) -> None:
+    ) -> list[StageTiming]:
         state = self._requests[request_id]
         prev_id = state.generated_token_ids[-1]
         past_len = state.past_length + len(state.generated_token_ids) - 1
@@ -276,13 +368,14 @@ class RequestGateway:
             attention_mask_4d = _prepare_4d_causal_attention_mask(
                 attn_2d, (1, 1), hidden, past_key_values_length=past_len
             )
-            hidden, _ = self._run_pipeline(
+            hidden, _, timings = self._run_pipeline(
                 request_id, hidden, attention_mask_4d, is_prefill=False
             )
             logits = self._head(hidden)
             next_id = sampler(logits[0, -1, :])
 
         state.generated_token_ids.append(next_id)
+        return timings
 
     # ------------------------------------------------------------------
     # Pipeline dispatch
@@ -294,13 +387,15 @@ class RequestGateway:
         attention_mask: torch.Tensor,
         *,
         is_prefill: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, list[StageTiming]]:
         plan = self.current_plan()
         idx = 0
+        timings: list[StageTiming] = []
         while idx < len(plan):
             stage = plan[idx]
             stage_key = (int(stage.start_layer), int(stage.end_layer))
             blob = encode({"hidden_states": hidden.cpu(), "attention_mask": attention_mask.cpu()})
+            invoke_start = time.perf_counter()
             try:
                 result_blob = self._invoke(stage, request_id, blob, is_prefill=is_prefill)
             except grpc.RpcError as e:
@@ -322,6 +417,14 @@ class RequestGateway:
                 # Refresh plan (now points to the backup device) and retry this stage.
                 plan = self.current_plan()
                 continue
+            timings.append(
+                StageTiming(
+                    device=stage.device,
+                    start_layer=int(stage.start_layer),
+                    end_layer=int(stage.end_layer),
+                    invoke_seconds=time.perf_counter() - invoke_start,
+                )
+            )
             # Append AFTER success — failed attempts never enter history, so replay
             # exactly reproduces the surviving workers' cache state.
             self.cache.append(request_id, stage_key, blob)
@@ -329,7 +432,7 @@ class RequestGateway:
             hidden = decoded["hidden_states"].to(self.torch_device)
             attention_mask = decoded["attention_mask"].to(self.torch_device)
             idx += 1
-        return hidden, attention_mask
+        return hidden, attention_mask, timings
 
     def _replay_stage_history(
         self, request_id: RequestId, stage_key: tuple[int, int]
@@ -457,7 +560,7 @@ class RequestGateway:
                             attention_mask_2d, input_ids.shape, hidden,
                             past_key_values_length=0,
                         )
-                        hidden, _ = self._run_pipeline(
+                        hidden, _, _ = self._run_pipeline(
                             request_id, hidden, attention_mask_4d, is_prefill=True
                         )
                         return self._head(hidden)

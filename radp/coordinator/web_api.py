@@ -21,18 +21,30 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from radp.common.logging_utils import get_logger
 
 if TYPE_CHECKING:
     from radp.coordinator.server import CoordinatorServer
+
+
+class _GenerateRequest(BaseModel):
+    prompt: str
+    max_tokens: int = Field(default=20, ge=1, le=2048)
+    temperature: float = Field(default=0.0, ge=0.0, le=4.0)
+    top_k: int = Field(default=0, ge=0)
+    top_p: float = Field(default=1.0, ge=0.0, le=1.0)
+    seed: int | None = None
+    eos_token_id: int | None = None
 
 log = get_logger(__name__)
 
@@ -105,6 +117,82 @@ def make_app(server: CoordinatorServer) -> FastAPI:
             "ready": gw is not None,
             "dead_devices": dead,
         }
+
+    @app.post("/api/generate")
+    def post_generate(req: _GenerateRequest) -> Any:
+        """Streaming Generate via Server-Sent Events.
+
+        Frame format: `data: {json}\\n\\n`. Token frames carry:
+          - kind="token", token_id, text, is_first, step_seconds,
+            stages: [{device, start, end, invoke_seconds}, …]
+        Final frame: kind="done", n_tokens, wall_seconds.
+        Error frame: kind="error", message.
+
+        Implemented as a sync generator inside FastAPI's threadpool — the
+        underlying gateway.generate_streaming yields on each decode step.
+        """
+        gw = server.gateway
+        if gw is None:
+            return JSONResponse(
+                {"detail": "gateway not ready (still bootstrapping)"},
+                status_code=503,
+            )
+
+        def event_stream() -> Any:
+            n = 0
+            t0 = time.perf_counter()
+            try:
+                for tok in gw.generate_streaming(
+                    prompt=req.prompt,
+                    max_tokens=req.max_tokens,
+                    temperature=req.temperature,
+                    top_k=req.top_k,
+                    top_p=req.top_p,
+                    eos_token_id=req.eos_token_id,
+                    seed=req.seed,
+                ):
+                    payload = {
+                        "kind": "token",
+                        "token_id": tok.token_id,
+                        "text": tok.text,
+                        "is_first": tok.is_first,
+                        "step_seconds": tok.step_seconds,
+                        "stages": [
+                            {
+                                "device": str(s.device),
+                                "start": s.start_layer,
+                                "end": s.end_layer,
+                                "invoke_seconds": s.invoke_seconds,
+                            }
+                            for s in tok.stages
+                        ],
+                    }
+                    yield f"data: {json.dumps(payload)}\n\n"
+                    n += 1
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "kind": "done",
+                            "n_tokens": n,
+                            "wall_seconds": time.perf_counter() - t0,
+                        }
+                    )
+                    + "\n\n"
+                )
+            except Exception as e:  # noqa: BLE001
+                log.exception("generate stream failed")
+                yield (
+                    "data: "
+                    + json.dumps({"kind": "error", "message": str(e)})
+                    + "\n\n"
+                )
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     if _STATIC_DIR.exists():
         app.mount(

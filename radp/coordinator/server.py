@@ -195,7 +195,10 @@ class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: i
             "Generate prompt_len=%d max_tokens=%d temp=%.2f top_k=%d top_p=%.2f eos=%s seed=%s",
             len(prompt), max_tokens, request.temperature, request.top_k, top_p, eos, seed,
         )
-        token_ids = gateway.generate(
+        # True streaming: each chunk is emitted as the token is produced, so
+        # client-side TTFT (first chunk) and TBT (between chunks) actually
+        # measure prefill latency and single decode-step latency.
+        for tok in gateway.generate_streaming(
             prompt,
             max_tokens=max_tokens,
             temperature=float(request.temperature),
@@ -203,13 +206,9 @@ class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: i
             top_p=top_p,
             eos_token_id=eos,
             seed=seed,
-        )
-        # Stream each decoded token; final chunk signals done.
-        tokenizer = gateway.handle.tokenizer
-        for i, tid in enumerate(token_ids):
-            yield radp_pb2.GenerateChunk(text=tokenizer.decode([tid]), done=False)
-            if i == len(token_ids) - 1:
-                yield radp_pb2.GenerateChunk(text="", done=True)
+        ):
+            yield radp_pb2.GenerateChunk(text=tok.text, done=False)
+        yield radp_pb2.GenerateChunk(text="", done=True)
 
 
 class CoordinatorServer:
