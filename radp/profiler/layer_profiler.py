@@ -43,7 +43,7 @@ def profile_layers(
     torch_device: str = "cpu",
     seq_length: int = 64,
     kv_cache_max_seq: int = 256,
-    prompt: str = "The quick brown fox jumps over the lazy dog. " * 16,
+    prompt: str | None = None,
 ) -> list[LayerProfile]:
     """Profile every transformer block of `model_id` on `torch_device`.
 
@@ -51,22 +51,41 @@ def profile_layers(
       - memory_bytes = parameter bytes + estimated KV-cache bytes
       - compute_time = {device_id: median wall-clock seconds over `repeat` runs}
     """
+    del prompt  # legacy arg kept for CLI compat; we synthesise input_ids directly
     log.info("loading %s on %s (dtype=%s)", model_id, torch_device, dtype)
     handle = load_model(model_id, dtype=dtype, torch_device=torch_device)
     layers = get_transformer_layers(handle.model)
 
-    timings_ns: dict[int, list[float]] = {i: [] for i in range(len(layers))}
+    is_cuda = str(torch_device).startswith("cuda")
+
+    timings_s: dict[int, list[float]] = {i: [] for i in range(len(layers))}
     starts_ns: dict[int, float] = {}
+    starts_ev: dict[int, list[Any]] = {i: [] for i in range(len(layers))}
+    ends_ev: dict[int, list[Any]] = {i: [] for i in range(len(layers))}
 
     def _pre(idx: int) -> Any:
-        def hook(_module: nn.Module, _inputs: tuple[Any, ...]) -> None:
+        if is_cuda:
+            def hook(_module: nn.Module, _inputs: tuple[Any, ...]) -> None:
+                ev = torch.cuda.Event(enable_timing=True)
+                ev.record()
+                starts_ev[idx].append(ev)
+            return hook
+
+        def hook_cpu(_module: nn.Module, _inputs: tuple[Any, ...]) -> None:
             starts_ns[idx] = time.perf_counter()
-        return hook
+        return hook_cpu
 
     def _post(idx: int) -> Any:
-        def hook(_module: nn.Module, _inputs: tuple[Any, ...], _outputs: Any) -> None:
-            timings_ns[idx].append(time.perf_counter() - starts_ns[idx])
-        return hook
+        if is_cuda:
+            def hook(_module: nn.Module, _inputs: tuple[Any, ...], _outputs: Any) -> None:
+                ev = torch.cuda.Event(enable_timing=True)
+                ev.record()
+                ends_ev[idx].append(ev)
+            return hook
+
+        def hook_cpu(_module: nn.Module, _inputs: tuple[Any, ...], _outputs: Any) -> None:
+            timings_s[idx].append(time.perf_counter() - starts_ns[idx])
+        return hook_cpu
 
     handles = []
     for i, layer in enumerate(layers):
@@ -74,31 +93,36 @@ def profile_layers(
         handles.append(layer.register_forward_hook(_post(i)))
 
     try:
-        inputs = handle.tokenizer(
-            prompt,
-            return_tensors="pt",
-            max_length=seq_length,
-            truncation=True,
-            padding="max_length",
-        )
-        input_ids = inputs["input_ids"].to(torch_device)
-        attention_mask = inputs.get("attention_mask")
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(torch_device)
+        # Synthesise input_ids directly at exact seq_length to bypass any
+        # tokenizer padding gotchas (OPT's pad_token sometimes == eos_token,
+        # which causes padding="max_length" to silently no-op on long prompts).
+        # Token id 0 is in-vocab for all HF transformer models we care about.
+        input_ids = torch.zeros((1, seq_length), dtype=torch.long, device=torch_device)
+        attention_mask = torch.ones((1, seq_length), dtype=torch.long, device=torch_device)
 
-        log.info("warmup %dx", warmup)
+        log.info("warmup %dx (seq_length=%d)", warmup, seq_length)
         with torch.no_grad():
             for _ in range(warmup):
                 handle.model(input_ids=input_ids, attention_mask=attention_mask)
+        if is_cuda:
+            torch.cuda.synchronize()
 
         # Reset after warmup
-        for k in timings_ns:
-            timings_ns[k] = []
+        for k in timings_s:
+            timings_s[k] = []
+            starts_ev[k] = []
+            ends_ev[k] = []
 
-        log.info("measure %dx", repeat)
+        log.info("measure %dx (seq_length=%d)", repeat, seq_length)
         with torch.no_grad():
             for _ in range(repeat):
                 handle.model(input_ids=input_ids, attention_mask=attention_mask)
+        if is_cuda:
+            torch.cuda.synchronize()
+            # Resolve cuda events -> seconds
+            for idx in range(len(layers)):
+                for s_ev, e_ev in zip(starts_ev[idx], ends_ev[idx]):
+                    timings_s[idx].append(s_ev.elapsed_time(e_ev) / 1000.0)
     finally:
         for h in handles:
             h.remove()
@@ -107,7 +131,7 @@ def profile_layers(
     kv_bytes = estimate_kv_cache_bytes(handle.hidden_size, kv_cache_max_seq, dtype_bytes)
     profiles: list[LayerProfile] = []
     for idx, layer in enumerate(layers):
-        samples = timings_ns[idx]
+        samples = timings_s[idx]
         if not samples:
             raise RuntimeError(
                 f"No timing samples for layer {idx + 1}; forward hook never fired."
