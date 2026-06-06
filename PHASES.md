@@ -1103,6 +1103,61 @@ ours   : on-6[1-16]   on-3[17]     on-1[18-20]  ao-2[21]  on-5[22]  on-4[23]  on
 - ao-1은 여전히 fleet 밖 (디스크 문제) — 페이퍼 fleet 묘사에서 "7 of 8 workers" 명시 필요
 - 3 CPU Nano는 인위적 강제 (EXP-D2 한계와 동일)
 
+## Phase EXP-D2.2 — Profiler 정확도 fix + AGX Orin MAXN, 7-worker N=3 재측정
+
+**목표**: D2.1 N=3 측정 이후 8-worker fleet 확장(ao-1 합류) 결과 ao-1이 placement 최하위 (2 layer) 받음. 사용자 지적 — AGX Orin (5-7x Nano FLOPS) 이 보일 리 없음. 측정 setup 의심 → root cause 추적.
+
+**찾아낸 버그 2개** (commit 382739b):
+
+1. **Tokenizer padding silent no-op** ([radp/profiler/layer_profiler.py](radp/profiler/layer_profiler.py)):
+   - `tokenizer(prompt, max_length=seq_length, padding="max_length")` 가 OPT 모델 (pad_token == eos_token) 에서 silent no-op
+   - seq_length=32 / 256 / 1024 모두 prompt의 실제 token 수(~160)만큼만 forward → byte-identical 측정값
+   - **fix**: `torch.zeros((1, seq_length), dtype=torch.long)` 로 input_ids 직접 합성, tokenizer 우회
+
+2. **CUDA async timing measures launch overhead only**:
+   - forward hook 내 `time.perf_counter()` 는 layer.forward() 리턴 시점 (kernel queue 직후) 기록 → GPU 실제 실행 시간 측정 안 됨
+   - AGX vs Nano CUDA 둘 다 ~1ms launch overhead로 비슷하게 보임
+   - **fix**: `is_cuda` 분기로 `torch.cuda.Event(enable_timing=True)` pair record + post-forward `torch.cuda.synchronize()` 후 `elapsed_time()` 계산
+
+**Power mode 발견**: ao-1 (AGX Orin) 가 factory default `MODE_30W (2)` / 실측 `MODE_50W (3)` 에서 CPU 1.42 GHz 로 throttled. Nano Orin (MAXN_SUPER, 1.73 GHz) 보다 느림. `nvpmodel -m 0 (MAXN)` + `jetson_clocks` 후 CPU 2.2 GHz → ao-1 per-layer 0.836ms (Nano 1.10ms 대비 -24%, 진짜 우위 드러남). 메모리: [project_agx_orin_power_mode](.claude/projects/-Users-hjkim24-RADP/memory/project_agx_orin_power_mode.md), [feedback_profiler_measurement_bugs](.claude/projects/-Users-hjkim24-RADP/memory/feedback_profiler_measurement_bugs.md).
+
+**Throughput 측정값 변화** (ao-1 기준 정규화):
+
+| device | D2.1 (buggy) | D2.2 (fixed + MAXN, 7w) |
+|---|---|---|
+| ao-1 (AGX Orin CUDA) | 0.97 (8w 측정) | **1.000** (top) |
+| on-6 (Nano CUDA) | - | 0.816 |
+| on-2 (Nano CUDA) | 1.000 (8w) | 0.800 |
+| on-1 (Nano CUDA) | 0.98 | 0.795 |
+| ao-2 (AGX CPU) | 0.009 | 0.025 |
+| on-3/4 (Nano CPU) | 0.003 | 0.010 |
+
+**A3b' N=3 결과** (victim=on-2 (placement 최대 18 layers, 가장 큰 victim), normal 10 req × 30 tok, failure 3 × 60 tok kill@15, 2026-06-06):
+
+| Metric | greedy | **ours** | Δ |
+|---|---|---|---|
+| Normal TTFT p50 | 445 ms | **466 ms** | +4.7% |
+| Normal TBT p50 | **250 ms** | 257 ms | +2.8% |
+| Normal TBT p95 | 330 ms | **317 ms** | -3.9% |
+| Failure result | **3/3 catastrophic** | **3/3 graceful** | binary |
+| Tokens emitted (failure) | 18, 19, 18 | 60 / 60 × 3 | |
+
+각 cell의 n=300 TBT 샘플. 결과 JSON: [experiments/results/a3b_opt350m_3tier_7w_maxn_n3.json](experiments/results/a3b_opt350m_3tier_7w_maxn_n3.json). Sidecar: [experiments/results/opt350m_3tier_7w_maxn_baseline.json](experiments/results/opt350m_3tier_7w_maxn_baseline.json).
+
+**Placement**:
+```
+greedy : on-3[1]  on-4[2]  ao-2[3]  on-1[4-9]  on-6[10-15]  ao-1[16-22]  on-2[23-24]
+ours   : on-3[1]  on-4[2]  ao-2[3]  on-1[4]    on-6[5]      ao-1[6]      on-2[7-24]
+```
+
+ours가 on-2 (Nano CUDA) 에 18 layer 몰빵 — DP solver가 inter-stage 통신 + 메모리 trade-off로 결정. ao-1 (가장 빠른 device) 가 1 layer만 받는 것은 메모리/네트워크 위치상 거리감으로 추정 (별도 분석 필요).
+
+**의도된 한계**:
+- on-5 fleet 이탈 (A3b' MAXN run 도중 hang, 전원 재시작 필요) → 7-worker 측정. 추후 on-5 복귀 시 8-worker 재측정 가능
+- TBT 측면에선 ours ≈ greedy (within noise). Recovery는 명확한 win — 페이퍼 claim "no perf cost for resilience" 유효
+- DP 가 ao-1을 1 layer만 사용한 것은 직관 반대 — 다음 단계로 cost function calibration (network bw weights, activation_bytes) 점검 필요
+- 측정은 decode-realistic seq_length=64 기반. Prefill (TTFT) heavy workload에선 AGX 우위가 더 두드러질 것 — 별도 prefill profile path가 차후 작업
+
 ---
 
 ## 알려진 한계 (현재)
@@ -1187,61 +1242,6 @@ ours   : on-6[1-16]   on-3[17]     on-1[18-20]  ao-2[21]  on-5[22]  on-4[23]  on
 새 기능을 구현해 통과시키면, 이 파일에 새 섹션을 추가한다. 형식:
 
 ```markdown
-## Phase EXP-D2.2 — Profiler 정확도 fix + AGX Orin MAXN, 7-worker N=3 재측정
-
-**목표**: D2.1 N=3 측정 이후 8-worker fleet 확장(ao-1 합류) 결과 ao-1이 placement 최하위 (2 layer) 받음. 사용자 지적 — AGX Orin (5-7x Nano FLOPS) 이 보일 리 없음. 측정 setup 의심 → root cause 추적.
-
-**찾아낸 버그 2개** (commit 382739b):
-
-1. **Tokenizer padding silent no-op** ([radp/profiler/layer_profiler.py](radp/profiler/layer_profiler.py)):
-   - `tokenizer(prompt, max_length=seq_length, padding="max_length")` 가 OPT 모델 (pad_token == eos_token) 에서 silent no-op
-   - seq_length=32 / 256 / 1024 모두 prompt의 실제 token 수(~160)만큼만 forward → byte-identical 측정값
-   - **fix**: `torch.zeros((1, seq_length), dtype=torch.long)` 로 input_ids 직접 합성, tokenizer 우회
-
-2. **CUDA async timing measures launch overhead only**:
-   - forward hook 내 `time.perf_counter()` 는 layer.forward() 리턴 시점 (kernel queue 직후) 기록 → GPU 실제 실행 시간 측정 안 됨
-   - AGX vs Nano CUDA 둘 다 ~1ms launch overhead로 비슷하게 보임
-   - **fix**: `is_cuda` 분기로 `torch.cuda.Event(enable_timing=True)` pair record + post-forward `torch.cuda.synchronize()` 후 `elapsed_time()` 계산
-
-**Power mode 발견**: ao-1 (AGX Orin) 가 factory default `MODE_30W (2)` / 실측 `MODE_50W (3)` 에서 CPU 1.42 GHz 로 throttled. Nano Orin (MAXN_SUPER, 1.73 GHz) 보다 느림. `nvpmodel -m 0 (MAXN)` + `jetson_clocks` 후 CPU 2.2 GHz → ao-1 per-layer 0.836ms (Nano 1.10ms 대비 -24%, 진짜 우위 드러남). 메모리: [project_agx_orin_power_mode](.claude/projects/-Users-hjkim24-RADP/memory/project_agx_orin_power_mode.md), [feedback_profiler_measurement_bugs](.claude/projects/-Users-hjkim24-RADP/memory/feedback_profiler_measurement_bugs.md).
-
-**Throughput 측정값 변화** (ao-1 기준 정규화):
-
-| device | D2.1 (buggy) | D2.2 (fixed + MAXN, 7w) |
-|---|---|---|
-| ao-1 (AGX Orin CUDA) | 0.97 (8w 측정) | **1.000** (top) |
-| on-6 (Nano CUDA) | - | 0.816 |
-| on-2 (Nano CUDA) | 1.000 (8w) | 0.800 |
-| on-1 (Nano CUDA) | 0.98 | 0.795 |
-| ao-2 (AGX CPU) | 0.009 | 0.025 |
-| on-3/4 (Nano CPU) | 0.003 | 0.010 |
-
-**A3b' N=3 결과** (victim=on-2 (placement 최대 18 layers, 가장 큰 victim), normal 10 req × 30 tok, failure 3 × 60 tok kill@15, 2026-06-06):
-
-| Metric | greedy | **ours** | Δ |
-|---|---|---|---|
-| Normal TTFT p50 | 445 ms | **466 ms** | +4.7% |
-| Normal TBT p50 | **250 ms** | 257 ms | +2.8% |
-| Normal TBT p95 | 330 ms | **317 ms** | -3.9% |
-| Failure result | **3/3 catastrophic** | **3/3 graceful** | binary |
-| Tokens emitted (failure) | 18, 19, 18 | 60 / 60 × 3 | |
-
-각 cell의 n=300 TBT 샘플. 결과 JSON: [experiments/results/a3b_opt350m_3tier_7w_maxn_n3.json](experiments/results/a3b_opt350m_3tier_7w_maxn_n3.json). Sidecar: [experiments/results/opt350m_3tier_7w_maxn_baseline.json](experiments/results/opt350m_3tier_7w_maxn_baseline.json).
-
-**Placement**:
-```
-greedy : on-3[1]  on-4[2]  ao-2[3]  on-1[4-9]  on-6[10-15]  ao-1[16-22]  on-2[23-24]
-ours   : on-3[1]  on-4[2]  ao-2[3]  on-1[4]    on-6[5]      ao-1[6]      on-2[7-24]
-```
-
-ours가 on-2 (Nano CUDA) 에 18 layer 몰빵 — DP solver가 inter-stage 통신 + 메모리 trade-off로 결정. ao-1 (가장 빠른 device) 가 1 layer만 받는 것은 메모리/네트워크 위치상 거리감으로 추정 (별도 분석 필요).
-
-**의도된 한계**:
-- on-5 fleet 이탈 (A3b' MAXN run 도중 hang, 전원 재시작 필요) → 7-worker 측정. 추후 on-5 복귀 시 8-worker 재측정 가능
-- TBT 측면에선 ours ≈ greedy (within noise). Recovery는 명확한 win — 페이퍼 claim "no perf cost for resilience" 유효
-- DP 가 ao-1을 1 layer만 사용한 것은 직관 반대 — 다음 단계로 cost function calibration (network bw weights, activation_bytes) 점검 필요
-- 측정은 decode-realistic seq_length=64 기반. Prefill (TTFT) heavy workload에선 AGX 우위가 더 두드러질 것 — 별도 prefill profile path가 차후 작업
-
 ## Phase X — <이름>
 
 **목표**: <한 문장>
