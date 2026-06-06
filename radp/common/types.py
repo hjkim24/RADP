@@ -142,6 +142,16 @@ class ClusterSpec:
     slo: SLO
     activation_bytes: int = 1_000_000
     """Size of one inter-stage activation payload (bytes). Used for T_comm."""
+    eager_backup: bool = True
+    """If True (default), each device must reserve memory for its assigned
+    backup-source layers at deploy time — gives ~600 ms graceful recovery
+    but constrains primary placement (a fast device can't take more layers
+    than its backup peer can also hold). If False, the DP ignores backup
+    memory burden and trusts that lazy weight-loading on failure will fit
+    in whatever the backup peer has free at the time. Lazy mode trades a
+    slower recovery (weights load from disk, ~5-30 s) and potential
+    in-flight KV cache loss for better steady-state throughput on the
+    primary node. See backlog item A5."""
     extras: dict[str, str] = field(default_factory=dict)
 
 

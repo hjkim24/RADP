@@ -10,6 +10,7 @@ coordinator:
   heartbeat_tick_seconds: {{ heartbeat_tick_seconds }}
   schedule_mode: {{ schedule_mode | default('manual') }}
   activation_bytes: {{ activation_bytes | default(1048576) }}
+  eager_backup: {{ eager_backup | default(true) | string | lower }}
   slo:
     ttft_seconds: {{ slo_ttft_seconds | default(0.3) }}
     tbt_seconds: {{ slo_tbt_seconds | default(0.1) }}

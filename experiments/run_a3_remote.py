@@ -471,11 +471,32 @@ def run_baseline_cell(
 # ---------------------------------------------------------------------------
 # 4) CLI
 # ---------------------------------------------------------------------------
-def _load_baselines_from_sidecar(sidecar_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Load A1's sidecar JSON and return (sidecar, computed baselines)."""
+def _load_baselines_from_sidecar(
+    sidecar_path: Path,
+    *,
+    activation_bytes: int = 0,
+    eager_backup: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load A1's sidecar JSON and return (sidecar, computed baselines).
+
+    ``activation_bytes=0`` triggers auto-compute from the model in the
+    sidecar (hidden_size * dtype_bytes * batch). This mirrors the coord's
+    default — the offline DP would otherwise use the legacy 1 MB default
+    and pick a different placement than what the coord just deployed.
+    """
     payload = json.loads(sidecar_path.read_text())
     sidecar = payload.get("scheduler") or payload
-    spec = cluster_spec_from_sidecar(sidecar)
+    if activation_bytes <= 0:
+        from radp.common.model_utils import estimate_activation_bytes
+        model_id = sidecar.get("model_id") or "facebook/opt-350m"
+        activation_bytes = estimate_activation_bytes(model_id, "float16", batch_size=1)
+        log.info("activation_bytes: %d (auto, from %s)", activation_bytes, model_id)
+    else:
+        log.info("activation_bytes: %d (manual)", activation_bytes)
+    log.info("eager_backup=%s", eager_backup)
+    spec = cluster_spec_from_sidecar(
+        sidecar, activation_bytes=activation_bytes, eager_backup=eager_backup,
+    )
     return sidecar, compute_all_baselines(spec)
 
 
@@ -504,11 +525,21 @@ def main() -> None:
                         "gateway revive). Default: do cleanup so the cluster "
                         "is left in a runnable state when the script exits.")
     p.add_argument("--out", default="a3_remote")
+    p.add_argument("--activation-bytes", type=int, default=0,
+                   help="0 = auto from sidecar's model (mirrors coord). >0 overrides.")
+    p.add_argument("--eager-backup", default="true",
+                   help="true (default) or false. Lazy mode lets the DP ignore "
+                        "backup memory burden so a fast peer can take more layers.")
     args = p.parse_args()
 
     sidecar_path = Path(args.sidecar)
+    eager_backup = args.eager_backup.lower() != "false"
     log.info("loading baselines from %s", sidecar_path)
-    _sidecar, baselines = _load_baselines_from_sidecar(sidecar_path)
+    _sidecar, baselines = _load_baselines_from_sidecar(
+        sidecar_path,
+        activation_bytes=args.activation_bytes,
+        eager_backup=eager_backup,
+    )
     log.info("baselines computed: %s", list(baselines.keys()))
 
     log.info("fetching current gateway info from %s", args.coord_web)

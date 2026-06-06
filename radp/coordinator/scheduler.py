@@ -346,6 +346,7 @@ class Scheduler:
             if not memory_check(
                 device, stage.start_layer, stage.end_layer,
                 recovery, placement, self.spec.layers,
+                eager_backup=self.spec.eager_backup,
             ):
                 return False
         return True
@@ -375,7 +376,8 @@ class Scheduler:
         d1 = devices[0]
         for y in range(1, L + 1):
             if not memory_check(
-                d1, LayerIdx(1), LayerIdx(y), recovery, ref_placement, layers
+                d1, LayerIdx(1), LayerIdx(y), recovery, ref_placement, layers,
+                eager_backup=spec.eager_backup,
             ):
                 continue
             t_stage = self._stage_time(d1.id, 1, y)
@@ -406,6 +408,7 @@ class Scheduler:
                         recovery,
                         ref_placement,
                         layers,
+                        eager_backup=spec.eager_backup,
                     ):
                         continue
                     t_stage = self._stage_time(d_n.id, split + 1, y)

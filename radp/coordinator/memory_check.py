@@ -56,12 +56,22 @@ def memory_check(
     recovery: RecoveryTable,
     current_placement: Placement,
     layers: list[LayerProfile],
+    *,
+    eager_backup: bool = True,
 ) -> bool:
     """True iff `node` can host the proposed self-stage AND its backup obligations.
 
     `current_placement` is used only to look up stage sizes of devices j ∈ R⁻¹(node);
     it does NOT need to reflect the candidate self-stage [start, end] being tested.
+
+    `eager_backup` controls whether backup memory is reserved at deploy time
+    (default; the Recovery-Aware DP design) or lazy-loaded on failure (A5).
+    When False, only the self-stage memory is checked; backup peers trust
+    that they'll have enough free memory at fault time to load weights from
+    disk.
     """
     self_mem = stage_self_memory(layers, start, end)
+    if not eager_backup:
+        return self_mem <= node.total_memory_bytes
     backup_mem = backup_memory_for(node.id, recovery, current_placement, layers)
     return self_mem + backup_mem <= node.total_memory_bytes

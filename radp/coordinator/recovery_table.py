@@ -96,9 +96,20 @@ def determine_recovery_table(
         for k in spec.devices:
             if k.id == j.id:
                 continue
-            free = k.total_memory_bytes - self_usage[k.id] - reserved[k.id]
-            if free < j_stage_bytes:
-                continue
+            if spec.eager_backup:
+                # Eager: backup peer must have free memory reserved NOW for j's weights.
+                free = k.total_memory_bytes - self_usage[k.id] - reserved[k.id]
+                if free < j_stage_bytes:
+                    continue
+            else:
+                # Lazy (A5): backup peer only needs to fit weights at failure time,
+                # i.e. its total minus its OWN primary stage. Other backups already
+                # assigned to this peer would still need to coexist at failure time,
+                # but only if multiple simultaneous failures hit at once. For
+                # single-failure recovery the loosest feasible check is total - self.
+                free = k.total_memory_bytes - self_usage[k.id]
+                if free < j_stage_bytes:
+                    continue
             cost = estimate_download_time(
                 spec, j_stage_bytes, k.id, j.id
             ) + estimate_recompute_time(spec, j_stage_layers, k.id)

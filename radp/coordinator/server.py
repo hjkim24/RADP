@@ -81,6 +81,11 @@ class CoordinatorConfig:
     # comm relative to compute, masking the fastest device's compute
     # advantage in placement decisions.
     activation_bytes: int = 0
+    # Eager: backup peer reserves memory at deploy time (~600 ms recovery).
+    # Lazy (False): primary takes more layers; backup peer loads weights
+    # from disk only at failure time (~5-30 s recovery, possible token loss).
+    # See backlog item A5 / EXP-D2.3 for the trade-off study.
+    eager_backup: bool = True
     profiling_layer_warmup: int = 1
     profiling_layer_repeats: int = 3
     profiling_layer_seq_length: int = 32
@@ -139,6 +144,7 @@ class CoordinatorConfig:
             slo_ttft_seconds=float(slo.get("ttft_seconds", 0.3)),
             slo_tbt_seconds=float(slo.get("tbt_seconds", 0.1)),
             activation_bytes=int(coord.get("activation_bytes", 0)),
+            eager_backup=bool(coord.get("eager_backup", True)),
             profiling_layer_warmup=int(profiling.get("layer_warmup", 1)),
             profiling_layer_repeats=int(profiling.get("layer_repeats", 3)),
             profiling_layer_seq_length=int(profiling.get("layer_seq_length", 32)),
@@ -285,6 +291,16 @@ class CoordinatorServer:
                 )
 
         # Backup deployment: for each k, load every j in R⁻¹(k)'s stage.
+        # Skipped under eager_backup=False (A5 lazy mode). In that mode the
+        # backup peer is *assigned* but does not pre-load weights; the
+        # current cluster will fail catastrophically on a real fault until
+        # runtime lazy load lands (see PHASES.md EXP-D2.3 / backlog A5).
+        if not self.config.eager_backup:
+            log.info(
+                "eager_backup=False — skipping backup pre-load (A5 lazy mode); "
+                "recovery requires runtime weight load (not yet implemented)"
+            )
+            return
         stage_by_device = {s.device: s for s in self.placement}
         for k, backed_up_js in inverse_recovery(self.recovery).items():
             backup_addr = self._addr_lookup.get(k)
@@ -437,6 +453,12 @@ class CoordinatorServer:
                 "activation_bytes: %d (auto, hidden*dtype*batch from %s)",
                 activation_bytes, self.config.model_id,
             )
+        log.info(
+            "eager_backup=%s (recovery mode: %s)",
+            self.config.eager_backup,
+            "weights pre-loaded on backup peer" if self.config.eager_backup
+            else "lazy — load on fault, slower recovery",
+        )
         spec = ClusterSpec(
             devices=devices,
             layers=layer_profiles,
@@ -446,6 +468,7 @@ class CoordinatorServer:
                 tbt_seconds=self.config.slo_tbt_seconds,
             ),
             activation_bytes=activation_bytes,
+            eager_backup=self.config.eager_backup,
         )
 
         log.info("auto-scheduling: solving DP (devices=%d, layers=%d)",

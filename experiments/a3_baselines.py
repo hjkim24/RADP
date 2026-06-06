@@ -69,6 +69,7 @@ def cluster_spec_from_sidecar(
     slo_ttft_seconds: float = 3.0,
     slo_tbt_seconds: float = 1.0,
     activation_bytes: int = 1_048_576,
+    eager_backup: bool = True,
 ) -> ClusterSpec:
     """Rebuild the in-memory ClusterSpec the scheduler operates on.
 
@@ -109,6 +110,7 @@ def cluster_spec_from_sidecar(
         network=network,
         slo=SLO(ttft_seconds=slo_ttft_seconds, tbt_seconds=slo_tbt_seconds),
         activation_bytes=activation_bytes,
+        eager_backup=eager_backup,
     )
 
 
@@ -328,7 +330,13 @@ def main() -> None:
                         "(top-level 'scheduler' field)")
     p.add_argument("--slo-ttft", type=float, default=3.0)
     p.add_argument("--slo-tbt", type=float, default=1.0)
-    p.add_argument("--activation-bytes", type=int, default=1_048_576)
+    p.add_argument("--activation-bytes", type=int, default=0,
+                   help="0 = auto-compute from model hidden_size * dtype_bytes "
+                        "(mirrors coord's default; 2 KB for OPT-350M fp16). "
+                        "Positive values force an override.")
+    p.add_argument("--eager-backup", default="true",
+                   help="true (default) or false; passes through to ClusterSpec "
+                        "to exercise A5 lazy-backup placement.")
     p.add_argument("--out", default="a3_baselines",
                    help="output JSON name under experiments/results/")
     p.add_argument("--detail", action="store_true",
@@ -349,11 +357,27 @@ def main() -> None:
              len(sidecar["device_profiles"]),
              len(sidecar["layer_profiles"]))
 
+    if args.activation_bytes > 0:
+        activation_bytes = args.activation_bytes
+        log.info("activation_bytes: %d (manual override)", activation_bytes)
+    else:
+        from radp.common.model_utils import estimate_activation_bytes
+        model_id = sidecar.get("model_id") or "facebook/opt-350m"
+        # fp16 matches the live fleet default (group_vars/all.yml). If we
+        # extend to bf16/fp32 sweeps, plumb dtype through the sidecar.
+        activation_bytes = estimate_activation_bytes(model_id, "float16", batch_size=1)
+        log.info("activation_bytes: %d (auto, hidden*dtype*batch from %s)",
+                 activation_bytes, model_id)
+
+    eager_backup = args.eager_backup.lower() != "false"
+    log.info("eager_backup=%s", eager_backup)
+
     spec = cluster_spec_from_sidecar(
         sidecar,
         slo_ttft_seconds=args.slo_ttft,
         slo_tbt_seconds=args.slo_tbt,
-        activation_bytes=args.activation_bytes,
+        activation_bytes=activation_bytes,
+        eager_backup=eager_backup,
     )
     baselines = compute_all_baselines(spec)
     print_comparison(baselines)
