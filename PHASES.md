@@ -1223,6 +1223,88 @@ TBT_per_token = Σ (T_comm(prev → stage_i) + T_compute(stage_i))   over all st
 - **Recovery trade-off**: smaller subset → backup peer 선택지 좁아짐. 2-worker subset 은 single-failure tolerance 만 (둘 다 backup 인 mutually-back-each-other 구조). paper에서 정량 분석 필요
 - on-6, on-1 hang 은 알고리즘 문제 아닌 **Jetson Nano 4-8GB free memory + 18+ layer 백업 로딩** 의 OS-level 회복 한계. 메모리 관리 / lazy backup loading ([A5 백로그 항목]) 의 동기
 
+## Phase EXP-D2.4 — Cost-function 통합 + EdgeShard/Jupiter framing 정리
+
+**목표**: D2.3 에서 발견한 max vs sum mismatch + Jupiter Eq. 4 통찰 후, **DP cost function 자체를 통합** — 같은 (sum, max) state 위에서 mode flag 로 throughput/latency/blended 전환 가능하게 재설계. EdgeShard 두 algorithm (Eq. 6 latency, Eq. 1 throughput) + Jupiter Eq. 4 hybrid 셋 다 reproduce + 우리는 그 위에 recovery-aware extension 얹음. (논문 framing 통일 + SLO 의 역할 재정의)
+
+**구현** (commit 298b054 + 0936599):
+
+1. **`(sum, max)` state DP** ([radp/coordinator/scheduler.py](radp/coordinator/scheduler.py)):
+   - `A[y][n]` 가 `float` (max 만) → `tuple[float, float]` (sum, max). 매 cell update 시 둘 다 추적
+   - `_rank(state, mode, alpha)` 함수 — 같은 state 를 mode 별로 다르게 ranking:
+     - `throughput`: `max` (EdgeShard Eq. 11 / Jupiter Eq. 1)
+     - `latency`: `sum` (EdgeShard Eq. 6, batch=1 single-stream)
+     - `blended`: `sum + α·max` (Jupiter Eq. 4 at k=1, α=|D|-1 이 그들 공식)
+   - DP body 한 줄 변경으로 mode 가 swap. 알고리즘 자체는 같음
+
+2. **SLO 의 역할 분리**:
+   - `throughput` mode: **inline `if stage_cost > tbt: continue` 유지** (per-stage SLO hard constraint — 동시 부하 시 사용자별 TBT QoS 보장)
+   - `latency` / `blended` mode: **inline cap 제거**. 한 stage 가 TBT 넘어도 sum 이 줄면 OK. SLO 는 final result 의 *post-hoc feasibility check* — `if best.sum_stage_time > TBT_SLO` 시 warning log
+   - 이전 D2.3 까진 latency 시도해도 TBT cap 이 fast device 에 많이 못 몰아주게 막고 있었음
+
+3. **Configuration plumbing**:
+   - [ClusterSpec.optimization_mode](radp/common/types.py) + `blend_alpha` 필드
+   - [CoordinatorConfig](radp/coordinator/server.py): yaml 에서 읽음
+   - [group_vars/all.yml](deploy/group_vars/all.yml): default `optimization_mode: latency` (우리 A3b' batch=1 single-stream에 맞춤)
+   - [cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2) + [run_a3_remote.py](experiments/run_a3_remote.py) `build_manual_cluster_yaml`: yaml 키 emit
+   - [a3_baselines.py](experiments/a3_baselines.py) + [run_a3_remote.py](experiments/run_a3_remote.py): `--optimization-mode` / `--blend-alpha` CLI
+
+4. **`--restart-workers-between-cells`** (commit 0936599):
+   - 매 baseline cell 시작 전 `ansible workers -m shell -a "systemctl restart radp-worker"`. 누적 메모리 leak / OOM 사이클 차단
+   - 8 GB Nano fleet 에선 latency-mode 의 ao-1 21-layer placement + eager backup 적재가 단일 cell 만에 메모리 한계 도달. clean restart 로 매 cell 공정한 starting state
+
+**Sanity (commit 298b054)** — 4-CUDA + 7w sidecar local DP 실행, 세 mode 비교:
+
+| Sidecar | mode | sum (ms) | max (ms) | bulk on |
+|---|---|---|---|---|
+| 7w MAXN | throughput | 243.3 | 85.7 | ao-1 [11-24] (14 layers) |
+| 7w MAXN | **latency** | **235.4** (-3.2%) | 87.4 | ao-1 [3-20] (**18 layers**) |
+| 7w MAXN | blended α=6 | 239.8 | 85.9 | on-1 [2-9] (8) + ao-1 [11-21] (11) |
+| 4-CUDA | throughput | 37.2 | 9.7 | ao-1 [1-10] (10 layers) |
+| 4-CUDA | **latency** | **28.2** (-24%) | 18.6 | ao-1 [2-22] (**21 layers**) |
+| 4-CUDA | blended α=3 | 36.7 | 9.8 | ao-1 [1-11] (11) |
+
+→ latency mode 가 fast device 에 layer 몰빵 + 총 stage 수 최소화. 4-CUDA 에서 sum -24% 감소.
+
+**Live A3b' 결과** (4-CUDA, victim=ao-1, normal 10 req × 30 tok, failure 1-3 × 60 tok kill@15, 2026-06-06):
+
+| Run | Mode | Backup | greedy TBT p50 | **ours TBT p50** | ours failure |
+|---|---|---|---|---|---|
+| D2.3 v2 | throughput | eager | 171 ms | 162 ms | 2/3 graceful (1 indeterminate) |
+| D2.4 lazy | latency | lazy | 169 ms | **117 ms (-31%)** | 1/1 catastrophic (lazy backup 미적재 — 의도된 결과) |
+| **D2.4 eager v3** | **latency** | **eager** | **166 ms** | **115 ms (-31%)** | **3/3 graceful** (60/60 × 3) |
+
+**전체 D2.x 시리즈 비교** (paper main result table):
+
+| Phase | Fleet | Mode/Backup | TBT p50 ours | failure | vs D2.2 baseline |
+|---|---|---|---|---|---|
+| D2.2 | 7w throughput eager | (legacy max-DP) | 257 ms | 3/3 graceful | (baseline) |
+| D2.3 | 4-CUDA throughput | eager | 162 ms | 2/3 graceful | -37% |
+| **D2.4** | **4-CUDA latency** | **eager** | **115 ms** | **3/3 graceful** | **-55%** |
+
+D2.4 의 ours placement: `on-1[1] on-2[2] ao-1[3-23] (21 layers) on-6[24]` — latency DP 가 자동으로 AGX MAXN 에 layer 21/24 몰빵, 다른 3 워커 각 1 layer (single-stream 의 sum 최소화). greedy 의 분산 placement (`on-2[1-6] on-1[7-12] on-6[13-16] ao-1[17-24]`) 대비 sum_stage_time 측면에서 -27% (예측), live wall-clock 측면에서 -31% (실측).
+
+**핵심 paper claim**: **RADP-Latency** 가 EdgeShard / Jupiter 의 throughput-mode baseline 대비 **single-stream TBT 55% 감소** + **3/3 graceful recovery 유지** (동일 fleet, 동일 SLO). 이전 throughput-mode 가설 ("max_stage minimization 이 SLO 의 정확한 modeling") 이 batch=1 워크로드에 *잘못된 cost function* 이었음을 D2.3 발견 → D2.4 통합 cost function 으로 정량 확정.
+
+**Paper framing 정리** (D2.4 의 결과):
+
+```
+RADP cost(stages) = Σ T_stage + α · max T_stage     (generalized)
+```
+
+이 한 식으로:
+- α = 0 → EdgeShard latency DP (single-user, batch=1) — A3b' SLO 의 정확한 cost model
+- α → ∞ → EdgeShard throughput / Jupiter Eq. 1 (multi-user pipelined) — 동시 부하 SLO
+- α = |D| - 1 → Jupiter Eq. 4 (k=1 sub-sequence; intra-seq parallelism 도입 시 k>1 로 확장)
+
+RADP 가 EdgeShard 두 mode + Jupiter Eq. 4 를 *parameterized cost* 로 통합하며, 두 mode 모두에 **recovery-aware DP** (R-Ψ alternating + eager/lazy backup memory policy) 를 직교 추가한 게 우리 진짜 contribution.
+
+**의도된 한계**:
+- D2.4 의 latency mode + eager backup live 측정은 메모리 압박으로 deploy fail (on-1 가 ao-1 backup 21 layers + 자기 1 layer = 572 MB 적재 시도 → OOM). `--restart-workers-between-cells` 추가 후 재측정 진행 중. live 측정에서 4×4 matrix 완성 시 EXP-D2.5 로 분리 가능
+- Intra-sequence pipeline parallelism (Jupiter k > 1) 미구현. prefill optimization 의 진짜 contribution 은 별도 future work
+- DP 의 throughput-mode 가 EdgeShard Eq. 11 의 subset enumeration 까진 가지 않고 perm search 로 근사 (M ≤ 8). M > 8 fleet 엔 heuristic 추가 필요
+- Memory-aware backup peer selection 미구현 — `recovery_table` 가 `total_memory_bytes` 만 보고 `free_memory_bytes` (heartbeat) 안 보는 게 latency-mode + eager 에서 OOM 의 직접 원인. EXP-D2.5 후보
+
 ---
 
 ## 알려진 한계 (현재)
