@@ -251,7 +251,7 @@ def compute_all_baselines(spec: ClusterSpec) -> dict[str, dict[str, Any]]:
 
     # --- 4. ours (R-Ψ alternating, jointly optimizing R + Ψ) ---
     try:
-        alt = Scheduler(spec).solve_alternating(max_iterations=10)
+        alt = Scheduler(spec).solve_alternating_best_order(max_iterations=10)
         pl = alt.placement
         rec = alt.recovery
         results["ours"] = {
