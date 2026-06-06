@@ -260,8 +260,23 @@ class Scheduler:
             total, M,
         )
 
+        # When one device (typically the slowest tier) sets the max_stage_time
+        # floor, multiple placements tie on the primary objective. Tiebreaker:
+        # prefer placements that load more work onto faster devices — measured
+        # as Σ throughput(d) × layer_count(d). Heavier weight on the fastest
+        # devices gives the cluster more compute headroom for prefill / spikes.
+        throughput_by_id = {d.id: d.compute_throughput for d in original_devices}
+
+        def tiebreak_score(result: AlternatingResult) -> float:
+            return sum(
+                throughput_by_id.get(s.device, 0.0)
+                * (int(s.end_layer) - int(s.start_layer) + 1)
+                for s in result.placement
+            )
+
         best: AlternatingResult | None = None
         best_order: tuple[DeviceProfile, ...] | None = None
+        best_score: float = -1.0
         feasible_count = 0
         for perm in permutations(original_devices):
             self.spec = ClusterSpec(
@@ -278,9 +293,19 @@ class Scheduler:
             if math.isinf(result.max_stage_time):
                 continue
             feasible_count += 1
-            if best is None or result.max_stage_time < best.max_stage_time:
+            score = tiebreak_score(result)
+            better = (
+                best is None
+                or result.max_stage_time < best.max_stage_time - 1e-9
+                or (
+                    abs(result.max_stage_time - best.max_stage_time) < 1e-9
+                    and score > best_score
+                )
+            )
+            if better:
                 best = result
                 best_order = perm
+                best_score = score
 
         # Restore original device order in spec
         self.spec = ClusterSpec(
