@@ -71,7 +71,10 @@ def memory_check(
     disk.
     """
     self_mem = stage_self_memory(layers, start, end)
+    # Prefer heartbeat-reported free over hardware-spec total — see
+    # recovery_table for the same reasoning (EXP-D2.4 OOM cycle root cause).
+    budget = node.free_memory_bytes or node.total_memory_bytes
     if not eager_backup:
-        return self_mem <= node.total_memory_bytes
+        return self_mem <= budget
     backup_mem = backup_memory_for(node.id, recovery, current_placement, layers)
-    return self_mem + backup_mem <= node.total_memory_bytes
+    return self_mem + backup_mem <= budget

@@ -96,18 +96,27 @@ def determine_recovery_table(
         for k in spec.devices:
             if k.id == j.id:
                 continue
+            # Prefer the heartbeat-reported free_memory_bytes (what the device
+            # *actually* has available after OS / torch / driver / cache),
+            # falling back to total only when free wasn't populated. This
+            # closes the EXP-D2.4 OOM cycle: under the legacy
+            # total_memory_bytes check, an 8 GB Nano with 700 MB free could
+            # still be picked as the backup peer for a 21-layer stage —
+            # LoadBackup then drove the board through the kernel-watchdog
+            # reboot loop.
+            free_budget = k.free_memory_bytes or k.total_memory_bytes
             if spec.eager_backup:
                 # Eager: backup peer must have free memory reserved NOW for j's weights.
-                free = k.total_memory_bytes - self_usage[k.id] - reserved[k.id]
+                free = free_budget - self_usage[k.id] - reserved[k.id]
                 if free < j_stage_bytes:
                     continue
             else:
                 # Lazy (A5): backup peer only needs to fit weights at failure time,
-                # i.e. its total minus its OWN primary stage. Other backups already
+                # i.e. its free minus its OWN primary stage. Other backups already
                 # assigned to this peer would still need to coexist at failure time,
                 # but only if multiple simultaneous failures hit at once. For
-                # single-failure recovery the loosest feasible check is total - self.
-                free = k.total_memory_bytes - self_usage[k.id]
+                # single-failure recovery the loosest feasible check is free - self.
+                free = free_budget - self_usage[k.id]
                 if free < j_stage_bytes:
                     continue
             cost = estimate_download_time(

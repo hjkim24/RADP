@@ -309,6 +309,7 @@ class ProfileOrchestrator:
                     id=dev_id,
                     total_memory_bytes=int(hb.total_memory_bytes),
                     compute_throughput=throughput,
+                    free_memory_bytes=int(hb.free_memory_bytes),
                 )
             )
         return profiles

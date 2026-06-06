@@ -567,6 +567,7 @@ class CoordinatorServer:
                         "id": str(d.id),
                         "total_memory_bytes": d.total_memory_bytes,
                         "compute_throughput": d.compute_throughput,
+                        "free_memory_bytes": d.free_memory_bytes,
                     }
                     for d in spec.devices
                 ],

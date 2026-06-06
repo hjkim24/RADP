@@ -84,6 +84,7 @@ def cluster_spec_from_sidecar(
             id=DeviceId(d["id"]),
             total_memory_bytes=int(d["total_memory_bytes"]),
             compute_throughput=float(d["compute_throughput"]),
+            free_memory_bytes=int(d.get("free_memory_bytes", 0)),
         )
         for d in sidecar["device_profiles"]
     ]

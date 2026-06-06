@@ -24,6 +24,12 @@ class DeviceProfile:
     total_memory_bytes: int
     compute_throughput: float
     """Normalized scalar; baseline Jetson Nano = 1.0."""
+    free_memory_bytes: int = 0
+    """Actual free memory at the time the heartbeat was captured. Used by
+    memory_check / recovery_table to gate primary + backup layer
+    assignments on what the device CAN load right now, not the
+    hardware-spec ceiling. When 0 (legacy / uninitialised), callers fall
+    back to total_memory_bytes for backwards compatibility."""
 
 
 @dataclass(frozen=True)
