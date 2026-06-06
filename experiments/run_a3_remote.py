@@ -98,6 +98,7 @@ def build_manual_cluster_yaml(
     slo_tbt_seconds: float = 1.0,
     heartbeat_timeout_seconds: float = 5.0,
     heartbeat_tick_seconds: float = 1.0,
+    eager_backup: bool = True,
 ) -> str:
     """Build a complete manual-mode cluster.yaml as a string.
 
@@ -117,6 +118,7 @@ def build_manual_cluster_yaml(
     lines.append(f"  heartbeat_tick_seconds: {heartbeat_tick_seconds}")
     lines.append("  schedule_mode: manual")
     lines.append(f"  activation_bytes: {activation_bytes}")
+    lines.append(f"  eager_backup: {'true' if eager_backup else 'false'}")
     lines.append("  slo:")
     lines.append(f"    ttft_seconds: {slo_ttft_seconds}")
     lines.append(f"    tbt_seconds: {slo_tbt_seconds}")
@@ -401,6 +403,8 @@ def run_baseline_cell(
     failure_kill_after: int,
     prompt: str,
     ready_timeout: float,
+    activation_bytes: int = 1_048_576,
+    eager_backup: bool = True,
 ) -> dict[str, Any]:
     """Full pipeline for one baseline cell."""
     log.info("========== BASELINE: %s ==========", name)
@@ -417,6 +421,8 @@ def run_baseline_cell(
                  for w in gateway_info["workers"]],
         placement=placement,
         recovery=recovery,
+        activation_bytes=activation_bytes,
+        eager_backup=eager_backup,
     )
 
     deploy_info = deploy_baseline(
@@ -587,6 +593,7 @@ def main() -> None:
             failure_kill_after=args.failure_kill_after,
             prompt=args.prompt,
             ready_timeout=args.ready_timeout,
+            eager_backup=eager_backup,
         )
         out["cells"].append(cell)
         # Save incrementally so a long run can be inspected / resumed.
