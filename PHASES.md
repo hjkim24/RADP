@@ -1303,7 +1303,7 @@ RADP 가 EdgeShard 두 mode + Jupiter Eq. 4 를 *parameterized cost* 로 통합�
 - D2.4 의 latency mode + eager backup live 측정은 메모리 압박으로 deploy fail (on-1 가 ao-1 backup 21 layers + 자기 1 layer = 572 MB 적재 시도 → OOM). `--restart-workers-between-cells` 추가 후 재측정 진행 중. live 측정에서 4×4 matrix 완성 시 EXP-D2.5 로 분리 가능
 - Intra-sequence pipeline parallelism (Jupiter k > 1) 미구현. prefill optimization 의 진짜 contribution 은 별도 future work
 - DP 의 throughput-mode 가 EdgeShard Eq. 11 의 subset enumeration 까진 가지 않고 perm search 로 근사 (M ≤ 8). M > 8 fleet 엔 heuristic 추가 필요
-- Memory-aware backup peer selection 미구현 — `recovery_table` 가 `total_memory_bytes` 만 보고 `free_memory_bytes` (heartbeat) 안 보는 게 latency-mode + eager 에서 OOM 의 직접 원인. EXP-D2.5 후보
+- ~~Memory-aware backup peer selection 미구현~~ — **commit 4972127 에서 fix**. `DeviceProfile.free_memory_bytes` 가 heartbeat 의 실측치를 carry, `memory_check` + `recovery_table` 가 `total` 대신 그것을 budget 으로 사용 (free=0 시 legacy fallback). 4-CUDA latency+eager v3 환경에선 placement 동일 (Nano free ≥ 4 GB 로 backup load 546 MB 여유) 지만 누적 deploy 후 메모리 압박 시 자동으로 안전한 peer 선택 또는 NoRecoveryError. D-track 큰 모델 + multi-stream 으로 갈 때의 prerequisite
 
 ---
 
