@@ -166,6 +166,34 @@ def push_cluster_yaml(coord_host: str, yaml_str: str) -> tuple[float, bool, str]
     return dt, ok, cp.stderr
 
 
+def restart_all_workers(settle_seconds: float = 12.0) -> tuple[float, bool]:
+    """Restart radp-worker on every host in the `workers` inventory group.
+
+    Used between A3b' baseline cells to drop accumulated VRAM/RSS — every
+    failed/successful deploy can leave behind unfreed weights, KV cache,
+    and CUDA driver state, and over a long sweep that pushes Nano boards
+    past their 8 GB ceiling into the OOM-killer reboot loop. A fresh
+    radp-worker on each board guarantees the next cell starts with the
+    same memory baseline regardless of what the previous cell did.
+
+    Returns (wall_seconds, ok). On non-zero return code we still wait and
+    return ok=False so callers can decide whether to abort.
+    """
+    log.info("restarting all workers (clean memory state)")
+    t0 = time.perf_counter()
+    cp = subprocess.run(
+        ["ansible", "-i", "inventory.ini", "workers", "-b", "-m", "shell",
+         "-a", "systemctl restart radp-worker"],
+        cwd=_DEPLOY_DIR, capture_output=True, text=True, timeout=180, check=False,
+    )
+    ok = cp.returncode == 0
+    if not ok:
+        log.warning("worker restart rc=%d: %s", cp.returncode, cp.stderr.strip())
+    # Give radp-worker a moment to bind its port + send the first heartbeat.
+    time.sleep(settle_seconds)
+    return time.perf_counter() - t0, ok
+
+
 def restart_coord(coord_host: str) -> tuple[float, bool, str]:
     """SIGKILL + start instead of `state=restarted`.
 
@@ -554,6 +582,13 @@ def main() -> None:
                         "latency=min sum_stage, blended=min sum+α·max.")
     p.add_argument("--blend-alpha", type=float, default=0.0,
                    help="α for blended mode (Jupiter Eq. 4: α=|D|-1).")
+    p.add_argument("--restart-workers-between-cells", action="store_true",
+                   help="Restart radp-worker on every board before each "
+                        "baseline cell. Each cell starts from the same clean "
+                        "memory baseline regardless of what the previous cell "
+                        "left behind (~30 s extra per cell). Recommended for "
+                        "long sweeps that push Nano boards past their 8 GB "
+                        "ceiling.")
     args = p.parse_args()
 
     sidecar_path = Path(args.sidecar)
@@ -588,10 +623,13 @@ def main() -> None:
         "cells": [],
     }
 
-    for name in args.baselines:
+    for cell_idx, name in enumerate(args.baselines):
         if name not in baselines:
             log.warning("baseline %r not in computed set — skipping", name)
             continue
+        if args.restart_workers_between_cells:
+            wall, ok = restart_all_workers()
+            log.info("worker restart before %s: wall=%.1fs ok=%s", name, wall, ok)
         b = baselines[name]
         if b.get("infeasible"):
             log.warning("baseline %s infeasible: %s — skipping", name, b.get("reason"))
