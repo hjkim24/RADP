@@ -1313,16 +1313,29 @@ RADP 가 EdgeShard 두 mode + Jupiter Eq. 4 를 *parameterized cost* 로 통합�
 - [experiments/measure_concurrent.py](experiments/measure_concurrent.py) — concurrent stream load generator. ThreadPoolExecutor 로 C 개 동시 `/api/generate` SSE 호출, per-stream TBT distribution + aggregate tok/s + 실패율 측정. warmup_skip=2 로 첫 prefill / first-token outlier 흡수
 - group_vars `optimization_mode: latency` 로 4-CUDA placement (ao-1 [2-22] 21 layers) 측정 → 그 다음 `throughput` 으로 토글 + 재배포 (balanced placement: on-1 [1-7] / ao-1 [8-14] / on-6 [15-19] / on-2 [20-24], max_stage 7.7 ms 예측)
 
-**검증 결과** (4-CUDA, OPT-350M, 2 repeats × C={1,2,4,8} × 30 tok per stream, 2026-06-06):
+**검증 결과** (4-CUDA, OPT-350M, 2 repeats × C={1,2,4,8,16,32} × 30 tok per stream, 2026-06-07):
 
 | Concurrency | **Latency placement** aggregate | **Throughput placement** aggregate | Δ (throughput vs latency) |
 |---|---|---|---|
-| C=1 | 7.8 tok/s | 5.7 tok/s | **-27%** |
-| C=2 | 10.7 | 6.9 | -36% |
-| C=4 | 18.3 | 12.6 | -31% |
-| C=8 | 25.3 | 21.2 | -16% |
+| C=1  | 7.8 tok/s | 5.7 tok/s | **-27%** |
+| C=2  | 10.7 | 6.9 | -36% |
+| C=4  | 18.3 | 12.6 | -31% |
+| C=8  | 25.3 | 21.2 | -16% |
+| C=16 | **25.9** | 24.3 | -6% |
+| C=32 | **26.0** | 25.5 | -2% |
 
-→ **latency placement 가 모든 C 에서 dominant**. 가설 ("multi-user 시 throughput 모드 가치 있을 것") **반증됨**. 결과 JSON: [experiments/results/concurrent_4cuda_latency.json](experiments/results/concurrent_4cuda_latency.json), [experiments/results/concurrent_4cuda_throughput.json](experiments/results/concurrent_4cuda_throughput.json).
+→ **latency placement 가 모든 C 에서 dominant** (가설 반증). 둘 다 **C=16 부터 ~26 tok/s 에 saturate** — gateway bottleneck 천장. Crossover point 없음. 결과 JSON: [concurrent_4cuda_latency.json](experiments/results/concurrent_4cuda_latency.json), [concurrent_4cuda_throughput.json](experiments/results/concurrent_4cuda_throughput.json), [concurrent_4cuda_latency_high.json](experiments/results/concurrent_4cuda_latency_high.json), [concurrent_4cuda_throughput_high.json](experiments/results/concurrent_4cuda_throughput_high.json).
+
+**Worker 사용률 측정** (latency placement, C=4 active, tegrastats sample):
+
+| Worker | GPU GR3D_FREQ | CPU avg | Layer count | 예상 compute/sec |
+|---|---|---|---|---|
+| ao-1 | **0%** | 5% | 21 | ~90ms (9%) |
+| on-1 | 0% | 5% | 1 | ~6ms (0.6%) |
+| on-6 | 39% | 5% | 1 | ~6ms (0.6%) |
+| on-2 | 0% | 5% | 1 | ~5ms (0.5%) |
+
+→ **워커가 대부분 idle**. compute 가 sub-ms 라 sampling window (1초) 에 잠겨버리지만, 5 tok/s × 18ms = 9% 가 ao-1 의 실제 사용률. 나머지 ~85% 시간은 *gateway 처리 / RPC 직렬화 / Python GIL 대기*. 워커 추가 / placement 최적화로 줄일 수 없는 fixed cost.
 
 **원인 분석** (예측 vs 실측 gap):
 
@@ -1343,6 +1356,22 @@ Throughput placement, C=4 이론치:
 - D2.5 실측: **우리 edge fleet 에선 latency-mode 가 universal dominant point**
 - 정직한 reporting: "In low-bandwidth edge environments (~10 MB/s gRPC), per-RPC fixed overhead exceeds the predicted pipeline-parallelism gain of throughput-mode optimization. RADP-Latency (α=0 in the unified `Σ + α·max` cost) is the dominant operating point across all measured concurrency levels."
 - Throughput-mode 가 *우세할 조건*: (a) datacenter-grade 네트워크 (≥1 Gbps), (b) RPC overhead 가 token compute 보다 작아질 만큼 큰 모델, (c) C » 8
+
+**Gateway bottleneck 의 함의** (paper future work):
+
+```
+Token latency = stage_compute (1-18ms) + 통신 (5ms) + framework overhead (~140ms)
+                └ 9-15% 의 시간       └────────────  85-91%  ────────────────┘
+```
+
+→ 어떤 placement 알고리즘도 9-15% 영역만 최적화. *85% framework cost* 가 아키텍처적으로 풀려야 throughput mode 가 효력. 가능한 방향:
+1. **Async gRPC + concurrent sampling** (Python GIL 우회)
+2. **Batched sampling / 토큰-단위 vectorization** (Jupiter intra-seq parallelism 정신)
+3. **Lower-overhead 직렬화** (protobuf → raw activation bytes)
+4. **C++ / Rust gateway** (Python critical path 제거)
+5. **Hierarchical / 분산 gateway** (단일 coord bottleneck 해소)
+
+이 fix 없이는 RADP-Throughput placement 의 *이론적 이점* 이 실측 환경에서 발현 안 됨. EXP-D2.5 의 "latency-mode 우위" 결론은 *우리 현 implementation 조건 하에서만 성립* 임을 paper limitation 으로 명시 권장.
 
 **의도된 한계**:
 - 단일 모델 (OPT-350M) + 단일 동시성 범위 (C ≤ 8). 더 큰 모델 (Llama-2-7B) / 더 높은 동시성 (C=16, 32) 에선 throughput crossover 가능. 다음 sweep 후보
