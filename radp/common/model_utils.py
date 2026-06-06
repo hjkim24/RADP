@@ -112,6 +112,29 @@ def slice_stage(handle: ModelHandle, start: LayerIdx, end: LayerIdx) -> nn.Modul
     return nn.ModuleList(list(layers)[int(start) - 1 : int(end)])
 
 
+def estimate_activation_bytes(
+    model_id: str,
+    dtype: str,
+    *,
+    batch_size: int = 1,
+) -> int:
+    """Inter-stage activation transfer size: batch * hidden_size * dtype_bytes.
+
+    Each pipeline stage hands its successor a single hidden-state vector per
+    token (shape: [batch, 1, hidden] during decode). The Scheduler's comm
+    cost is `activation_bytes / bandwidth + latency`; getting this number
+    right is what lets DP weigh compute vs comm correctly.
+
+    Uses AutoConfig (no model weights loaded) so it's cheap to call at
+    coordinator startup.
+    """
+    if dtype not in DTYPE_BYTES:
+        raise ValueError(f"Unsupported dtype {dtype!r}; choose from {sorted(DTYPE_BYTES)}")
+    config = AutoConfig.from_pretrained(model_id)
+    hidden = int(config.hidden_size)
+    return batch_size * hidden * DTYPE_BYTES[dtype]
+
+
 def estimate_kv_cache_bytes(hidden_size: int, max_seq_length: int, dtype_bytes: int) -> int:
     """KV cache footprint per layer for ``max_seq_length`` tokens.
 

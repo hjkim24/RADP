@@ -26,6 +26,7 @@ import grpc
 import yaml
 
 from radp.common.logging_utils import get_logger
+from radp.common.model_utils import estimate_activation_bytes
 from radp.common.proto import radp_pb2, radp_pb2_grpc
 from radp.common.protocol import WorkerClient
 from radp.common.types import (
@@ -74,7 +75,12 @@ class CoordinatorConfig:
     schedule_mode: str = "manual"           # "manual" | "auto"
     slo_ttft_seconds: float = 0.3
     slo_tbt_seconds: float = 0.1
-    activation_bytes: int = 1_000_000
+    # 0 = auto-compute from model hidden_size * dtype_bytes * batch.
+    # The 1_000_000 default was an order-of-magnitude overestimate for
+    # smaller models (OPT-350M: 2 KB at fp16) and caused DP to over-weight
+    # comm relative to compute, masking the fastest device's compute
+    # advantage in placement decisions.
+    activation_bytes: int = 0
     profiling_layer_warmup: int = 1
     profiling_layer_repeats: int = 3
     profiling_layer_seq_length: int = 32
@@ -132,7 +138,7 @@ class CoordinatorConfig:
             schedule_mode=schedule_mode,
             slo_ttft_seconds=float(slo.get("ttft_seconds", 0.3)),
             slo_tbt_seconds=float(slo.get("tbt_seconds", 0.1)),
-            activation_bytes=int(coord.get("activation_bytes", 1_000_000)),
+            activation_bytes=int(coord.get("activation_bytes", 0)),
             profiling_layer_warmup=int(profiling.get("layer_warmup", 1)),
             profiling_layer_repeats=int(profiling.get("layer_repeats", 3)),
             profiling_layer_seq_length=int(profiling.get("layer_seq_length", 32)),
@@ -419,6 +425,18 @@ class CoordinatorServer:
         t_devprofiles_start = time.perf_counter()
         devices = ProfileOrchestrator.build_device_profiles(records, layer_profiles)
         devprofiles_ms = (time.perf_counter() - t_devprofiles_start) * 1000
+
+        if self.config.activation_bytes > 0:
+            activation_bytes = self.config.activation_bytes
+            log.info("activation_bytes: %d (manual override)", activation_bytes)
+        else:
+            activation_bytes = estimate_activation_bytes(
+                self.config.model_id, self.config.dtype, batch_size=1,
+            )
+            log.info(
+                "activation_bytes: %d (auto, hidden*dtype*batch from %s)",
+                activation_bytes, self.config.model_id,
+            )
         spec = ClusterSpec(
             devices=devices,
             layers=layer_profiles,
@@ -427,13 +445,13 @@ class CoordinatorServer:
                 ttft_seconds=self.config.slo_ttft_seconds,
                 tbt_seconds=self.config.slo_tbt_seconds,
             ),
-            activation_bytes=self.config.activation_bytes,
+            activation_bytes=activation_bytes,
         )
 
         log.info("auto-scheduling: solving DP (devices=%d, layers=%d)",
                  len(devices), len(layer_profiles))
         t_dp_start = time.perf_counter()
-        result = Scheduler(spec).solve_alternating()
+        result = Scheduler(spec).solve_alternating_best_order()
         dp_ms = (time.perf_counter() - t_dp_start) * 1000
         log.info(
             "auto-scheduling: solution max_stage_time=%.4fs converged=%s iterations=%d",
