@@ -1158,6 +1158,71 @@ ours가 on-2 (Nano CUDA) 에 18 layer 몰빵 — DP solver가 inter-stage 통신
 - DP 가 ao-1을 1 layer만 사용한 것은 직관 반대 — 다음 단계로 cost function calibration (network bw weights, activation_bytes) 점검 필요
 - 측정은 decode-realistic seq_length=64 기반. Prefill (TTFT) heavy workload에선 AGX 우위가 더 두드러질 것 — 별도 prefill profile path가 차후 작업
 
+## Phase EXP-D2.3 — Cost-function calibration + single-stream 목적함수 발견
+
+**목표**: D2.2 7-worker 측정에서 ours가 ao-1 (가장 빠른 device) 에 1 layer만 배정한 placement 이유 추적. *왜 DP가 fastest device를 favor 안 하나*가 paper claim의 약점이라 cost function 자체 점검.
+
+**찾아낸 calibration 이슈 3가지** (commit e2a91cf, e6a826c, eaecf5a):
+
+1. **activation_bytes 디폴트가 500x 과대평가** ([radp/coordinator/server.py](radp/coordinator/server.py), [radp/common/model_utils.py](radp/common/model_utils.py)):
+   - `activation_bytes: 1_000_000` 디폴트 — OPT-350M 실제값은 hidden(1024) × dtype_bytes(2) × batch(1) = **2 KB**
+   - 1 MB 사용 시 stage 간 comm = 70-130 ms (compute의 ~100x). DP가 stage 수 minimize = bulk-on-1-device 식 placement만 산출. fastest device 우위 묻힘
+   - **fix**: `estimate_activation_bytes(model_id, dtype)` 가 AutoConfig 로 hidden_size 가져와 자동 계산. group_vars `activation_bytes: 0` = auto, 양수면 수동 override
+
+2. **Device order = heartbeat 도착 순서** ([radp/coordinator/scheduler.py](radp/coordinator/scheduler.py)):
+   - `build_device_profiles` 가 `records: dict[DeviceId, HeartbeatRecord]` iteration 순서로 device list 생성 → 임의 (워커 부팅/네트워크 지연 의존)
+   - DP는 이 순서를 *fixed pipeline order* 로 사용. 마지막 device가 leftover (보통 다수 layer) 받음
+   - 7-worker sidecar brute-force: 5040 permutation × DP solve → 현재 순서는 985위/5040 (top 19.5%). best vs worst 격차 1 MB 디폴트에서 37%, 2 KB calibrated에서 12%
+   - **fix**: `solve_alternating_best_order()` 가 M ≤ 8 일 때 모든 M! permutation 실행, max_stage_time 최소값 선택
+
+3. **DP가 multiple-optima 시 first-found 반환** ([radp/coordinator/scheduler.py](radp/coordinator/scheduler.py)):
+   - 가장 느린 tier (e.g. CPU Nano 1 layer = 85 ms) 가 max_stage_time floor 를 결정하면, 나머지 layer 배분에 여러 optima 존재
+   - **partial fix (perm-level)**: tiebreaker = `Σ throughput(d) × layer_count(d)`. 같은 max_stage 시 fastest device에 더 많은 layer 배정
+   - **알려진 한계**: tiebreaker가 permutation 비교 단계에서만 동작. 한 permutation 내 DP `_forward` 의 split 선택은 여전히 first-found. 결과: 종종 second-fastest CUDA worker가 bulk 받음
+
+**Single-stream 목적함수 발견** (사용자 통찰 — "모든 노드 안 쓰는 게 더 빠를 수도?"):
+
+DP는 `max_stage_time` 을 minimize — 이는 **steady-state pipelined throughput** (batch >> 1, 동시 다수 stream) 의 정확한 목적함수. 하지만 우리 A3b' 실험은 **batch=1 single-stream decode**.
+
+Single-stream 1-token latency:
+```
+TBT_per_token = Σ (T_comm(prev → stage_i) + T_compute(stage_i))   over all stages
+```
+즉 sum, max가 아님. 느린 worker를 추가하면 그 worker의 stage time이 단순히 더해짐 — *throughput 이득 없이 latency 손해*만.
+
+**Subset sweep** (7w MAXN sidecar, activation=2KB, 모든 subset × 모든 permutation):
+
+| k | sum_ms (single-stream TBT 예측) | max_ms | subset |
+|---|---|---|---|
+| 2 | **25.3 ms** | 13.0 | ao-1, on-1 |
+| 3 | 27.6 ms | 9.7 | ao-1, on-2, on-6 |
+| **4** | **30.5 ms** | 7.8 | ao-1, on-1, on-2, on-6 (all CUDA) |
+| 5 | 66.4 ms | 36.7 | + ao-2 (CPU AGX) |
+| 6 | 152.4 ms | 87.1 | + on-3 |
+| 7 (현재 D2.2) | **237.9 ms** | 87.1 | + on-4 |
+
+→ CPU 워커 제외하면 **8x 빠른 single-stream TBT** 예상. D2.2 실측 257ms vs 예측 max 85ms 의 3x 차이는 노이즈가 아니라 **DP 가 single-stream 워크로드에 잘못된 목적함수 풀고 있는 증거**.
+
+**4-CUDA / 3-CUDA live 검증 시도 (실측 실패)**:
+- 4-CUDA fleet 으로 inventory 축소 → coord 정상 boot, max_stage **8.35 ms** (D2.2 대비 -90%) 확인
+- a3_baselines.py 도 `solve_alternating_best_order` 사용하도록 fix (commit eaecf5a)
+- A3b' run 시작 — greedy / ours 모두 deploy 시 `not_ready_after_timeout`
+- 원인: ours placement가 on-6 (가장 느린 CUDA + 가장 적은 free memory ~447 MB) 에 18 layers 할당 → on-6 hang (SSH banner timeout). 이전 D2.2 후 on-5 도 같은 패턴으로 hung.
+- on-6 inventory 에서 제외, 3-CUDA 재시도. on-1 마저 같은 패턴으로 hung — backup table 로딩 시 on-1 (718 MB free) 메모리 부담
+- 결과: live wall-clock 확보 못함. Nano CUDA 3/4 boards (on-1, on-5, on-6) 전부 hung 상태 — 다음 in-person 시 전원 재시작 필요
+
+**검증된 부분**:
+- ✅ `activation_bytes: 2048 (auto, hidden*dtype*batch from facebook/opt-350m)` 로그 (coord)
+- ✅ `solve_alternating_best_order: 5040/5040 permutations feasible, best max_stage_time=0.0856s` 로그
+- ✅ 4-CUDA subset 으로 max_stage 85.6 → 8.35 ms (-90%) 직접 측정
+- ❌ 4-CUDA / 3-CUDA wall-clock TBT 실측 — fleet hang 으로 불가
+
+**의도된 한계**:
+- live A3b' wall-clock 미확보. 다음 in-person session에서 on-1/5/6 전원 재시작 후 4-CUDA 재실측 우선
+- DP 의 **단일 max_stage_time → sum_stage_time** 재설계는 별도 Phase (cost function rewrite, subset enumeration 통합). 현재 best_order는 max 만 minimize
+- **Recovery trade-off**: smaller subset → backup peer 선택지 좁아짐. 2-worker subset 은 single-failure tolerance 만 (둘 다 backup 인 mutually-back-each-other 구조). paper에서 정량 분석 필요
+- on-6, on-1 hang 은 알고리즘 문제 아닌 **Jetson Nano 4-8GB free memory + 18+ layer 백업 로딩** 의 OS-level 회복 한계. 메모리 관리 / lazy backup loading ([A5 백로그 항목]) 의 동기
+
 ---
 
 ## 알려진 한계 (현재)
