@@ -44,6 +44,30 @@ from radp.coordinator.recovery_table import determine_recovery_table
 log = get_logger(__name__)
 
 
+# DP cell state = (sum_stage_time, max_stage_time). The forward stores
+# tuples so the same DP body can be re-ranked under any mode without a
+# rewrite — see CostMode.
+_INF_STATE: tuple[float, float] = (math.inf, math.inf)
+
+
+def _rank(state: tuple[float, float], mode: str, alpha: float = 0.0) -> float:
+    """Mode-specific ranking of a (sum, max) DP cell.
+
+    throughput → max                  (Jupiter Eq. 1 / EdgeShard throughput)
+    latency    → sum                  (EdgeShard Eq. 6, batch=1 single-stream)
+    blended    → sum + α·max          (Jupiter Eq. 4 at single sub-sequence;
+                                       α = |D|-1 reproduces their formula)
+    """
+    sum_t, max_t = state
+    if mode == "throughput":
+        return max_t
+    if mode == "latency":
+        return sum_t
+    if mode == "blended":
+        return sum_t + alpha * max_t
+    raise ValueError(f"Unknown optimization_mode: {mode!r}")
+
+
 class Scheduler:
     """Recovery-Aware DP scheduler.
 
@@ -91,7 +115,8 @@ class Scheduler:
         if ref_placement is None:
             ref_placement = uniform_placement(self.spec.devices, self._L)
         A, choice = self._forward(recovery, ref_placement=ref_placement)
-        if math.isinf(A[self._L][self._M]):
+        final_state = A[self._L][self._M]
+        if math.isinf(final_state[0]) or math.isinf(final_state[1]):
             raise NoFeasibleSolutionError(
                 "Every (y, n) cell is infeasible under the given memory + SLO constraints."
             )
@@ -99,7 +124,8 @@ class Scheduler:
         return DPResult(
             placement=placement,
             recovery=recovery,
-            max_stage_time=A[self._L][self._M],
+            max_stage_time=final_state[1],
+            sum_stage_time=final_state[0],
         )
 
     # ------------------------------------------------------------------
@@ -158,7 +184,8 @@ class Scheduler:
                     return _replace_history(best_consistent, history)
                 raise
 
-            if math.isinf(A[self._L][self._M]):
+            final_state = A[self._L][self._M]
+            if math.isinf(final_state[0]) or math.isinf(final_state[1]):
                 if best_consistent is not None:
                     log.warning(
                         "alternating iter=%d: DP infeasible; falling back", i,
@@ -169,7 +196,10 @@ class Scheduler:
                 )
 
             psi = self._backtrack(choice)
-            max_stage = A[self._L][self._M]
+            sum_stage, max_stage = final_state
+            objective_rank = _rank(
+                final_state, self.spec.optimization_mode, self.spec.blend_alpha,
+            )
             self_consistent = self._memory_self_check(psi, r)
 
             log_entry = AlternatingIterationLog(
@@ -178,16 +208,22 @@ class Scheduler:
                 self_consistent=self_consistent,
                 psi_changed=(psi != prev_psi),
                 r_changed=(r != prev_r),
+                sum_stage_time=sum_stage,
             )
             history.append(log_entry)
             log.debug(
-                "alternating iter=%d max_stage=%.4f self_consistent=%s "
+                "alternating iter=%d sum=%.4f max=%.4f self_consistent=%s "
                 "psi_changed=%s r_changed=%s",
-                i, max_stage, self_consistent, log_entry.psi_changed, log_entry.r_changed,
+                i, sum_stage, max_stage, self_consistent,
+                log_entry.psi_changed, log_entry.r_changed,
             )
 
             if self_consistent and (
-                best_consistent is None or max_stage < best_consistent.max_stage_time
+                best_consistent is None
+                or objective_rank < _rank(
+                    (best_consistent.sum_stage_time, best_consistent.max_stage_time),
+                    self.spec.optimization_mode, self.spec.blend_alpha,
+                )
             ):
                 best_consistent = AlternatingResult(
                     placement=psi,
@@ -196,6 +232,7 @@ class Scheduler:
                     iterations=i,
                     converged=False,
                     history=list(history),
+                    sum_stage_time=sum_stage,
                 )
 
             # Converged when R and Ψ are stable AND Ψ is self-consistent.
@@ -207,6 +244,7 @@ class Scheduler:
                     iterations=i,
                     converged=True,
                     history=history,
+                    sum_stage_time=sum_stage,
                 )
 
             prev_r = r
@@ -274,47 +312,54 @@ class Scheduler:
                 for s in result.placement
             )
 
-        best: AlternatingResult | None = None
-        best_order: tuple[DeviceProfile, ...] | None = None
-        best_score: float = -1.0
-        feasible_count = 0
-        for perm in permutations(original_devices):
-            self.spec = ClusterSpec(
-                devices=list(perm),
+        mode = self.spec.optimization_mode
+        alpha = self.spec.blend_alpha
+
+        def with_devices(devs: list[DeviceProfile]) -> ClusterSpec:
+            # Re-emit spec preserving every field — earlier versions dropped
+            # eager_backup / optimization_mode here and quietly fell back to
+            # defaults, which masked our A5 prototype until commit f378ddd.
+            return ClusterSpec(
+                devices=devs,
                 layers=self.spec.layers,
                 network=self.spec.network,
                 slo=self.spec.slo,
                 activation_bytes=self.spec.activation_bytes,
+                eager_backup=self.spec.eager_backup,
+                optimization_mode=self.spec.optimization_mode,
+                blend_alpha=self.spec.blend_alpha,
             )
+
+        best: AlternatingResult | None = None
+        best_rank: float = math.inf
+        best_order: tuple[DeviceProfile, ...] | None = None
+        best_score: float = -1.0
+        feasible_count = 0
+        for perm in permutations(original_devices):
+            self.spec = with_devices(list(perm))
             try:
                 result = self.solve_alternating(**alt_kwargs)  # type: ignore[arg-type]
             except NoFeasibleSolutionError:
                 continue
-            if math.isinf(result.max_stage_time):
+            result_state = (result.sum_stage_time, result.max_stage_time)
+            if math.isinf(result_state[0]) or math.isinf(result_state[1]):
                 continue
             feasible_count += 1
+            rank = _rank(result_state, mode, alpha)
             score = tiebreak_score(result)
             better = (
                 best is None
-                or result.max_stage_time < best.max_stage_time - 1e-9
-                or (
-                    abs(result.max_stage_time - best.max_stage_time) < 1e-9
-                    and score > best_score
-                )
+                or rank < best_rank - 1e-9
+                or (abs(rank - best_rank) < 1e-9 and score > best_score)
             )
             if better:
                 best = result
+                best_rank = rank
                 best_order = perm
                 best_score = score
 
         # Restore original device order in spec
-        self.spec = ClusterSpec(
-            devices=original_devices,
-            layers=self.spec.layers,
-            network=self.spec.network,
-            slo=self.spec.slo,
-            activation_bytes=self.spec.activation_bytes,
-        )
+        self.spec = with_devices(original_devices)
 
         if best is None or best_order is None:
             raise NoFeasibleSolutionError(
@@ -322,10 +367,22 @@ class Scheduler:
             )
         log.info(
             "solve_alternating_best_order: %d/%d permutations feasible, "
-            "best max_stage_time=%.4fs with order=%s",
-            feasible_count, total, best.max_stage_time,
+            "mode=%s best sum=%.4fs max=%.4fs (rank=%.4f) order=%s",
+            feasible_count, total, mode,
+            best.sum_stage_time, best.max_stage_time, best_rank,
             [d.id for d in best_order],
         )
+        # Post-hoc SLO feasibility check. Throughput mode already enforced the
+        # per-stage cap inline; latency / blended modes only flag here.
+        tbt_slo = self.spec.slo.tbt_seconds
+        objective_time = best.sum_stage_time if mode != "throughput" else best.max_stage_time
+        if objective_time > tbt_slo:
+            log.warning(
+                "post-hoc SLO check: best %s objective=%.4fs exceeds TBT_SLO=%.4fs — "
+                "no placement on this fleet meets the latency target",
+                "sum" if mode != "throughput" else "max",
+                objective_time, tbt_slo,
+            )
         return best
 
     # ------------------------------------------------------------------
@@ -359,20 +416,32 @@ class Scheduler:
         recovery: RecoveryTable,
         *,
         ref_placement: Placement,
-    ) -> tuple[list[list[float]], list[list[int]]]:
+    ) -> tuple[list[list[tuple[float, float]]], list[list[int]]]:
         spec = self.spec
         L, M = self._L, self._M
         devices = spec.devices
         layers = spec.layers
+        mode = spec.optimization_mode
+        alpha = spec.blend_alpha
         tbt = spec.slo.tbt_seconds
+        # Throughput-mode keeps the per-stage SLO as a hard constraint so that
+        # individual stages stay within QoS under concurrent load. Latency- and
+        # blended-mode treat SLO as a post-hoc feasibility check on the total —
+        # capping a single stage there would just spread layers thin and
+        # inflate Σ stage_time.
+        per_stage_slo_cap = tbt if mode == "throughput" else math.inf
 
-        # A[y][n] = best max-stage-time placing layers [1..y] across first n devices.
-        # choice[y][n] = the split point l (last layer of the (n-1)-th device).
-        A: list[list[float]] = [[math.inf] * (M + 1) for _ in range(L + 1)]
+        # A[y][n] = (sum_stage_time, max_stage_time) so far across the optimal
+        # placement of layers [1..y] across the first n devices.
+        # choice[y][n] = split l where the (n-1)-th device's stage ends.
+        A: list[list[tuple[float, float]]] = [
+            [_INF_STATE] * (M + 1) for _ in range(L + 1)
+        ]
         choice: list[list[int]] = [[-1] * (M + 1) for _ in range(L + 1)]
-        A[0][0] = 0.0
+        A[0][0] = (0.0, 0.0)
 
-        # Base case: n = 1, device d_1 alone handles layers [1..y].
+        # Base case: n = 1, device d_1 alone handles layers [1..y]. No comm
+        # cost on the first stage (input is local on the source/gateway).
         d1 = devices[0]
         for y in range(1, L + 1):
             if not memory_check(
@@ -381,9 +450,9 @@ class Scheduler:
             ):
                 continue
             t_stage = self._stage_time(d1.id, 1, y)
-            if t_stage > tbt:
+            if t_stage > per_stage_slo_cap:
                 continue
-            A[y][1] = t_stage
+            A[y][1] = (t_stage, t_stage)
 
         # Main loop: add device d_n to handle layers [l+1..y].
         for n in range(2, M + 1):
@@ -391,15 +460,10 @@ class Scheduler:
             d_prev = devices[n - 2]
             t_comm = self._comm_time(d_prev.id, d_n.id)
 
-            # y must leave at least one layer per earlier device (>= n-1),
-            # and the new device gets at least one layer too (so y >= n).
             for y in range(n, L + 1):
-                # split ∈ [n-1, y-1]: earlier n-1 devices hold layers [1..split],
-                # so split ≥ n-1; d_n holds [split+1..y], so split ≤ y-1.
-                # (Plan.md calls this `l`; we use `split` to avoid lint E741.)
                 for split in range(n - 1, y):
-                    prev_cost = A[split][n - 1]
-                    if math.isinf(prev_cost):
+                    prev_state = A[split][n - 1]
+                    if math.isinf(prev_state[0]) or math.isinf(prev_state[1]):
                         continue
                     if not memory_check(
                         d_n,
@@ -413,11 +477,14 @@ class Scheduler:
                         continue
                     t_stage = self._stage_time(d_n.id, split + 1, y)
                     stage_cost = t_stage + t_comm
-                    if stage_cost > tbt:
+                    if stage_cost > per_stage_slo_cap:
                         continue
-                    cell = max(prev_cost, stage_cost)
-                    if cell < A[y][n]:
-                        A[y][n] = cell
+                    new_state = (
+                        prev_state[0] + stage_cost,
+                        max(prev_state[1], stage_cost),
+                    )
+                    if _rank(new_state, mode, alpha) < _rank(A[y][n], mode, alpha):
+                        A[y][n] = new_state
                         choice[y][n] = split
 
         return A, choice

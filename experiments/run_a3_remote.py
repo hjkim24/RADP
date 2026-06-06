@@ -99,6 +99,8 @@ def build_manual_cluster_yaml(
     heartbeat_timeout_seconds: float = 5.0,
     heartbeat_tick_seconds: float = 1.0,
     eager_backup: bool = True,
+    optimization_mode: str = "throughput",
+    blend_alpha: float = 0.0,
 ) -> str:
     """Build a complete manual-mode cluster.yaml as a string.
 
@@ -119,6 +121,8 @@ def build_manual_cluster_yaml(
     lines.append("  schedule_mode: manual")
     lines.append(f"  activation_bytes: {activation_bytes}")
     lines.append(f"  eager_backup: {'true' if eager_backup else 'false'}")
+    lines.append(f"  optimization_mode: {optimization_mode}")
+    lines.append(f"  blend_alpha: {blend_alpha}")
     lines.append("  slo:")
     lines.append(f"    ttft_seconds: {slo_ttft_seconds}")
     lines.append(f"    tbt_seconds: {slo_tbt_seconds}")
@@ -405,6 +409,8 @@ def run_baseline_cell(
     ready_timeout: float,
     activation_bytes: int = 1_048_576,
     eager_backup: bool = True,
+    optimization_mode: str = "throughput",
+    blend_alpha: float = 0.0,
 ) -> dict[str, Any]:
     """Full pipeline for one baseline cell."""
     log.info("========== BASELINE: %s ==========", name)
@@ -423,6 +429,8 @@ def run_baseline_cell(
         recovery=recovery,
         activation_bytes=activation_bytes,
         eager_backup=eager_backup,
+        optimization_mode=optimization_mode,
+        blend_alpha=blend_alpha,
     )
 
     deploy_info = deploy_baseline(
@@ -482,6 +490,8 @@ def _load_baselines_from_sidecar(
     *,
     activation_bytes: int = 0,
     eager_backup: bool = True,
+    optimization_mode: str = "throughput",
+    blend_alpha: float = 0.0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load A1's sidecar JSON and return (sidecar, computed baselines).
 
@@ -499,9 +509,11 @@ def _load_baselines_from_sidecar(
         log.info("activation_bytes: %d (auto, from %s)", activation_bytes, model_id)
     else:
         log.info("activation_bytes: %d (manual)", activation_bytes)
-    log.info("eager_backup=%s", eager_backup)
+    log.info("eager_backup=%s optimization_mode=%s blend_alpha=%g",
+             eager_backup, optimization_mode, blend_alpha)
     spec = cluster_spec_from_sidecar(
         sidecar, activation_bytes=activation_bytes, eager_backup=eager_backup,
+        optimization_mode=optimization_mode, blend_alpha=blend_alpha,
     )
     return sidecar, compute_all_baselines(spec)
 
@@ -536,6 +548,12 @@ def main() -> None:
     p.add_argument("--eager-backup", default="true",
                    help="true (default) or false. Lazy mode lets the DP ignore "
                         "backup memory burden so a fast peer can take more layers.")
+    p.add_argument("--optimization-mode", default="throughput",
+                   choices=["throughput", "latency", "blended"],
+                   help="DP cost-function family. throughput=min max_stage, "
+                        "latency=min sum_stage, blended=min sum+α·max.")
+    p.add_argument("--blend-alpha", type=float, default=0.0,
+                   help="α for blended mode (Jupiter Eq. 4: α=|D|-1).")
     args = p.parse_args()
 
     sidecar_path = Path(args.sidecar)
@@ -545,6 +563,8 @@ def main() -> None:
         sidecar_path,
         activation_bytes=args.activation_bytes,
         eager_backup=eager_backup,
+        optimization_mode=args.optimization_mode,
+        blend_alpha=args.blend_alpha,
     )
     log.info("baselines computed: %s", list(baselines.keys()))
 
@@ -594,6 +614,8 @@ def main() -> None:
             prompt=args.prompt,
             ready_timeout=args.ready_timeout,
             eager_backup=eager_backup,
+            optimization_mode=args.optimization_mode,
+            blend_alpha=args.blend_alpha,
         )
         out["cells"].append(cell)
         # Save incrementally so a long run can be inspected / resumed.

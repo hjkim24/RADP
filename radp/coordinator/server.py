@@ -86,6 +86,14 @@ class CoordinatorConfig:
     # from disk only at failure time (~5-30 s recovery, possible token loss).
     # See backlog item A5 / EXP-D2.3 for the trade-off study.
     eager_backup: bool = True
+    # throughput | latency | blended — see ClusterSpec.optimization_mode.
+    # Default throughput matches the legacy behavior (max_stage minimization
+    # + inline TBT_SLO constraint), which is correct for steady-state pipelined
+    # workloads with many concurrent streams. For batch=1 single-stream
+    # decode (the A3b' SLO claim) latency mode minimises Σ stage_time, the
+    # actual per-token wall-clock.
+    optimization_mode: str = "throughput"
+    blend_alpha: float = 0.0
     profiling_layer_warmup: int = 1
     profiling_layer_repeats: int = 3
     profiling_layer_seq_length: int = 32
@@ -145,6 +153,8 @@ class CoordinatorConfig:
             slo_tbt_seconds=float(slo.get("tbt_seconds", 0.1)),
             activation_bytes=int(coord.get("activation_bytes", 0)),
             eager_backup=bool(coord.get("eager_backup", True)),
+            optimization_mode=str(coord.get("optimization_mode", "throughput")),
+            blend_alpha=float(coord.get("blend_alpha", 0.0)),
             profiling_layer_warmup=int(profiling.get("layer_warmup", 1)),
             profiling_layer_repeats=int(profiling.get("layer_repeats", 3)),
             profiling_layer_seq_length=int(profiling.get("layer_seq_length", 32)),
@@ -459,6 +469,10 @@ class CoordinatorServer:
             "weights pre-loaded on backup peer" if self.config.eager_backup
             else "lazy — load on fault, slower recovery",
         )
+        log.info(
+            "optimization_mode=%s blend_alpha=%g",
+            self.config.optimization_mode, self.config.blend_alpha,
+        )
         spec = ClusterSpec(
             devices=devices,
             layers=layer_profiles,
@@ -469,6 +483,8 @@ class CoordinatorServer:
             ),
             activation_bytes=activation_bytes,
             eager_backup=self.config.eager_backup,
+            optimization_mode=self.config.optimization_mode,
+            blend_alpha=self.config.blend_alpha,
         )
 
         log.info("auto-scheduling: solving DP (devices=%d, layers=%d)",

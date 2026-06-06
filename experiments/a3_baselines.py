@@ -70,6 +70,8 @@ def cluster_spec_from_sidecar(
     slo_tbt_seconds: float = 1.0,
     activation_bytes: int = 1_048_576,
     eager_backup: bool = True,
+    optimization_mode: str = "throughput",
+    blend_alpha: float = 0.0,
 ) -> ClusterSpec:
     """Rebuild the in-memory ClusterSpec the scheduler operates on.
 
@@ -111,6 +113,8 @@ def cluster_spec_from_sidecar(
         slo=SLO(ttft_seconds=slo_ttft_seconds, tbt_seconds=slo_tbt_seconds),
         activation_bytes=activation_bytes,
         eager_backup=eager_backup,
+        optimization_mode=optimization_mode,
+        blend_alpha=blend_alpha,
     )
 
 
@@ -337,6 +341,12 @@ def main() -> None:
     p.add_argument("--eager-backup", default="true",
                    help="true (default) or false; passes through to ClusterSpec "
                         "to exercise A5 lazy-backup placement.")
+    p.add_argument("--optimization-mode", default="throughput",
+                   choices=["throughput", "latency", "blended"],
+                   help="DP cost-function family. throughput=min max_stage, "
+                        "latency=min sum_stage, blended=min sum+α·max.")
+    p.add_argument("--blend-alpha", type=float, default=0.0,
+                   help="α weight for blended mode (Jupiter Eq. 4: α=|D|-1).")
     p.add_argument("--out", default="a3_baselines",
                    help="output JSON name under experiments/results/")
     p.add_argument("--detail", action="store_true",
@@ -370,7 +380,8 @@ def main() -> None:
                  activation_bytes, model_id)
 
     eager_backup = args.eager_backup.lower() != "false"
-    log.info("eager_backup=%s", eager_backup)
+    log.info("eager_backup=%s optimization_mode=%s blend_alpha=%g",
+             eager_backup, args.optimization_mode, args.blend_alpha)
 
     spec = cluster_spec_from_sidecar(
         sidecar,
@@ -378,6 +389,8 @@ def main() -> None:
         slo_tbt_seconds=args.slo_tbt,
         activation_bytes=activation_bytes,
         eager_backup=eager_backup,
+        optimization_mode=args.optimization_mode,
+        blend_alpha=args.blend_alpha,
     )
     baselines = compute_all_baselines(spec)
     print_comparison(baselines)

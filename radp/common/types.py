@@ -100,7 +100,11 @@ class DPResult:
     placement: Placement
     recovery: RecoveryTable
     max_stage_time: float
-    """Objective value A(L, |D|) — the slowest stage time."""
+    """Slowest single stage's wall-clock — the throughput-bound metric."""
+    sum_stage_time: float = 0.0
+    """Σ stage_time across all stages — the single-stream latency metric.
+    Default 0.0 keeps backwards compat with throughput-only call sites
+    that don't populate it; new callers should fill both."""
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,7 @@ class AlternatingIterationLog:
     psi_changed: bool
     """True iff Ψ_i ≠ Ψ_{i-1} (also true on the first iteration)."""
     r_changed: bool
+    sum_stage_time: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,7 @@ class AlternatingResult:
     False means we returned the best self-consistent intermediate found
     within ``max_iterations``."""
     history: list[AlternatingIterationLog]
+    sum_stage_time: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -152,6 +158,31 @@ class ClusterSpec:
     slower recovery (weights load from disk, ~5-30 s) and potential
     in-flight KV cache loss for better steady-state throughput on the
     primary node. See backlog item A5."""
+    optimization_mode: str = "throughput"
+    """Cost-function family for the DP. The scheduler tracks both Σ stage
+    cost and max stage cost in every cell and ranks candidate placements
+    by a mode-specific function of (sum, max):
+
+      throughput → max               (EdgeShard throughput / Jupiter Eq. 1)
+      latency    → sum               (EdgeShard latency Eq. 6, batch=1)
+      blended    → sum + α·max       (Jupiter Eq. 4 with α=|D|-1 at k=1)
+
+    SLO interaction:
+      throughput — per-stage cost ≤ TBT_SLO is enforced inline as a hard
+                   constraint (keeps individual stages within QoS under
+                   concurrent load).
+      latency    — per-stage SLO is NOT enforced inline (every layer added
+                   to a fast device monotonically improves the sum, and
+                   capping any single stage would just spread layers thin
+                   and inflate Σ). SLO becomes a post-hoc feasibility
+                   check on the final placement.
+
+    See PHASES.md EXP-D2.3 for the cost-function discussion."""
+    blend_alpha: float = 0.0
+    """For optimization_mode='blended': the α weight on max in
+    `sum + α·max`. At α=0 collapses to latency; at α=|D|-1 reproduces
+    Jupiter's Eq. 4 single-sub-sequence case; large α approaches
+    throughput-mode behavior. Ignored for other modes."""
     extras: dict[str, str] = field(default_factory=dict)
 
 

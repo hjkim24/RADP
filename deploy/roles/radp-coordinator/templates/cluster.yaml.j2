@@ -11,6 +11,8 @@ coordinator:
   schedule_mode: {{ schedule_mode | default('manual') }}
   activation_bytes: {{ activation_bytes | default(1048576) }}
   eager_backup: {{ eager_backup | default(true) | string | lower }}
+  optimization_mode: {{ optimization_mode | default('throughput') }}
+  blend_alpha: {{ blend_alpha | default(0.0) }}
   slo:
     ttft_seconds: {{ slo_ttft_seconds | default(0.3) }}
     tbt_seconds: {{ slo_tbt_seconds | default(0.1) }}
