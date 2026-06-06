@@ -1305,6 +1305,50 @@ RADP 가 EdgeShard 두 mode + Jupiter Eq. 4 를 *parameterized cost* 로 통합�
 - DP 의 throughput-mode 가 EdgeShard Eq. 11 의 subset enumeration 까진 가지 않고 perm search 로 근사 (M ≤ 8). M > 8 fleet 엔 heuristic 추가 필요
 - ~~Memory-aware backup peer selection 미구현~~ — **commit 4972127 에서 fix**. `DeviceProfile.free_memory_bytes` 가 heartbeat 의 실측치를 carry, `memory_check` + `recovery_table` 가 `total` 대신 그것을 budget 으로 사용 (free=0 시 legacy fallback). 4-CUDA latency+eager v3 환경에선 placement 동일 (Nano free ≥ 4 GB 로 backup load 546 MB 여유) 지만 누적 deploy 후 메모리 압박 시 자동으로 안전한 peer 선택 또는 NoRecoveryError. D-track 큰 모델 + multi-stream 으로 갈 때의 prerequisite
 
+## Phase EXP-D2.5 — Multi-stream throughput sweep (예상 vs 실측)
+
+**목표**: D2.4 의 dual-mode framing 정당화 — *latency-mode 가 single-stream 에서 -55% TBT 이긴 한데, **throughput-mode 의 가치는 multi-user 시나리오에서만 드러난다***는 가설. 4-CUDA fleet 에서 throughput-mode placement vs latency-mode placement 를 C ∈ {1, 2, 4, 8} concurrent stream 으로 load 걸고 aggregate token rate 비교. 두 mode 가 *언제 우열 뒤집히는지* (crossover point) 정량화.
+
+**구현**:
+- [experiments/measure_concurrent.py](experiments/measure_concurrent.py) — concurrent stream load generator. ThreadPoolExecutor 로 C 개 동시 `/api/generate` SSE 호출, per-stream TBT distribution + aggregate tok/s + 실패율 측정. warmup_skip=2 로 첫 prefill / first-token outlier 흡수
+- group_vars `optimization_mode: latency` 로 4-CUDA placement (ao-1 [2-22] 21 layers) 측정 → 그 다음 `throughput` 으로 토글 + 재배포 (balanced placement: on-1 [1-7] / ao-1 [8-14] / on-6 [15-19] / on-2 [20-24], max_stage 7.7 ms 예측)
+
+**검증 결과** (4-CUDA, OPT-350M, 2 repeats × C={1,2,4,8} × 30 tok per stream, 2026-06-06):
+
+| Concurrency | **Latency placement** aggregate | **Throughput placement** aggregate | Δ (throughput vs latency) |
+|---|---|---|---|
+| C=1 | 7.8 tok/s | 5.7 tok/s | **-27%** |
+| C=2 | 10.7 | 6.9 | -36% |
+| C=4 | 18.3 | 12.6 | -31% |
+| C=8 | 25.3 | 21.2 | -16% |
+
+→ **latency placement 가 모든 C 에서 dominant**. 가설 ("multi-user 시 throughput 모드 가치 있을 것") **반증됨**. 결과 JSON: [experiments/results/concurrent_4cuda_latency.json](experiments/results/concurrent_4cuda_latency.json), [experiments/results/concurrent_4cuda_throughput.json](experiments/results/concurrent_4cuda_throughput.json).
+
+**원인 분석** (예측 vs 실측 gap):
+
+```
+Throughput placement, C=4 이론치:
+  max_stage = 8 ms → 4 streams / 8 ms = 500 tok/s aggregate
+실측 = 12.6 tok/s = 이론의 2.5%
+```
+
+→ pipeline 이 안 차고 있음. 분석:
+1. **per-RPC overhead**: gRPC 직렬화 + Python interpreter + 게이트웨이 SSE 처리 = 토큰당 *~125 ms* (170 ms 실측 - 45 ms 예측 compute+comm)
+2. **stage 수 ↑ ≈ overhead ↑**: throughput placement (4 balanced stages) 와 latency placement (4 stages but bulk on 1 device) 가 동일한 hop 수지만, stage 당 compute 작아지면서 *상대적 overhead* 비중 ↑
+3. **Edge bandwidth ~10 MB/s**: activation 2 KB 자체 전송 0.2 ms 인데 per-hop overhead 가 30 ms 이상. comm cost minimize 가 latency placement 의 *암시적 boost*
+
+**Paper 입장 reframe**:
+
+- 기존 가설: "RADP supports both modes. SLO 따라 선택"
+- D2.5 실측: **우리 edge fleet 에선 latency-mode 가 universal dominant point**
+- 정직한 reporting: "In low-bandwidth edge environments (~10 MB/s gRPC), per-RPC fixed overhead exceeds the predicted pipeline-parallelism gain of throughput-mode optimization. RADP-Latency (α=0 in the unified `Σ + α·max` cost) is the dominant operating point across all measured concurrency levels."
+- Throughput-mode 가 *우세할 조건*: (a) datacenter-grade 네트워크 (≥1 Gbps), (b) RPC overhead 가 token compute 보다 작아질 만큼 큰 모델, (c) C » 8
+
+**의도된 한계**:
+- 단일 모델 (OPT-350M) + 단일 동시성 범위 (C ≤ 8). 더 큰 모델 (Llama-2-7B) / 더 높은 동시성 (C=16, 32) 에선 throughput crossover 가능. 다음 sweep 후보
+- TBT p50 측정 — 분산 (p95, p99) 미반영. Multi-stream 시 tail latency 가 중요
+- 네트워크 단일 환경 (실측 ~10 MB/s). simulated 고대역폭에서 crossover 측정 시 더 깔끔한 paper 그림
+
 ---
 
 ## 알려진 한계 (현재)
