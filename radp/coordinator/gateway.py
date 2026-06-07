@@ -477,9 +477,13 @@ class RequestGateway:
 
         Workers in chain mode catch their downstream RunStage RpcError and
         stamp ``(radp-failed-start, radp-failed-end)`` onto the trailer
-        before aborting. We use that to mark the *real* dead worker; if
-        the trailer is missing (head itself died, old worker binary),
-        fall back to blaming the head we called directly.
+        before aborting. We map that back to the stage from the
+        *original* placement (not the current execution plan), so that
+        when the heartbeat path has already advanced the plan onto the
+        backup we still surface the truly-dead device (not the substitute
+        that's about to receive the rewired traffic). If the trailer is
+        missing (head itself died, old worker binary), fall back to
+        blaming the head we called directly.
         """
         try:
             trailer = error.trailing_metadata()
@@ -494,14 +498,18 @@ class RequestGateway:
             failed_start, failed_end = int(s), int(e_)
         except ValueError:
             return head_stage
-        for stage in self.current_plan():
+        # The original placement carries the "true" owner of a layer
+        # range; the execution plan can substitute a backup in. The chain
+        # only points at a dead worker's address until rewire fires, so
+        # the trailer is always reporting against the original wiring.
+        for stage in self.placement:
             if (
                 int(stage.start_layer) == failed_start
                 and int(stage.end_layer) == failed_end
             ):
                 return stage
-        # No match in the current plan — fallback so we still make progress
-        # rather than infinite-loop.
+        # No match in the original placement either — fallback so we
+        # still make progress rather than infinite-loop.
         return head_stage
 
     def _rewire_chain(self) -> None:
@@ -575,26 +583,33 @@ class RequestGateway:
         not optimised for high-frequency failures.
         """
         dead_stage = self._attribute_chain_failure(head_stage, error)
-        if dead_stage.device in self._dead:
-            # Concurrent recovery already advanced the plan. Replay from
-            # the current head against the cached history so we return a
-            # fresh response for the caller.
-            new_plan = self.current_plan()
-            new_head = new_plan[0]
-            return new_head, self._replay_through_chain(
-                request_id, new_head, current_position
+        already_dead = dead_stage.device in self._dead
+
+        if already_dead:
+            # The heartbeat path beat the chain trailer to the punch and
+            # already marked this device dead — `_execution_plan` reflects
+            # the substitution but the chain wiring (next-hop addresses)
+            # still points at the dead worker, which is why the in-flight
+            # call surfaced this trailer. We only need to (a) ensure the
+            # backup is promoted, (b) rewire, (c) replay.
+            log.info(
+                "request=%d chain failure for already-dead %s[%d..%d]; "
+                "finalising recovery (rewire + replay)",
+                request_id,
+                dead_stage.device,
+                dead_stage.start_layer,
+                dead_stage.end_layer,
             )
-
-        log.warning(
-            "request=%d chain failure attributed to %s[%d..%d] (head was %s)",
-            request_id,
-            dead_stage.device,
-            dead_stage.start_layer,
-            dead_stage.end_layer,
-            head_stage.device,
-        )
-
-        self.mark_dead(dead_stage.device)
+        else:
+            log.warning(
+                "request=%d chain failure attributed to %s[%d..%d] (head was %s)",
+                request_id,
+                dead_stage.device,
+                dead_stage.start_layer,
+                dead_stage.end_layer,
+                head_stage.device,
+            )
+            self.mark_dead(dead_stage.device)
 
         backup_dev = self.recovery.get(dead_stage.device)
         if backup_dev is None:
@@ -607,6 +622,9 @@ class RequestGateway:
                 f"recovery device {backup_dev} has no address"
             )
 
+        # PromoteBackup is idempotent on the worker side (StageRunner
+        # logs but no-ops if already promoted), so it's safe to call even
+        # in the heartbeat-first path.
         try:
             with WorkerClient(backup_addr) as client:
                 client.promote_backup(for_device_id=dead_stage.device)

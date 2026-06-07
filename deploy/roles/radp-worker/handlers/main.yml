@@ -5,4 +5,9 @@
     state: restarted
     daemon_reload: true
   become: true
-  listen: restart radp-worker
+  listen:
+    - restart radp-worker
+    # Cross-role rebroadcast: common notifies "restart radp service" after
+    # a code sync; each play (workers / coordinator) routes it to the
+    # right unit via this shared name.
+    - restart radp service

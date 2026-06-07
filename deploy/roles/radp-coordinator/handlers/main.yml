@@ -5,4 +5,7 @@
     state: restarted
     daemon_reload: true
   become: true
-  listen: restart radp-coordinator
+  listen:
+    - restart radp-coordinator
+    # Cross-role rebroadcast (see radp-worker handler for the full note).
+    - restart radp service

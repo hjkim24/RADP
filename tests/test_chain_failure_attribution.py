@@ -140,7 +140,7 @@ def test_gateway_attribution_picks_correct_dead_stage(
     # Hand-build a placement + recovery so we don't have to spin up the
     # full RequestGateway with HF weights. We only test the attribution
     # helper, which depends on current_plan().
-    placement: Placement = [
+    _placement: Placement = [
         Stage(LayerIdx(1), LayerIdx(6), DeviceId("head")),
         Stage(LayerIdx(dead_start), LayerIdx(dead_end), DeviceId("middle")),
         Stage(LayerIdx(13), LayerIdx(18), DeviceId("tail")),
@@ -148,7 +148,10 @@ def test_gateway_attribution_picks_correct_dead_stage(
 
     class _GatewayShim:
         # Just enough surface for _attribute_chain_failure to work.
-        _execution_plan = placement
+        # Phase 3 reads `placement` (the original) so the heartbeat-first
+        # ordering still maps the trailer back to the truly-dead device.
+        _execution_plan = _placement
+        placement = _placement
         _plan_lock = threading.Lock()
 
         def current_plan(self) -> Placement:
@@ -173,7 +176,7 @@ def test_gateway_attribution_picks_correct_dead_stage(
             shim = _GatewayShim()
             dead_stage = RequestGateway._attribute_chain_failure(
                 shim,  # type: ignore[arg-type]
-                placement[0],
+                _placement[0],
                 err,
             )
             assert dead_stage.device == DeviceId("middle")
@@ -185,13 +188,14 @@ def test_attribution_falls_back_to_head_when_trailer_missing() -> None:
     """If the gRPC error has no radp-failed-* trailer (head itself died,
     old worker binary, etc.), attribution must default to the head we
     called directly so the recovery loop still makes progress."""
-    placement: Placement = [
+    _placement: Placement = [
         Stage(LayerIdx(1), LayerIdx(6), DeviceId("head")),
         Stage(LayerIdx(7), LayerIdx(12), DeviceId("middle")),
     ]
 
     class _GatewayShim:
-        _execution_plan = placement
+        _execution_plan = _placement
+        placement = _placement
         _plan_lock = threading.Lock()
 
         def current_plan(self) -> Placement:
@@ -208,7 +212,7 @@ def test_attribution_falls_back_to_head_when_trailer_missing() -> None:
     shim = _GatewayShim()
     dead_stage = RequestGateway._attribute_chain_failure(
         shim,  # type: ignore[arg-type]
-        placement[0],
+        _placement[0],
         _FakeErr(),
     )
     assert dead_stage.device == DeviceId("head")

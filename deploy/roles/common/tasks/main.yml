@@ -81,9 +81,10 @@
   # coordinator units need a restart to pick up the new code. Without this,
   # plain "ansible-playbook playbook.yml" re-installs the editable package
   # but leaves the systemd service running the old import — silently stale.
-  notify:
-    - restart radp-worker
-    - restart radp-coordinator
+  # The unified "restart radp service" event is listened to by both the
+  # radp-worker and radp-coordinator handlers, so each play routes it to
+  # the right unit on its hosts.
+  notify: restart radp service
   tags: [install, update]
 
 - name: Create Python venv
