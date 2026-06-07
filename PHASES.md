@@ -1378,6 +1378,81 @@ Token latency = stage_compute (1-18ms) + 통신 (5ms) + framework overhead (~140
 - TBT p50 측정 — 분산 (p95, p99) 미반영. Multi-stream 시 tail latency 가 중요
 - 네트워크 단일 환경 (실측 ~10 MB/s). simulated 고대역폭에서 crossover 측정 시 더 깔끔한 paper 그림
 
+## Phase EXP-D3 — Chain topology (Petals-style) + on-tail head/sampling
+
+**목표**: D2.5 의 *gateway bottleneck* (token 당 ~143 ms framework overhead, aggregate ~26 tok/s ceiling) 가 RADP-Throughput placement 의 이론적 이점을 architecturally 차단함. 사용자 제안 — *Petals 식 chain topology* (워커 간 직접 활성화 전달) + *마지막 worker 가 lm_head + sampling 보유* + (Phase 2) *coord 가 async mirror cache 받음* 으로 recovery 보존. Coord 가 per-token critical path 에서 완전히 빠지는 것이 목표.
+
+**구현 Phase 1a** (commit 492a3bc) — chain forwarding (lm_head 는 coord 유지):
+- `SetNextHop` RPC: coord 가 deploy() 시 각 worker 에게 successor 의 address + (start, end) 알림. 마지막 stage 는 next_address="" 로 chain tail 표시
+- Worker `RunStage`: 자기 stage 처리 후, next_hop 등록되면 `next_stub.RunStage()` 로 직접 forward. 응답이 nested 로 coord 까지 bubble up
+- Coord `_run_pipeline`: 첫 worker 만 호출. encode/decode 횟수 4 → 1 hop
+
+**구현 Phase 1b** (commit 016e9ad) — head + sampling on chain tail:
+- `LoadHead` RPC: chain tail worker 가 lm_head + final_layer_norm + project_out 적재
+- `run_tail_and_sample()` — local stage + head + greedy argmax 한 forward pass 에서 처리, `next_token_id` 반환
+- `RunStageResponse` 에 `has_next_token` + `next_token_id` 필드 추가. Coord 가 그 신호 받으면 자기 head/sampler 스킵
+- Coord per-token work: embed + state mgmt + SSE streaming 만 (lm_head + argmax 제거)
+
+**측정 결과** (4-CUDA, OPT-350M, 30 tok per stream × 2 repeats, 2026-06-07):
+
+**Latency placement (ao-1 [3-23] = 21 layers)**:
+
+| C | Phase 0 (star) | Phase 1a (chain) | **Phase 1b (chain + tail head)** | Δ vs Phase 0 |
+|---|---|---|---|---|
+| 1 | 7.8, 118 ms | 9.2, 103 ms | **10.3 tok/s, 93 ms** | **+32% / -21% TBT** |
+| 2 | 10.7 | 11.5 | **12.9** | +21% |
+| 4 | 18.3 | 19.3 | **25.9** | **+42%** |
+| 8 | 25.3 | 24.0 | **31.6** | +25% |
+| 16 | 25.9 | 27.6 | **34.0** | **+31%** |
+| 32 | 25.5 | n/a | **32.9** | +29% |
+
+→ **Aggregate ceiling 25 → 34 tok/s 로 상승**. D2.5 의 gateway-bound 한계 직접 해소. C=1 TBT -21% (118 → 93 ms).
+
+**Throughput placement (balanced 6/7/6/5)**:
+
+| C | Phase 0 (star) | **Phase 1b (chain + tail head)** | Δ vs Latency Phase 1b |
+|---|---|---|---|
+| 1 | 5.7 | 7.1 | -31% (vs latency 10.3) |
+| 4 | 12.6 | 10.3 | **-60%** |
+| 8 | 21.2 | 11.1 | -65% |
+| 16 | 24.3 | 25.5 | -25% |
+| 32 | 25.5 | 24.2 | -27% |
+
+→ **여전히 latency placement 가 universal dominant**, 격차 *더 커짐*. Phase 1b 가 gateway 를 풀어준 후에도 throughput placement 의 이론적 이점이 발현 안 됨.
+
+**원인 — chain 의 synchronous forwarding 이 pipeline parallelism 차단**:
+
+```
+스트림 A 가 chain 통과 중 (예: stage 1 → 2 → 3 → 4):
+  stage 1 의 thread: stream A 의 chain 전체가 끝날 때까지 blocked
+  stage 2 의 thread: stream A 가 stage 2 처리 + 3, 4 의 forwarded RPC wait
+  stage 3, 4 마찬가지
+스트림 B 도착: stage 1 의 다음 thread 가 받아 처리 시작
+  하지만 stage 1 의 worker 본체는 stream A 의 forward 회신 대기 중
+```
+
+→ **chain RPC 가 synchronous request/response 라 각 stream 이 chain 의 모든 stage thread 를 동시 점유**. C 스트림이 진정한 pipeline parallelism 으로 진행 못 하고 serial 화. throughput placement (4 balanced) 가 4 hop × overhead 를 다 부담 → latency placement (1 bulk stage on AGX) 보다 *더* 나쁨.
+
+**Paper finding 강화**:
+
+```
+RADP-Latency dominates RADP-Throughput across:
+  - star topology (Phase 0)        : -27% to -36% throughput improvement
+  - chain topology (Phase 1a)      : 동일 패턴
+  - chain + tail head (Phase 1b)   : 격차 더 크게 (-60% at C=4)
+```
+
+→ "어떤 architecture 변형에서도 RADP-Latency 가 우위" 라는 finding 이 *세 가지 변종에서 모두 일관* → 더 강한 paper claim.
+
+**의도된 한계 + Phase 2/3 후속**:
+- Chain topology 의 sync forwarding 이 pipeline parallelism 차단. 진정한 pipeline 효과 위해선 **async chain** (worker fire-and-forget + coord 가 last worker 에서 token 받는 reverse channel) 필요 — Phase 2/3 에서 mirror cache 와 함께
+- Phase 1a/1b 의 recovery 는 *degraded* — coord 가 중간 stage 의 activation 을 못 봄 (chain forward 는 nested response). chain head 의 input 만 cache 에 있어서 mid-chain failure 시 head 부터 replay. Phase 2 의 async mirror cache 가 per-stage replay 복원
+- lm_head migration 의 메모리 비용: 약 100 MB (OPT-350M fp16) 가 chain tail (보통 on-6 같은 Nano) 에 추가 적재. 큰 모델 (Llama-2-7B) 에선 ~400 MB → tail node 선택 시 메모리 제약 강화
+- 측정은 greedy argmax 한정. temperature > 0 / top_k / top_p 는 Phase 1b 미지원 (자동으로 coord-mediated fallback)
+
+**커밋**: 492a3bc (Phase 1a) + 016e9ad (Phase 1b)
+**결과 JSON**: [concurrent_4cuda_chain_phase1a.json](experiments/results/concurrent_4cuda_chain_phase1a.json), [concurrent_4cuda_chain_phase1b.json](experiments/results/concurrent_4cuda_chain_phase1b.json), [concurrent_4cuda_chain_throughput_phase1b.json](experiments/results/concurrent_4cuda_chain_throughput_phase1b.json)
+
 ---
 
 ## 알려진 한계 (현재)
