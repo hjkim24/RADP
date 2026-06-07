@@ -67,6 +67,16 @@ service CoordinatorService {
   // onto the recovery peer, sidestepping the chain-topology replay gap
   // (coord only sees the first stage's input locally).
   rpc MirrorActivation (MirrorActivationRequest) returns (MirrorActivationResponse);
+
+  // EXP-D3 Phase F — async chain return channel. In async chain mode the
+  // gateway dispatches RunStage with async_chain=true; workers
+  // fire-and-forget the next-hop call and return ACK immediately. The
+  // chain tail (when it has produced the final activation OR sampled
+  // the next token on-device) calls back here to wake the gateway's
+  // per-request future. This breaks the synchronous nested-response
+  // pipeline that made each in-flight stream occupy every chain stage's
+  // thread simultaneously.
+  rpc ResultReady (ResultReadyRequest) returns (ResultReadyResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +110,14 @@ message RunStageRequest {
   // gateway's _replay_stage_history to rehydrate a newly-promoted
   // backup without re-running surviving downstream stages.
   bool  replay_only    = 7;
+  // EXP-D3 Phase F async chain: when true, the worker dispatches the
+  // next-hop RunStage call to a background executor (fire-and-forget)
+  // and returns ACK immediately instead of waiting for the chain tail's
+  // response to propagate back up the nested call stack. The chain tail
+  // calls CoordinatorService.ResultReady to wake the gateway's future.
+  // Sync chain (false) remains the default for backward-compat + an
+  // apples-to-apples baseline against the Phase 1a/1b measurements.
+  bool  async_chain    = 8;
 }
 
 message RunStageResponse {
@@ -249,5 +267,21 @@ message MirrorActivationRequest {
   int32 position    = 6;
 }
 message MirrorActivationResponse {
+  bool ok = 1;
+}
+
+message ResultReadyRequest {
+  int32 request_id     = 1;
+  // EXP-D3 Phase F: tail mirrors the RunStageResponse semantics — either
+  // the final activation (Phase 1a coord-mediated head) or the next
+  // token id (Phase 1b on-tail head/sampling). Position is included so
+  // the gateway can ignore stale results from a step we've already
+  // recovered past.
+  int32 position       = 2;
+  bytes activation     = 3;
+  bool  has_next_token = 4;
+  int32 next_token_id  = 5;
+}
+message ResultReadyResponse {
   bool ok = 1;
 }

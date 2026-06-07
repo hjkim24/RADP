@@ -34,28 +34,35 @@ _GRPC_OPTIONS: list[tuple[str, Any]] = [
 ]
 
 
-class _MirrorDispatcher:
-    """Fire-and-forget MirrorActivation pusher to the coord (EXP-D3 Phase 2).
+class _CoordDispatcher:
+    """Fire-and-forget pusher to the coord — handles both Phase 2
+    ``MirrorActivation`` (background bookkeeping) and Phase F
+    ``ResultReady`` (chain-tail wake-up that's actually latency-critical).
 
-    Single-thread executor so per-(request, stage) sends preserve order on
-    the wire; the coord still tolerates reorder via positioned writes, but
-    a single sender thread is the cheapest way to keep the common case in
-    order without per-RPC sequence accounting. ``submit()`` never raises —
-    a transient coord blip drops the mirror for that step; replay still
-    has whatever positions did make it through, and the gateway's
-    contiguous-prefix replay (see ActivationCache.get_history) stops at
-    the first gap instead of skipping a step.
+    Two separate executors so a backed-up mirror queue never blocks a
+    tail-of-chain ResultReady call. ``submit_mirror`` is single-threaded
+    (ordered sends), ``submit_result`` has a small pool because the chain
+    tail may need to fire ResultReady for several concurrent requests
+    without head-of-line blocking. The gRPC channel is shared.
+
+    ``submit_*`` never raises — a transient coord blip drops the push;
+    the gateway falls back to its sync-chain retry path via Phase 3
+    recovery when the chain tail's wake-up never arrives.
     """
 
     def __init__(self, coordinator_address: str) -> None:
         self._addr = coordinator_address
         self._channel = grpc.insecure_channel(coordinator_address, options=_GRPC_OPTIONS)
         self._stub = radp_pb2_grpc.CoordinatorServiceStub(self._channel)
-        self._exec = futures.ThreadPoolExecutor(
+        self._mirror_exec = futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mirror"
         )
+        self._result_exec = futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="result-ready"
+        )
 
-    def submit(
+    # --- Phase 2 mirror ----------------------------------------------------
+    def submit_mirror(
         self,
         *,
         request_id: int,
@@ -65,14 +72,13 @@ class _MirrorDispatcher:
         activation: bytes,
         is_prefill: bool,
     ) -> None:
-        # Executor may already be shut down (server stopping); swallow.
         with contextlib.suppress(RuntimeError):
-            self._exec.submit(
-                self._send_blocking,
+            self._mirror_exec.submit(
+                self._send_mirror,
                 request_id, start_layer, end_layer, position, activation, is_prefill,
             )
 
-    def _send_blocking(
+    def _send_mirror(
         self,
         request_id: int,
         start_layer: int,
@@ -97,20 +103,111 @@ class _MirrorDispatcher:
                 request_id, start_layer, end_layer, position, e,
             )
 
+    # --- Phase F ResultReady (async chain return channel) ------------------
+    def submit_result(
+        self,
+        *,
+        request_id: int,
+        position: int,
+        activation: bytes,
+        has_next_token: bool,
+        next_token_id: int,
+    ) -> None:
+        with contextlib.suppress(RuntimeError):
+            self._result_exec.submit(
+                self._send_result,
+                request_id, position, activation, has_next_token, next_token_id,
+            )
+
+    def _send_result(
+        self,
+        request_id: int,
+        position: int,
+        activation: bytes,
+        has_next_token: bool,
+        next_token_id: int,
+    ) -> None:
+        try:
+            req = radp_pb2.ResultReadyRequest(
+                request_id=request_id,
+                position=position,
+                activation=activation,
+                has_next_token=has_next_token,
+                next_token_id=next_token_id,
+            )
+            self._stub.ResultReady(req, timeout=5.0)
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "ResultReady push for req=%d pos=%d failed (%s); "
+                "gateway will time out and route through Phase 3 recovery",
+                request_id, position, e,
+            )
+
     def close(self) -> None:
-        self._exec.shutdown(wait=False, cancel_futures=True)
+        self._mirror_exec.shutdown(wait=False, cancel_futures=True)
+        self._result_exec.shutdown(wait=False, cancel_futures=True)
         with contextlib.suppress(Exception):
             self._channel.close()
+
+
+# Backward-compat alias — keeps the public symbol name workers used to
+# import as ``_MirrorDispatcher`` (e.g. via tests).
+_MirrorDispatcher = _CoordDispatcher
+
+
+class _AsyncChainDispatcher:
+    """Fires next-hop RunStage calls to the downstream worker in the
+    background so the current worker's gRPC handler can return ACK
+    immediately. A bounded pool caps concurrent in-flight forwards but
+    multiple streams can interleave without per-stream head-of-line
+    blocking. Sends that fail are logged at WARNING — the chain tail's
+    ResultReady will never fire for those streams, and the gateway's
+    per-request future will time out and trigger Phase 3 recovery.
+    """
+
+    def __init__(self, max_workers: int = 8) -> None:
+        self._exec = futures.ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="chain-fwd"
+        )
+
+    def submit(
+        self,
+        next_stub: Any,
+        request: Any,
+        *,
+        request_id: int,
+    ) -> None:
+        with contextlib.suppress(RuntimeError):
+            self._exec.submit(self._send, next_stub, request, request_id)
+
+    def _send(self, next_stub: Any, request: Any, request_id: int) -> None:
+        try:
+            next_stub.RunStage(request, timeout=30.0)
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "async chain forward req=%d failed (%s); "
+                "downstream chain tail will not fire ResultReady, "
+                "gateway will time out",
+                request_id, e,
+            )
+
+    def close(self) -> None:
+        self._exec.shutdown(wait=False, cancel_futures=True)
 
 
 class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc]
     def __init__(
         self,
         runner: StageRunner,
-        mirror: _MirrorDispatcher | None = None,
+        mirror: _CoordDispatcher | None = None,
     ) -> None:
         self._runner = runner
+        # The "mirror" attribute name is kept for backward compatibility
+        # with smoke tests that wired a single-purpose mirror dispatcher
+        # directly. Newer code treats it as a general coord dispatcher
+        # that also handles ResultReady wake-ups in async chain mode.
         self._mirror = mirror
+        self._coord = mirror  # alias for clarity at Phase F call sites
         self._next_lock = threading.Lock()
         # Chain forwarding: {(my_start, my_end): (next_addr, channel, stub,
         # next_start, next_end)}. SetNextHop() populates this for the
@@ -119,6 +216,33 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
         self._next_hops: dict[
             tuple[int, int], tuple[str, Any, Any, int, int]
         ] = {}
+        # Phase F async chain forwarder — only spun up when at least one
+        # async RunStage call comes in, so sync-chain deployments don't
+        # pay the executor cost.
+        self._chain_fwd: _AsyncChainDispatcher | None = None
+        # Per-request serial lock so two overlapping async steps for the
+        # same request can't race on the same DynamicCache. Cleaned up
+        # by EvictRequest at the end of each request's lifecycle.
+        self._req_locks: dict[int, threading.Lock] = {}
+        self._req_locks_guard = threading.Lock()
+
+    def _request_lock(self, request_id: int) -> threading.Lock:
+        with self._req_locks_guard:
+            lock = self._req_locks.get(request_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._req_locks[request_id] = lock
+            return lock
+
+    def _drop_request_lock(self, request_id: int) -> None:
+        with self._req_locks_guard:
+            self._req_locks.pop(request_id, None)
+
+    def _get_chain_fwd(self) -> _AsyncChainDispatcher:
+        # Lazy — most workers in sync-chain mode never hit this.
+        if self._chain_fwd is None:
+            self._chain_fwd = _AsyncChainDispatcher()
+        return self._chain_fwd
 
     def _get_next_hop(
         self, start: int, end: int
@@ -207,6 +331,7 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
     def RunStage(self, request: Any, context: grpc.ServicerContext) -> Any:
         next_hop = self._get_next_hop(int(request.start_layer), int(request.end_layer))
         replay_only = bool(getattr(request, "replay_only", False))
+        async_chain = bool(getattr(request, "async_chain", False))
         # EXP-D3 Phase 2 mirror: fire-and-forget the input activation back
         # to the coord BEFORE running the stage, so even a crash mid-stage
         # leaves the coord with enough history to replay onto the recovery
@@ -217,7 +342,7 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             and int(request.start_layer) > 1
             and not replay_only
         ):
-            self._mirror.submit(
+            self._mirror.submit_mirror(
                 request_id=int(request.request_id),
                 start_layer=int(request.start_layer),
                 end_layer=int(request.end_layer),
@@ -225,6 +350,32 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
                 activation=bytes(request.activation),
                 is_prefill=bool(request.is_prefill),
             )
+        # Phase F: serialize concurrent async-mode steps for the same
+        # request so they can't race on the same DynamicCache. Sync chain
+        # is naturally serial via nested responses, so we only pay this
+        # cost when async_chain is set.
+        request_lock = (
+            self._request_lock(int(request.request_id))
+            if async_chain and not replay_only else None
+        )
+        if request_lock is not None:
+            request_lock.acquire()
+        try:
+            return self._dispatch_run_stage(
+                request, next_hop, replay_only, async_chain, context,
+            )
+        finally:
+            if request_lock is not None:
+                request_lock.release()
+
+    def _dispatch_run_stage(
+        self,
+        request: Any,
+        next_hop: tuple[str, Any, int, int] | None,
+        replay_only: bool,
+        async_chain: bool,
+        context: grpc.ServicerContext,
+    ) -> Any:
         # EXP-D3 Phase 1b: chain tail with a head loaded runs the local
         # stage AND applies head + greedy argmax, returning the next token
         # id directly. Coord skips its own head + sampling step.
@@ -238,6 +389,21 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
                 end=LayerIdx(request.end_layer),
                 is_prefill=request.is_prefill,
             )
+            if async_chain and self._coord is not None:
+                # Phase F: chain tail wakes the gateway's future directly
+                # over a separate RPC instead of letting the nested
+                # response unwind. ACK back to the *predecessor* worker
+                # so its async forwarder thread can free up.
+                self._coord.submit_result(
+                    request_id=int(request.request_id),
+                    position=int(request.position),
+                    activation=b"",
+                    has_next_token=True,
+                    next_token_id=int(next_token),
+                )
+                return radp_pb2.RunStageResponse(
+                    request_id=request.request_id,
+                )
             return radp_pb2.RunStageResponse(
                 request_id=request.request_id,
                 has_next_token=True,
@@ -259,22 +425,51 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
         # Phase 3 replay_only: skip forwarding even when next_hop is set —
         # we only need this worker's KV cache rebuilt.
         if next_hop is None or replay_only:
+            if (
+                async_chain
+                and not replay_only
+                and self._coord is not None
+                and next_hop is None
+            ):
+                # Phase F chain tail without head (Phase 1a fallback) —
+                # ship the final activation back to the gateway via
+                # ResultReady instead of returning it through the chain.
+                self._coord.submit_result(
+                    request_id=int(request.request_id),
+                    position=int(request.position),
+                    activation=result,
+                    has_next_token=False,
+                    next_token_id=0,
+                )
+                return radp_pb2.RunStageResponse(
+                    request_id=request.request_id,
+                )
             return radp_pb2.RunStageResponse(
                 activation=result, request_id=request.request_id,
             )
         _next_addr, next_stub, next_start, next_end = next_hop
-        try:
-            forwarded = next_stub.RunStage(
-                radp_pb2.RunStageRequest(
-                    activation=result,
-                    request_id=int(request.request_id),
-                    is_prefill=bool(request.is_prefill),
-                    start_layer=next_start,
-                    end_layer=next_end,
-                    position=int(request.position),
-                ),
-                timeout=10.0,
+        next_req = radp_pb2.RunStageRequest(
+            activation=result,
+            request_id=int(request.request_id),
+            is_prefill=bool(request.is_prefill),
+            start_layer=next_start,
+            end_layer=next_end,
+            position=int(request.position),
+            async_chain=async_chain,
+        )
+        if async_chain:
+            # Phase F: fire-and-forget. Our handler returns ACK now; the
+            # downstream worker (or the eventual chain tail) wakes the
+            # gateway's future via ResultReady. We do NOT see the
+            # downstream's failure here — async chain failure attribution
+            # is delegated to the gateway's per-request timeout + Phase 3
+            # heartbeat path, which still triggers full recovery.
+            self._get_chain_fwd().submit(
+                next_stub, next_req, request_id=int(request.request_id),
             )
+            return radp_pb2.RunStageResponse(request_id=request.request_id)
+        try:
+            forwarded = next_stub.RunStage(next_req, timeout=10.0)
         except grpc.RpcError as e:
             # EXP-D3 Phase 3 chain-aware failure attribution. The downstream
             # call failed; stamp the failed (start, end) onto our gRPC trailer
@@ -302,6 +497,8 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
 
     def EvictRequest(self, request: Any, context: grpc.ServicerContext) -> Any:
         self._runner.evict_request(RequestId(request.request_id))
+        # Phase F: drop the per-request lock now that the request is done.
+        self._drop_request_lock(int(request.request_id))
         return radp_pb2.EvictRequestResponse(ok=True)
 
     # ------------------------------------------------------------------
@@ -393,11 +590,12 @@ class WorkerServer:
         # EXP-D3 Phase 2 mirror cache pusher — only when we have a coord to
         # talk to. The dispatcher opens its own gRPC channel so RunStage
         # never blocks waiting on the coord.
-        self.mirror: _MirrorDispatcher | None = None
+        self.mirror: _CoordDispatcher | None = None
         if coordinator_address:
-            self.mirror = _MirrorDispatcher(coordinator_address)
+            self.mirror = _CoordDispatcher(coordinator_address)
+        self._servicer = _WorkerServicer(self.runner, self.mirror)
         radp_pb2_grpc.add_WorkerServiceServicer_to_server(
-            _WorkerServicer(self.runner, self.mirror), self._server
+            self._servicer, self._server
         )
         self._stopped = threading.Event()
         self.heartbeat: HeartbeatSender | None = None
@@ -427,5 +625,7 @@ class WorkerServer:
             self.heartbeat.stop()
         if self.mirror is not None:
             self.mirror.close()
+        if self._servicer._chain_fwd is not None:
+            self._servicer._chain_fwd.close()
         self._server.stop(grace).wait()
         log.info("worker %s stopped", self.device_id)

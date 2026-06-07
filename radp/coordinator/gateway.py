@@ -95,6 +95,8 @@ class RequestGateway:
         torch_device: str = "cpu",
         dtype: str = "float32",
         activation_cache_bytes: int = 256 * 1024 * 1024,
+        chain_mode: str = "sync",
+        async_chain_timeout_seconds: float = 30.0,
     ) -> None:
         self.placement = placement
         self.recovery = recovery
@@ -146,6 +148,21 @@ class RequestGateway:
         self._mirror_count = 0
         self._mirror_bytes = 0
         self._mirror_lock = threading.Lock()
+
+        # EXP-D3 Phase F async chain.
+        # `chain_mode == "async"` flips RunStage calls to fire-and-forget;
+        # the chain tail wakes us via CoordinatorService.ResultReady, and
+        # we wait on a per-(request_id, position) Event that the servicer
+        # fills in. `chain_mode == "sync"` (default) preserves Phase 1a/1b
+        # semantics for backward-compat + apples-to-apples baselines.
+        if chain_mode not in {"sync", "async"}:
+            raise ValueError(f"chain_mode must be 'sync' or 'async', got {chain_mode!r}")
+        self.chain_mode = chain_mode
+        self.async_chain_timeout_seconds = float(async_chain_timeout_seconds)
+        self._pending_lock = threading.Lock()
+        self._pending: dict[
+            tuple[RequestId, int], tuple[threading.Event, dict[str, Any]]
+        ] = {}
 
     # ------------------------------------------------------------------
     # External signals
@@ -230,6 +247,58 @@ class RequestGateway:
             "lifetime_bytes": bytes_,
             "cache_bytes_used": self.cache.bytes_used(),
         }
+
+    # ------------------------------------------------------------------
+    # Async chain wake-up (EXP-D3 Phase F)
+    # ------------------------------------------------------------------
+    def record_result(
+        self,
+        *,
+        request_id: int,
+        position: int,
+        activation: bytes,
+        has_next_token: bool,
+        next_token_id: int,
+    ) -> None:
+        """Fill the pending future for (request_id, position) so the
+        gateway's _run_pipeline can return. The chain tail (worker)
+        calls this via the CoordinatorService.ResultReady RPC.
+
+        Stale results (position we've already recovered past, or a step
+        we never registered a future for) are dropped — they're a normal
+        consequence of the Phase 3 chain-failure recovery path racing
+        with an in-flight async tail.
+        """
+        key = (RequestId(request_id), int(position))
+        with self._pending_lock:
+            entry = self._pending.get(key)
+        if entry is None:
+            log.debug(
+                "ResultReady for req=%d pos=%d arrived with no pending future "
+                "(likely a stale async result post-recovery); dropping",
+                request_id, position,
+            )
+            return
+        ev, payload = entry
+        payload["activation"] = activation
+        payload["has_next_token"] = bool(has_next_token)
+        payload["next_token_id"] = int(next_token_id)
+        ev.set()
+
+    def _register_pending(
+        self, request_id: RequestId, position: int
+    ) -> tuple[threading.Event, dict[str, Any]]:
+        key = (request_id, int(position))
+        ev = threading.Event()
+        payload: dict[str, Any] = {}
+        with self._pending_lock:
+            self._pending[key] = (ev, payload)
+        return ev, payload
+
+    def _unregister_pending(self, request_id: RequestId, position: int) -> None:
+        key = (request_id, int(position))
+        with self._pending_lock:
+            self._pending.pop(key, None)
 
     # ------------------------------------------------------------------
     # Public inference API
@@ -841,16 +910,21 @@ class RequestGateway:
         position: int,
         replay_only: bool = False,
     ) -> Any:
-        """Returns the raw RunStageResponse — callers branch on
-        has_next_token (Phase 1b) vs activation (Phase 1a).
+        """Returns a RunStageResponse-shaped object. In sync chain mode
+        this is the raw RPC response; in async chain mode we register a
+        pending future, fire the head call (which returns ACK immediately
+        because the worker fans the call out async), then block until
+        the chain tail's ResultReady RPC populates the future. Replay
+        always runs in sync mode regardless of chain_mode — replay onto a
+        freshly-promoted backup must NOT chain-forward, so async makes no
+        sense there.
 
         ``replay_only=True`` instructs the worker to run only its local
         stage forward (rebuilding KV cache) without chain-forwarding or
-        head-sampling. The gateway uses this to replay history onto a
-        freshly-promoted backup without re-running surviving downstream
-        stages — see ``_replay_stage_history``.
+        head-sampling. See ``_replay_stage_history``.
         """
         stub = self._get_stub(stage.device)
+        use_async = self.chain_mode == "async" and not replay_only
         req = radp_pb2.RunStageRequest(
             activation=activation_blob,
             request_id=int(request_id),
@@ -859,8 +933,29 @@ class RequestGateway:
             end_layer=int(stage.end_layer),
             position=int(position),
             replay_only=bool(replay_only),
+            async_chain=use_async,
         )
-        return stub.RunStage(req)
+        if not use_async:
+            return stub.RunStage(req)
+        # Async path: register future, fire head call (returns ACK fast),
+        # wait for the chain tail to wake us via ResultReady.
+        ev, payload = self._register_pending(request_id, position)
+        try:
+            stub.RunStage(req)  # propagates RpcError so callers' recovery still fires
+            if not ev.wait(self.async_chain_timeout_seconds):
+                raise TimeoutError(
+                    f"async chain timed out after "
+                    f"{self.async_chain_timeout_seconds}s "
+                    f"waiting for ResultReady (req={request_id}, pos={position})"
+                )
+            return radp_pb2.RunStageResponse(
+                request_id=int(request_id),
+                activation=payload.get("activation", b""),
+                has_next_token=bool(payload.get("has_next_token", False)),
+                next_token_id=int(payload.get("next_token_id", 0)),
+            )
+        finally:
+            self._unregister_pending(request_id, position)
 
     def _evict_everywhere(self, request_id: RequestId) -> None:
         """Best-effort: ask every (currently-alive) worker to drop this request's cache."""

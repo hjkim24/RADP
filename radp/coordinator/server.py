@@ -94,6 +94,15 @@ class CoordinatorConfig:
     # actual per-token wall-clock.
     optimization_mode: str = "throughput"
     blend_alpha: float = 0.0
+    # EXP-D3 Phase F chain mode:
+    #   sync  — Phase 1a/1b synchronous chain (each in-flight stream
+    #            occupies a thread on every chain stage). Default for
+    #            backward-compat + apples-to-apples baselines.
+    #   async — workers fire-and-forget downstream RunStage calls; the
+    #            chain tail wakes the gateway via CoordinatorService.
+    #            ResultReady. Enables true pipeline parallelism — each
+    #            stage's gRPC handler frees up after its own work.
+    chain_mode: str = "sync"
     profiling_layer_warmup: int = 1
     profiling_layer_repeats: int = 3
     profiling_layer_seq_length: int = 32
@@ -155,6 +164,7 @@ class CoordinatorConfig:
             eager_backup=bool(coord.get("eager_backup", True)),
             optimization_mode=str(coord.get("optimization_mode", "throughput")),
             blend_alpha=float(coord.get("blend_alpha", 0.0)),
+            chain_mode=str(coord.get("chain_mode", "sync")),
             profiling_layer_warmup=int(profiling.get("layer_warmup", 1)),
             profiling_layer_repeats=int(profiling.get("layer_repeats", 3)),
             profiling_layer_seq_length=int(profiling.get("layer_seq_length", 32)),
@@ -212,6 +222,24 @@ class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: i
             activation=bytes(request.activation),
         )
         return radp_pb2.MirrorActivationResponse(ok=True)
+
+    def ResultReady(self, request: Any, context: grpc.ServicerContext) -> Any:
+        """EXP-D3 Phase F: chain tail wakes the gateway's per-(request,
+        position) future. If the gateway hasn't materialised yet (startup
+        race) or the position is stale (post-recovery), the call drops
+        the result silently — both are benign.
+        """
+        gateway = self._server.gateway
+        if gateway is None:
+            return radp_pb2.ResultReadyResponse(ok=True)
+        gateway.record_result(
+            request_id=int(request.request_id),
+            position=int(request.position),
+            activation=bytes(request.activation),
+            has_next_token=bool(request.has_next_token),
+            next_token_id=int(request.next_token_id),
+        )
+        return radp_pb2.ResultReadyResponse(ok=True)
 
     def Generate(self, request: Any, context: grpc.ServicerContext) -> Any:
         gateway = self._server.gateway
@@ -411,6 +439,7 @@ class CoordinatorServer:
                     model_id=self.config.model_id,
                     torch_device=self.config.torch_device,
                     dtype=self.config.dtype,
+                    chain_mode=self.config.chain_mode,
                 )
             return self.gateway
 
