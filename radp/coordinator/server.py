@@ -198,6 +198,21 @@ class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: i
         )
         return radp_pb2.HeartbeatResponse(ack=True)
 
+    def MirrorActivation(self, request: Any, context: grpc.ServicerContext) -> Any:
+        gateway = self._server.gateway
+        if gateway is None:
+            # Mirror arriving before the gateway exists is benign — there's
+            # no in-flight request to attach it to. Drop silently so workers
+            # can keep firing during startup races.
+            return radp_pb2.MirrorActivationResponse(ok=True)
+        gateway.record_mirror(
+            request_id=int(request.request_id),
+            stage_key=(int(request.start_layer), int(request.end_layer)),
+            position=int(request.position),
+            activation=bytes(request.activation),
+        )
+        return radp_pb2.MirrorActivationResponse(ok=True)
+
     def Generate(self, request: Any, context: grpc.ServicerContext) -> Any:
         gateway = self._server.gateway
         if gateway is None:

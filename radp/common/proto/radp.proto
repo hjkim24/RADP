@@ -60,6 +60,13 @@ service CoordinatorService {
 
   // Client -> coordinator token generation, streamed back.
   rpc Generate    (GenerateRequest)   returns (stream GenerateChunk);
+
+  // EXP-D3 Phase 2 — workers ship a copy of the activation they received
+  // for (request_id, stage range) back to the coord asynchronously. On
+  // worker failure mid-generation the coord replays the mirrored history
+  // onto the recovery peer, sidestepping the chain-topology replay gap
+  // (coord only sees the first stage's input locally).
+  rpc MirrorActivation (MirrorActivationRequest) returns (MirrorActivationResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +90,10 @@ message RunStageRequest {
   bool  is_prefill     = 3;
   int32 start_layer    = 4;   // Phase 3: which loaded stage to run
   int32 end_layer      = 5;
+  // EXP-D3 Phase 2: per-(request) step index assigned by the coord.
+  // Workers stamp it into MirrorActivation as `position` so out-of-order
+  // arrivals collate correctly. 0 = prefill, then +1 per decode token.
+  int32 position       = 6;
 }
 
 message RunStageResponse {
@@ -218,4 +229,19 @@ message LoadHeadRequest {
 message LoadHeadResponse {
   bool   ok    = 1;
   string error = 2;
+}
+
+message MirrorActivationRequest {
+  int32 request_id  = 1;
+  int32 start_layer = 2;   // owner stage range (inclusive)
+  int32 end_layer   = 3;
+  bytes activation  = 4;   // serialized input the worker received
+  bool  is_prefill  = 5;
+  // Monotonic per-(request, stage) sequence number assigned by the worker.
+  // Coord uses it to order out-of-order arrivals from in-flight RPCs and to
+  // drop duplicate retries. position == 0 → prefill (first step).
+  int32 position    = 6;
+}
+message MirrorActivationResponse {
+  bool ok = 1;
 }

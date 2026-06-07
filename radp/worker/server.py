@@ -9,6 +9,7 @@ Spawns a HeartbeatSender thread if a coordinator address is provided.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 import time
@@ -33,9 +34,83 @@ _GRPC_OPTIONS: list[tuple[str, Any]] = [
 ]
 
 
+class _MirrorDispatcher:
+    """Fire-and-forget MirrorActivation pusher to the coord (EXP-D3 Phase 2).
+
+    Single-thread executor so per-(request, stage) sends preserve order on
+    the wire; the coord still tolerates reorder via positioned writes, but
+    a single sender thread is the cheapest way to keep the common case in
+    order without per-RPC sequence accounting. ``submit()`` never raises —
+    a transient coord blip drops the mirror for that step; replay still
+    has whatever positions did make it through, and the gateway's
+    contiguous-prefix replay (see ActivationCache.get_history) stops at
+    the first gap instead of skipping a step.
+    """
+
+    def __init__(self, coordinator_address: str) -> None:
+        self._addr = coordinator_address
+        self._channel = grpc.insecure_channel(coordinator_address, options=_GRPC_OPTIONS)
+        self._stub = radp_pb2_grpc.CoordinatorServiceStub(self._channel)
+        self._exec = futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mirror"
+        )
+
+    def submit(
+        self,
+        *,
+        request_id: int,
+        start_layer: int,
+        end_layer: int,
+        position: int,
+        activation: bytes,
+        is_prefill: bool,
+    ) -> None:
+        # Executor may already be shut down (server stopping); swallow.
+        with contextlib.suppress(RuntimeError):
+            self._exec.submit(
+                self._send_blocking,
+                request_id, start_layer, end_layer, position, activation, is_prefill,
+            )
+
+    def _send_blocking(
+        self,
+        request_id: int,
+        start_layer: int,
+        end_layer: int,
+        position: int,
+        activation: bytes,
+        is_prefill: bool,
+    ) -> None:
+        try:
+            req = radp_pb2.MirrorActivationRequest(
+                request_id=request_id,
+                start_layer=start_layer,
+                end_layer=end_layer,
+                position=position,
+                activation=activation,
+                is_prefill=is_prefill,
+            )
+            self._stub.MirrorActivation(req, timeout=5.0)
+        except Exception as e:  # noqa: BLE001
+            log.debug(
+                "MirrorActivation push for req=%d stage[%d..%d] pos=%d failed (%s); ignored",
+                request_id, start_layer, end_layer, position, e,
+            )
+
+    def close(self) -> None:
+        self._exec.shutdown(wait=False, cancel_futures=True)
+        with contextlib.suppress(Exception):
+            self._channel.close()
+
+
 class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc]
-    def __init__(self, runner: StageRunner) -> None:
+    def __init__(
+        self,
+        runner: StageRunner,
+        mirror: _MirrorDispatcher | None = None,
+    ) -> None:
         self._runner = runner
+        self._mirror = mirror
         self._next_lock = threading.Lock()
         # Chain forwarding: {(my_start, my_end): (next_addr, channel, stub,
         # next_start, next_end)}. SetNextHop() populates this for the
@@ -62,10 +137,8 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             with self._next_lock:
                 prev = self._next_hops.pop(key, None)
                 if prev is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         prev[1].close()  # close prior channel
-                    except Exception:  # noqa: BLE001
-                        pass
                 if next_addr:
                     channel = grpc.insecure_channel(next_addr, options=_GRPC_OPTIONS)
                     stub = radp_pb2_grpc.WorkerServiceStub(channel)
@@ -133,6 +206,20 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
 
     def RunStage(self, request: Any, context: grpc.ServicerContext) -> Any:
         next_hop = self._get_next_hop(int(request.start_layer), int(request.end_layer))
+        # EXP-D3 Phase 2 mirror: fire-and-forget the input activation back
+        # to the coord BEFORE running the stage, so even a crash mid-stage
+        # leaves the coord with enough history to replay onto the recovery
+        # peer. Skip mirroring on the first stage — coord generated that
+        # input locally and primes its own cache (see RequestGateway).
+        if self._mirror is not None and int(request.start_layer) > 1:
+            self._mirror.submit(
+                request_id=int(request.request_id),
+                start_layer=int(request.start_layer),
+                end_layer=int(request.end_layer),
+                position=int(request.position),
+                activation=bytes(request.activation),
+                is_prefill=bool(request.is_prefill),
+            )
         # EXP-D3 Phase 1b: chain tail with a head loaded runs the local
         # stage AND applies head + greedy argmax, returning the next token
         # id directly. Coord skips its own head + sampling step.
@@ -174,6 +261,7 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
                 is_prefill=bool(request.is_prefill),
                 start_layer=next_start,
                 end_layer=next_end,
+                position=int(request.position),
             )
         )
         return forwarded
@@ -268,8 +356,14 @@ class WorkerServer:
             futures.ThreadPoolExecutor(max_workers=max_workers),
             options=_GRPC_OPTIONS,
         )
+        # EXP-D3 Phase 2 mirror cache pusher — only when we have a coord to
+        # talk to. The dispatcher opens its own gRPC channel so RunStage
+        # never blocks waiting on the coord.
+        self.mirror: _MirrorDispatcher | None = None
+        if coordinator_address:
+            self.mirror = _MirrorDispatcher(coordinator_address)
         radp_pb2_grpc.add_WorkerServiceServicer_to_server(
-            _WorkerServicer(self.runner), self._server
+            _WorkerServicer(self.runner, self.mirror), self._server
         )
         self._stopped = threading.Event()
         self.heartbeat: HeartbeatSender | None = None
@@ -297,5 +391,7 @@ class WorkerServer:
         self._stopped.set()
         if self.heartbeat is not None:
             self.heartbeat.stop()
+        if self.mirror is not None:
+            self.mirror.close()
         self._server.stop(grace).wait()
         log.info("worker %s stopped", self.device_id)

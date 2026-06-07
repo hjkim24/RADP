@@ -60,6 +60,10 @@ log = get_logger(__name__)
 class _RequestState:
     past_length: int        # tokens accumulated in worker KV cache for this request
     generated_token_ids: list[int]
+    # EXP-D3 Phase 2: monotonically incremented per request — written into
+    # the mirror cache as `position` so out-of-order arrivals from workers'
+    # in-flight MirrorActivation RPCs sort into prefill→decode order.
+    step_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -182,6 +186,27 @@ class RequestGateway:
     def current_plan(self) -> Placement:
         with self._plan_lock:
             return list(self._execution_plan)
+
+    # ------------------------------------------------------------------
+    # Mirror cache ingestion (EXP-D3 Phase 2)
+    # ------------------------------------------------------------------
+    def record_mirror(
+        self,
+        *,
+        request_id: int,
+        stage_key: tuple[int, int],
+        position: int,
+        activation: bytes,
+    ) -> None:
+        """Append a worker-shipped activation into the mirror cache.
+
+        Idempotent — re-arriving (request, stage, position) is dropped.
+        Coord skips its own first-stage local cache entry once mirrors are
+        coming in, so this is the single source of truth for replay.
+        """
+        self.cache.put(
+            RequestId(request_id), stage_key, position, activation
+        )
 
     # ------------------------------------------------------------------
     # Public inference API
@@ -362,13 +387,17 @@ class RequestGateway:
         attention_mask_2d = attention_mask_2d.to(self.torch_device)
         seq_len = int(input_ids.shape[1])
 
+        # Prefill is always position 0; subsequent decode steps increment.
+        self._requests[request_id] = _RequestState(
+            past_length=seq_len, generated_token_ids=[], step_index=0
+        )
         with torch.no_grad():
             hidden = self._embed(input_ids, attention_mask_2d, past_kv_length=0)
             attention_mask_4d = _prepare_4d_causal_attention_mask(
                 attention_mask_2d, input_ids.shape, hidden, past_key_values_length=0
             )
             hidden, _, timings, tail_token = self._run_pipeline(
-                request_id, hidden, attention_mask_4d, is_prefill=True
+                request_id, hidden, attention_mask_4d, is_prefill=True, position=0
             )
             if tail_token is not None:
                 next_id = int(tail_token)
@@ -377,9 +406,7 @@ class RequestGateway:
                 logits = self._head(hidden)
                 next_id = sampler(logits[0, -1, :])
 
-        self._requests[request_id] = _RequestState(
-            past_length=seq_len, generated_token_ids=[next_id]
-        )
+        self._requests[request_id].generated_token_ids.append(next_id)
         return timings
 
     def _decode_step(
@@ -394,13 +421,18 @@ class RequestGateway:
         new_input = torch.tensor([[prev_id]], device=self.torch_device)
         attn_2d = torch.ones(1, past_len + 1, device=self.torch_device, dtype=torch.long)
 
+        state.step_index += 1
         with torch.no_grad():
             hidden = self._embed(new_input, attn_2d, past_kv_length=past_len)
             attention_mask_4d = _prepare_4d_causal_attention_mask(
                 attn_2d, (1, 1), hidden, past_key_values_length=past_len
             )
             hidden, _, timings, tail_token = self._run_pipeline(
-                request_id, hidden, attention_mask_4d, is_prefill=False
+                request_id,
+                hidden,
+                attention_mask_4d,
+                is_prefill=False,
+                position=state.step_index,
             )
             if tail_token is not None:
                 next_id = int(tail_token)
@@ -422,6 +454,7 @@ class RequestGateway:
         attention_mask: torch.Tensor,
         *,
         is_prefill: bool,
+        position: int,
     ) -> tuple[
         torch.Tensor | None,
         torch.Tensor | None,
@@ -453,11 +486,17 @@ class RequestGateway:
             "hidden_states": hidden.cpu(),
             "attention_mask": attention_mask.cpu(),
         })
-        # Cache the input to the first stage for failure replay.
-        self.cache.append(request_id, first_key, blob)
+        # Phase 2: prime the mirror cache locally for the chain-head stage —
+        # the head worker won't mirror its own input back to us (coord *is*
+        # the source), but the failure-recovery path still needs to find
+        # this entry in cache.get_history((req, first_key)).
+        self.cache.put(request_id, first_key, position, blob)
         invoke_start = time.perf_counter()
         try:
-            resp = self._invoke(first_stage, request_id, blob, is_prefill=is_prefill)
+            resp = self._invoke(
+                first_stage, request_id, blob, is_prefill=is_prefill,
+                position=position,
+            )
         except grpc.RpcError as e:
             log.warning(
                 "request=%d chain head %s[%d..%d] failed: %s",
@@ -477,6 +516,7 @@ class RequestGateway:
             first_stage = plan[0]
             resp = self._invoke(
                 first_stage, request_id, blob, is_prefill=is_prefill,
+                position=position,
             )
         chain_wall = time.perf_counter() - invoke_start
         timings = [
@@ -501,9 +541,9 @@ class RequestGateway:
     ) -> None:
         """Replay cached activations into whichever device now owns ``stage_key``.
 
-        The first cached entry is always the prefill activation (we cache in
-        ``_run_pipeline`` after success, and a request's first successful step
-        is always its prefill). Subsequent entries are decode steps.
+        Phase 2: history is the contiguous prefix [position 0 = prefill,
+        position 1 = decode 1, …]. We re-issue them with the original
+        positions so the backup's mirror entries match coord's view.
         """
         history = self.cache.get_history(request_id, stage_key)
         if not history:
@@ -524,7 +564,9 @@ class RequestGateway:
             request_id, len(history), owner.device, *stage_key,
         )
         for i, blob in enumerate(history):
-            self._invoke(owner, request_id, blob, is_prefill=(i == 0))
+            self._invoke(
+                owner, request_id, blob, is_prefill=(i == 0), position=i
+            )
 
     def _get_stub(self, device_id: DeviceId) -> Any:
         """Return a cached WorkerServiceStub backed by a persistent channel."""
@@ -547,6 +589,7 @@ class RequestGateway:
         activation_blob: bytes,
         *,
         is_prefill: bool,
+        position: int,
     ) -> Any:
         """Returns the raw RunStageResponse — callers branch on
         has_next_token (Phase 1b) vs activation (Phase 1a)."""
@@ -557,6 +600,7 @@ class RequestGateway:
             is_prefill=is_prefill,
             start_layer=int(stage.start_layer),
             end_layer=int(stage.end_layer),
+            position=int(position),
         )
         return stub.RunStage(req)
 
@@ -623,9 +667,11 @@ class RequestGateway:
                             attention_mask_2d, input_ids.shape, hidden,
                             past_key_values_length=0,
                         )
-                        hidden, _, _ = self._run_pipeline(
-                            request_id, hidden, attention_mask_4d, is_prefill=True
+                        hidden, _, _, _ = self._run_pipeline(
+                            request_id, hidden, attention_mask_4d,
+                            is_prefill=True, position=0,
                         )
+                        assert hidden is not None
                         return self._head(hidden)
                 except grpc.RpcError:
                     attempts += 1
