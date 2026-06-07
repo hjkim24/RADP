@@ -34,6 +34,7 @@ from radp.common.architectures import ModelArchitecture, get_architecture
 from radp.common.logging_utils import get_logger
 from radp.common.model_utils import ModelHandle, load_model, measure_resident_bytes
 from radp.common.proto import radp_pb2, radp_pb2_grpc
+from radp.common.protocol import WorkerClient
 from radp.common.tensor_io import decode, encode
 from radp.common.types import (
     DeviceId,
@@ -467,6 +468,215 @@ class RequestGateway:
         return timings
 
     # ------------------------------------------------------------------
+    # Chain-aware failure recovery (EXP-D3 Phase 3)
+    # ------------------------------------------------------------------
+    def _attribute_chain_failure(
+        self, head_stage: Stage, error: grpc.RpcError
+    ) -> Stage:
+        """Identify the actually-dead stage from gRPC trailer metadata.
+
+        Workers in chain mode catch their downstream RunStage RpcError and
+        stamp ``(radp-failed-start, radp-failed-end)`` onto the trailer
+        before aborting. We use that to mark the *real* dead worker; if
+        the trailer is missing (head itself died, old worker binary),
+        fall back to blaming the head we called directly.
+        """
+        try:
+            trailer = error.trailing_metadata()
+        except AttributeError:
+            trailer = ()
+        md = {k: v for k, v in trailer or ()}
+        s = md.get("radp-failed-start")
+        e_ = md.get("radp-failed-end")
+        if s is None or e_ is None:
+            return head_stage
+        try:
+            failed_start, failed_end = int(s), int(e_)
+        except ValueError:
+            return head_stage
+        for stage in self.current_plan():
+            if (
+                int(stage.start_layer) == failed_start
+                and int(stage.end_layer) == failed_end
+            ):
+                return stage
+        # No match in the current plan — fallback so we still make progress
+        # rather than infinite-loop.
+        return head_stage
+
+    def _rewire_chain(self) -> None:
+        """Re-issue SetNextHop calls so every worker's next-hop matches the
+        current execution plan. Idempotent — workers update their
+        ``_next_hops`` dict in place; redundant calls are cheap.
+
+        Called after a recovery substitution so the chain skips the dead
+        worker entirely. The replacement worker (the backup) is wired into
+        the predecessor's next-hop; its own next-hop points at whatever
+        follows in the plan, or is cleared if it becomes the new tail.
+        """
+        plan = self.current_plan()
+        for i, stage in enumerate(plan):
+            addr = self.worker_addresses[stage.device]
+            try:
+                with WorkerClient(addr) as client:
+                    if i + 1 < len(plan):
+                        nxt = plan[i + 1]
+                        client.set_next_hop(
+                            my_start=int(stage.start_layer),
+                            my_end=int(stage.end_layer),
+                            next_address=self.worker_addresses[nxt.device],
+                            next_start=int(nxt.start_layer),
+                            next_end=int(nxt.end_layer),
+                        )
+                    else:
+                        client.set_next_hop(
+                            my_start=int(stage.start_layer),
+                            my_end=int(stage.end_layer),
+                            next_address="",
+                        )
+            except Exception:  # noqa: BLE001
+                log.exception(
+                    "rewire next_hop on %s[%d..%d] failed (continuing)",
+                    stage.device, stage.start_layer, stage.end_layer,
+                )
+
+    def _recover_from_chain_failure(
+        self,
+        request_id: RequestId,
+        head_stage: Stage,
+        error: grpc.RpcError,
+        current_position: int,
+    ) -> tuple[Stage, Any]:
+        """Identify the dead worker, promote its backup, rewire the chain,
+        rebuild KV caches via full replay, and return ``(new_head_stage,
+        last_response)``. The last_response IS the result of the original
+        failed call — the caller can use it directly.
+
+        Why a full chain replay and not just a stage replay:
+          On the original failed attempt the chain ran *partially* — the
+          surviving upstream workers (the head, anyone between it and the
+          dead stage) already advanced their KV cache by one step. If we
+          only replay onto the backup and retry, the head will advance
+          again on the retry, double-counting that position. So we evict
+          all surviving caches and rebuild the entire request from scratch
+          through the new chain.
+
+        Side effects (in order):
+          1. ``mark_dead`` + plan rebuild (backup substituted)
+          2. ``PromoteBackup`` on the backup peer
+          3. ``_rewire_chain`` updates every worker's next-hop
+          4. ``_evict_kv_everywhere`` drops stale KV caches on survivors
+          5. Replay history through the new chain end-to-end; the last
+             invocation's response is the recovered token / activation.
+
+        Recovery overhead is therefore O(positions × stages) RPC calls
+        plus the backup promotion latency — acceptable for the paper
+        claim ("R guarantees correctness on single-fault scenarios"),
+        not optimised for high-frequency failures.
+        """
+        dead_stage = self._attribute_chain_failure(head_stage, error)
+        if dead_stage.device in self._dead:
+            # Concurrent recovery already advanced the plan. Replay from
+            # the current head against the cached history so we return a
+            # fresh response for the caller.
+            new_plan = self.current_plan()
+            new_head = new_plan[0]
+            return new_head, self._replay_through_chain(
+                request_id, new_head, current_position
+            )
+
+        log.warning(
+            "request=%d chain failure attributed to %s[%d..%d] (head was %s)",
+            request_id,
+            dead_stage.device,
+            dead_stage.start_layer,
+            dead_stage.end_layer,
+            head_stage.device,
+        )
+
+        self.mark_dead(dead_stage.device)
+
+        backup_dev = self.recovery.get(dead_stage.device)
+        if backup_dev is None:
+            raise RuntimeError(
+                f"no recovery entry for dead device {dead_stage.device}"
+            )
+        backup_addr = self.worker_addresses.get(backup_dev)
+        if backup_addr is None:
+            raise RuntimeError(
+                f"recovery device {backup_dev} has no address"
+            )
+
+        try:
+            with WorkerClient(backup_addr) as client:
+                client.promote_backup(for_device_id=dead_stage.device)
+        except Exception:
+            log.exception(
+                "request=%d promote_backup on %s failed",
+                request_id, backup_dev,
+            )
+            raise
+
+        self._rewire_chain()
+        # Drop surviving workers' stale KV caches for this request; the
+        # full-chain replay below rebuilds them deterministically.
+        self._evict_kv_for_request(request_id)
+
+        new_plan = self.current_plan()
+        new_head = new_plan[0]
+        last_resp = self._replay_through_chain(
+            request_id, new_head, current_position
+        )
+        return new_head, last_resp
+
+    def _replay_through_chain(
+        self,
+        request_id: RequestId,
+        new_head: Stage,
+        current_position: int,
+    ) -> Any:
+        """Replay the head's cached input history end-to-end through the
+        (rewired) chain. Returns the last RunStageResponse — which is the
+        recovered response for the failed step.
+        """
+        head_key = (int(new_head.start_layer), int(new_head.end_layer))
+        history = self.cache.get_history(request_id, head_key)
+        if not history:
+            raise RuntimeError(
+                f"request={request_id} no head history to replay through chain"
+            )
+        log.info(
+            "request=%d replay %d positions through chain head %s[%d..%d]",
+            request_id, len(history), new_head.device, *head_key,
+        )
+        last_resp: Any = None
+        for i, blob in enumerate(history):
+            last_resp = self._invoke(
+                new_head, request_id, blob,
+                is_prefill=(i == 0), position=i, replay_only=False,
+            )
+        return last_resp
+
+    def _evict_kv_for_request(self, request_id: RequestId) -> None:
+        """Tell every alive worker to drop this request's KV cache, so
+        the upcoming replay rebuilds it from scratch. Best-effort —
+        failures are logged but ignored (the worker may already be dead).
+        """
+        for device_id in self.worker_addresses:
+            if device_id in self._dead:
+                continue
+            try:
+                stub = self._get_stub(device_id)
+                stub.EvictRequest(
+                    radp_pb2.EvictRequestRequest(request_id=int(request_id))
+                )
+            except Exception:  # noqa: BLE001
+                log.debug(
+                    "EvictRequest on %s during recovery failed (ignored)",
+                    device_id,
+                )
+
+    # ------------------------------------------------------------------
     # Pipeline dispatch
     # ------------------------------------------------------------------
     def _run_pipeline(
@@ -521,25 +731,20 @@ class RequestGateway:
             )
         except grpc.RpcError as e:
             log.warning(
-                "request=%d chain head %s[%d..%d] failed: %s",
+                "request=%d chain RunStage to %s[%d..%d] raised: %s",
                 request_id, first_stage.device,
                 first_stage.start_layer, first_stage.end_layer, e,
             )
-            self.mark_dead(first_stage.device)
-            try:
-                self._replay_stage_history(request_id, first_key)
-            except Exception:  # noqa: BLE001
-                log.exception(
-                    "request=%d chain-head replay failed; propagating",
-                    request_id,
-                )
-                raise e from None
-            plan = self.current_plan()
-            first_stage = plan[0]
-            resp = self._invoke(
-                first_stage, request_id, blob, is_prefill=is_prefill,
-                position=position,
+            # Phase 3: read the worker-stamped trailer to find the *actual*
+            # dead stage (could be head itself OR any downstream). The
+            # recovery driver promotes the backup, rewires the chain,
+            # evicts stale KV caches, replays the cached input history
+            # through the new chain, and returns the response from the
+            # last (= current-position) invocation — which IS our retry.
+            first_stage, resp = self._recover_from_chain_failure(
+                request_id, first_stage, e, position
             )
+            plan = self.current_plan()
         chain_wall = time.perf_counter() - invoke_start
         timings = [
             StageTiming(
@@ -585,9 +790,13 @@ class RequestGateway:
             "request=%d replay %d activations to %s for stage[%d..%d]",
             request_id, len(history), owner.device, *stage_key,
         )
+        # Phase 3: replay_only so the backup just rebuilds its KV cache
+        # without chain-forwarding into the surviving downstream stages
+        # (which already have the correct cache from the original run).
         for i, blob in enumerate(history):
             self._invoke(
-                owner, request_id, blob, is_prefill=(i == 0), position=i
+                owner, request_id, blob,
+                is_prefill=(i == 0), position=i, replay_only=True,
             )
 
     def _get_stub(self, device_id: DeviceId) -> Any:
@@ -612,9 +821,17 @@ class RequestGateway:
         *,
         is_prefill: bool,
         position: int,
+        replay_only: bool = False,
     ) -> Any:
         """Returns the raw RunStageResponse — callers branch on
-        has_next_token (Phase 1b) vs activation (Phase 1a)."""
+        has_next_token (Phase 1b) vs activation (Phase 1a).
+
+        ``replay_only=True`` instructs the worker to run only its local
+        stage forward (rebuilding KV cache) without chain-forwarding or
+        head-sampling. The gateway uses this to replay history onto a
+        freshly-promoted backup without re-running surviving downstream
+        stages — see ``_replay_stage_history``.
+        """
         stub = self._get_stub(stage.device)
         req = radp_pb2.RunStageRequest(
             activation=activation_blob,
@@ -623,6 +840,7 @@ class RequestGateway:
             start_layer=int(stage.start_layer),
             end_layer=int(stage.end_layer),
             position=int(position),
+            replay_only=bool(replay_only),
         )
         return stub.RunStage(req)
 

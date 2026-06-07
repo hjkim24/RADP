@@ -94,6 +94,12 @@ message RunStageRequest {
   // Workers stamp it into MirrorActivation as `position` so out-of-order
   // arrivals collate correctly. 0 = prefill, then +1 per decode token.
   int32 position       = 6;
+  // EXP-D3 Phase 3 recovery: when true, the worker runs ONLY its local
+  // stage forward (populates its KV cache for this (request, stage,
+  // position)) and does NOT chain-forward or head-sample. Used by the
+  // gateway's _replay_stage_history to rehydrate a newly-promoted
+  // backup without re-running surviving downstream stages.
+  bool  replay_only    = 7;
 }
 
 message RunStageResponse {

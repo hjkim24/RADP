@@ -206,12 +206,17 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
 
     def RunStage(self, request: Any, context: grpc.ServicerContext) -> Any:
         next_hop = self._get_next_hop(int(request.start_layer), int(request.end_layer))
+        replay_only = bool(getattr(request, "replay_only", False))
         # EXP-D3 Phase 2 mirror: fire-and-forget the input activation back
         # to the coord BEFORE running the stage, so even a crash mid-stage
         # leaves the coord with enough history to replay onto the recovery
-        # peer. Skip mirroring on the first stage — coord generated that
-        # input locally and primes its own cache (see RequestGateway).
-        if self._mirror is not None and int(request.start_layer) > 1:
+        # peer. Skip on (a) the first stage — coord *is* the source — and
+        # (b) replay calls — those activations ALREADY came from the cache.
+        if (
+            self._mirror is not None
+            and int(request.start_layer) > 1
+            and not replay_only
+        ):
             self._mirror.submit(
                 request_id=int(request.request_id),
                 start_layer=int(request.start_layer),
@@ -223,7 +228,9 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
         # EXP-D3 Phase 1b: chain tail with a head loaded runs the local
         # stage AND applies head + greedy argmax, returning the next token
         # id directly. Coord skips its own head + sampling step.
-        if next_hop is None and self._runner.has_head:
+        # Skip in replay_only mode — we only want to rebuild the KV cache,
+        # not generate a token.
+        if next_hop is None and self._runner.has_head and not replay_only:
             next_token = self._runner.run_tail_and_sample(
                 request_id=RequestId(request.request_id),
                 activation_blob=bytes(request.activation),
@@ -249,21 +256,48 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
         # return whatever the chain tail produced. With no next hop
         # registered and no head loaded the worker behaves as the legacy
         # coord-mediated star-topology tail and returns the activation.
-        if next_hop is None:
+        # Phase 3 replay_only: skip forwarding even when next_hop is set —
+        # we only need this worker's KV cache rebuilt.
+        if next_hop is None or replay_only:
             return radp_pb2.RunStageResponse(
                 activation=result, request_id=request.request_id,
             )
         _next_addr, next_stub, next_start, next_end = next_hop
-        forwarded = next_stub.RunStage(
-            radp_pb2.RunStageRequest(
-                activation=result,
-                request_id=int(request.request_id),
-                is_prefill=bool(request.is_prefill),
-                start_layer=next_start,
-                end_layer=next_end,
-                position=int(request.position),
+        try:
+            forwarded = next_stub.RunStage(
+                radp_pb2.RunStageRequest(
+                    activation=result,
+                    request_id=int(request.request_id),
+                    is_prefill=bool(request.is_prefill),
+                    start_layer=next_start,
+                    end_layer=next_end,
+                    position=int(request.position),
+                ),
+                timeout=10.0,
             )
-        )
+        except grpc.RpcError as e:
+            # EXP-D3 Phase 3 chain-aware failure attribution. The downstream
+            # call failed; stamp the failed (start, end) onto our gRPC trailer
+            # so the coord identifies the correct dead worker instead of
+            # mis-attributing the RpcError to *us*. Then abort our own
+            # response with UNAVAILABLE so the gateway notices.
+            code = (
+                e.code() if hasattr(e, "code") else grpc.StatusCode.UNAVAILABLE
+            )
+            log.warning(
+                "downstream chain RunStage to %s[%d..%d] failed (%s); "
+                "stamping trailer and aborting",
+                _next_addr, next_start, next_end, code,
+            )
+            context.set_trailing_metadata((
+                ("radp-failed-start", str(next_start)),
+                ("radp-failed-end", str(next_end)),
+            ))
+            context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                f"chain downstream {next_start}..{next_end} unreachable",
+            )
+            raise  # unreachable, but keeps the type checker happy
         return forwarded
 
     def EvictRequest(self, request: Any, context: grpc.ServicerContext) -> Any:
