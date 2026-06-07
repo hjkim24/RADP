@@ -101,6 +101,7 @@ def build_manual_cluster_yaml(
     eager_backup: bool = True,
     optimization_mode: str = "throughput",
     blend_alpha: float = 0.0,
+    chain_mode: str = "sync",
 ) -> str:
     """Build a complete manual-mode cluster.yaml as a string.
 
@@ -123,6 +124,7 @@ def build_manual_cluster_yaml(
     lines.append(f"  eager_backup: {'true' if eager_backup else 'false'}")
     lines.append(f"  optimization_mode: {optimization_mode}")
     lines.append(f"  blend_alpha: {blend_alpha}")
+    lines.append(f"  chain_mode: {chain_mode}")
     lines.append("  slo:")
     lines.append(f"    ttft_seconds: {slo_ttft_seconds}")
     lines.append(f"    tbt_seconds: {slo_tbt_seconds}")

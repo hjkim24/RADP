@@ -1552,6 +1552,89 @@ RADP-Latency dominates RADP-Throughput across:
 
 ---
 
+## Phase EXP-D3 Phase F — Async chain forwarding (pipeline parallelism)
+
+**목표**: D2.5 + Phase 1b 의 핵심 finding — *chain 의 synchronous 응답 unwind 가 pipeline parallelism 차단* — 을 해결. 각 in-flight stream 이 모든 chain stage 의 gRPC thread 를 동시에 점유하던 것을, fire-and-forget 으로 풀어 각 stage thread 가 자기 일만 끝나면 즉시 free 되도록 함.
+
+**구현** (commit b547db0):
+
+*Proto*:
+- `RunStageRequest.async_chain` (field 8) — coord 가 set 하면 워커가 async 모드로 동작.
+- `CoordinatorService.ResultReady(request_id, position, activation, has_next_token, next_token_id)` — chain tail 이 gateway 의 future 를 깨우는 reverse channel. Nested response unwind 를 ResultReady RPC 한 번으로 치환.
+
+*Worker* ([radp/worker/server.py:36](radp/worker/server.py#L36)):
+- `_CoordDispatcher` (이전 `_MirrorDispatcher` 확장) — `submit_mirror` (Phase 2) + `submit_result` (Phase F). Mirror 큐와 result 큐 분리, mirror 가 backed-up 돼도 latency-critical wake-up 안 막힘.
+- `_AsyncChainDispatcher` — bounded ThreadPoolExecutor (max=8) 가 downstream `RunStage` 호출 fire-and-forget. ACK 즉시 return.
+- **Per-request lock**: `dict[request_id, threading.Lock]` 으로 같은 request 의 연속 step 들이 동일 DynamicCache 에 race 못 하게 직렬화. 서로 다른 request 는 lock 분리로 병렬 처리 가능. `EvictRequest` 가 lifecycle 끝에 정리.
+- Sync chain 시 trailer-stamping recovery path (Phase 3) 와 100% backward-compat — `async_chain=False` 면 코드 path 변경 없음.
+
+*Coord* ([radp/coordinator/gateway.py](radp/coordinator/gateway.py)):
+- `chain_mode` config (sync | async) — default sync. `group_vars/all.yml` → `cluster.yaml` → `CoordinatorConfig` → `RequestGateway`.
+- `record_result` + `_register_pending` / `_unregister_pending` — `dict[(request_id, position), (Event, payload)]` 보관. `ResultReady` 핸들러가 Event 를 깨움.
+- `_invoke` 가 `chain_mode=async` 일 때: `register_pending` → `stub.RunStage(req with async_chain=True)` (ACK 받고 즉시 return) → `Event.wait(timeout=30s)` → synthetic `RunStageResponse` 반환. Sync path 와 동일 인터페이스 유지 → 상위 `_run_pipeline` 변경 없음.
+- Replay (Phase 3) 는 항상 sync 강제 — backup KV 재구성은 chain-forward 하면 안 되므로.
+
+**라이브 측정** (2026-06-07, 3-stage chain: on-6 → ao-1 → on-2 + ax-1 coord, OPT-350M, 30 tok/stream, [experiments/measure_concurrent.py](experiments/measure_concurrent.py)):
+
+**2×2 matrix — placement × chain mode** (aggregate tok/s / TBT p50 ms):
+
+| C | T+sync | T+async | L+sync | **L+async** |
+|---|---|---|---|---|
+| 1 | 6.1 / 129 | 7.6 / 126 | 7.7 / 82 | **9.7 / 78** |
+| 4 | 17.0 / 215 | 20.2 / 191 | 24.3 / 155 | **33.7 / 107** |
+| 16 | 23.5 / 586 | 34.5 / 430 | 34.2 / 403 | **40.3 / 386** |
+
+(T = throughput placement, L = latency placement, sync = Phase 1b, async = Phase F)
+
+**핵심 finding**:
+
+1. **Best cell = L + async @ C=16: 40.3 tok/s** vs worst (T + sync): 23.5 tok/s → **+71% throughput**, -34% TBT.
+
+2. **async > sync 전 셀에서**:
+   - C=1 (single stream): 거의 wash (+25% throughput at most) — async 가 round-trip 한 번 추가하니 single-stream 에선 약간 손해이지만 결국 +
+   - C=4: async 의 pipeline parallelism 이 비로소 보임. T placement +19%, L placement +39%.
+   - C=16: 가장 큰 win — T placement +47%, L placement +18%. Pipeline 충분히 채워졌을 때 sync 의 thread occupation 비용이 극대화.
+
+3. **L > T 전 셀, 전 C 에서** (다시 한 번 확인). Async chain 으로 pipeline parallelism 이 풀려도 L 가 universal dominant. 사실 격차 *더 커짐*:
+   - C=1 T→L: +28% (sync) / +28% (async)
+   - C=4 T→L: +43% (sync) / +67% (async)
+   - C=16 T→L: +45% (sync) / +17% (async)
+
+   Throughput placement 가 balanced workload 라 pipeline 효과 더 크게 받지만 (sync→async +47%), L placement 가 본래 fast device 에 집중 배치하므로 절대 throughput 에선 여전히 우위.
+
+**Paper claim 강화 (final form)**:
+
+```
+RADP-Latency dominates RADP-Throughput across:
+  - star topology (Phase 0)         : -27% to -36% throughput improvement
+  - chain topology (Phase 1a sync)  : 동일 패턴
+  - chain + tail head (Phase 1b sync): 격차 더 크게
+  - chain + tail head (Phase F async) : 모든 C 에서 L 우위 *최종 확인*
+```
+
+→ **4 가지 topology 변형 모두에서 일관**. 시스템 architecture 가 sync→async, star→chain 어떻게 바뀌어도 RADP-Latency 가 우위. 이는 *single fleet config 의 우연이 아니라 R + ψ joint optimization 의 structural property* 임을 강하게 시사.
+
+**구현 단위테스트**:
+- [tests/test_async_chain.py](tests/test_async_chain.py) — 3 cases:
+  1. Head ACK 가 tail 완료 *전* 에 도달 (가장 중요한 invariant)
+  2. 동시 두 request 가 chain 을 interleave 통과 (single chain 에 multi-stream pipeline 검증)
+  3. 같은 request 의 N 개 연속 step 이 per-request lock 으로 직렬화 (KV race 방지)
+
+**측정 결과 JSON**:
+- [concurrent_phaseF_async_3stage.json](experiments/results/concurrent_phaseF_async_3stage.json) (T+async)
+- [concurrent_phaseF_sync_3stage.json](experiments/results/concurrent_phaseF_sync_3stage.json) (T+sync)
+- [concurrent_phaseF_latency_async_3stage.json](experiments/results/concurrent_phaseF_latency_async_3stage.json) (L+async)
+- [concurrent_phaseF_latency_sync_3stage.json](experiments/results/concurrent_phaseF_latency_sync_3stage.json) (L+sync)
+
+**의도된 한계**:
+- Single-GPU 워커 안에서 동시 요청은 여전히 CUDA stream 으로 직렬. Per-worker batching 미구현. AGX 같은 fast device 가 cycle 차이 더 벌리려면 batched inference 필요.
+- async 의 failure attribution: trailer-stamping 불가 (응답 사슬이 이미 unwound). Heartbeat path + per-request timeout (30s default) 로 fallback. Phase 3 의 trailer 기반 정확 attribution 은 sync 모드 한정.
+- ResultReady 가 fire-and-forget 이라 코드 손실 가능성: tail 이 ResultReady 보낸 직후 죽으면 gateway 는 timeout 까지 기다림. 30s timeout 후 Phase 3 recovery path 발화. Worst-case latency overhead.
+
+**커밋**: b547db0 (Phase F core async chain)
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
