@@ -138,6 +138,14 @@ class RequestGateway:
         self._channels: dict[DeviceId, grpc.Channel] = {}
         self._stubs: dict[DeviceId, Any] = {}
 
+        # EXP-D3 Phase 2: lifetime counter of MirrorActivation pushes
+        # we've ingested from workers — purely diagnostic, exposed via
+        # /api/mirror_stats so deploys can confirm the mirror path is hot
+        # without grepping logs.
+        self._mirror_count = 0
+        self._mirror_bytes = 0
+        self._mirror_lock = threading.Lock()
+
     # ------------------------------------------------------------------
     # External signals
     # ------------------------------------------------------------------
@@ -204,9 +212,23 @@ class RequestGateway:
         Coord skips its own first-stage local cache entry once mirrors are
         coming in, so this is the single source of truth for replay.
         """
-        self.cache.put(
+        added = self.cache.put(
             RequestId(request_id), stage_key, position, activation
         )
+        if added:
+            with self._mirror_lock:
+                self._mirror_count += 1
+                self._mirror_bytes += len(activation)
+
+    def mirror_stats(self) -> dict[str, int]:
+        """Lifetime ingress counters + current cache state. Diagnostic only."""
+        with self._mirror_lock:
+            count, bytes_ = self._mirror_count, self._mirror_bytes
+        return {
+            "lifetime_pushes": count,
+            "lifetime_bytes": bytes_,
+            "cache_bytes_used": self.cache.bytes_used(),
+        }
 
     # ------------------------------------------------------------------
     # Public inference API

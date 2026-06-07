@@ -126,6 +126,18 @@ def make_app(server: CoordinatorServer) -> FastAPI:
             "dead_devices": dead,
         }
 
+    @app.get("/api/mirror_stats")
+    def get_mirror_stats() -> Any:
+        """EXP-D3 Phase 2 diagnostic — lifetime MirrorActivation pushes the
+        coord has ingested + current activation cache occupancy. Used to
+        confirm post-deploy that the worker → coord mirror path is hot."""
+        gw = server.gateway
+        if gw is None:
+            return JSONResponse(
+                {"detail": "gateway not ready"}, status_code=503
+            )
+        return gw.mirror_stats()
+
     @app.post("/api/generate")
     def post_generate(req: _GenerateRequest) -> Any:
         """Streaming Generate via Server-Sent Events.
