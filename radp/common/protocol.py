@@ -111,6 +111,30 @@ class WorkerClient:
         req = radp_pb2.EvictRequestRequest(request_id=int(request_id))
         self._require_stub().EvictRequest(req)
 
+    def set_next_hop(
+        self,
+        *,
+        my_start: int,
+        my_end: int,
+        next_address: str,
+        next_start: int = 0,
+        next_end: int = 0,
+    ) -> None:
+        """Register the chain successor for THIS worker's (my_start, my_end)
+        stage. Pass ``next_address=""`` to clear (chain tail)."""
+        req = radp_pb2.SetNextHopRequest(
+            next_address=next_address,
+            start_layer=my_start,
+            end_layer=my_end,
+            next_start_layer=next_start,
+            next_end_layer=next_end,
+        )
+        resp = self._require_stub().SetNextHop(req)
+        if not resp.ok:
+            raise RuntimeError(
+                f"SetNextHop failed on {self.address}: {resp.error}"
+            )
+
 
 class CoordinatorClient:
     """High-level client to the coordinator (Generate + Heartbeat)."""

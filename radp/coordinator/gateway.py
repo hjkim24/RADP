@@ -416,49 +416,66 @@ class RequestGateway:
         is_prefill: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, list[StageTiming]]:
         plan = self.current_plan()
-        idx = 0
-        timings: list[StageTiming] = []
-        while idx < len(plan):
-            stage = plan[idx]
-            stage_key = (int(stage.start_layer), int(stage.end_layer))
-            blob = encode({"hidden_states": hidden.cpu(), "attention_mask": attention_mask.cpu()})
-            invoke_start = time.perf_counter()
-            try:
-                result_blob = self._invoke(stage, request_id, blob, is_prefill=is_prefill)
-            except grpc.RpcError as e:
-                log.warning(
-                    "request=%d stage layers[%d..%d] on %s failed: %s",
-                    request_id, stage.start_layer, stage.end_layer, stage.device, e,
-                )
-                self.mark_dead(stage.device)
-                # Try cache-replay recovery: rebuild the backup worker's KV cache
-                # from history so we don't have to re-prefill the whole request.
-                try:
-                    self._replay_stage_history(request_id, stage_key)
-                except Exception:  # noqa: BLE001
-                    log.exception(
-                        "request=%d cache-replay failed; propagating to outer retry",
-                        request_id,
-                    )
-                    raise e from None
-                # Refresh plan (now points to the backup device) and retry this stage.
-                plan = self.current_plan()
-                continue
-            timings.append(
-                StageTiming(
-                    device=stage.device,
-                    start_layer=int(stage.start_layer),
-                    end_layer=int(stage.end_layer),
-                    invoke_seconds=time.perf_counter() - invoke_start,
-                )
+        if not plan:
+            raise RuntimeError("empty plan — no workers to dispatch to")
+
+        # EXP-D3 chain topology (Phase 1a): coord only invokes the FIRST
+        # worker. SetNextHop wiring (configured during deploy) makes each
+        # worker forward its activation directly to its successor; the
+        # chain tail returns the final activation back through nested
+        # gRPC responses. Coord still applies lm_head + sampling here.
+        first_stage = plan[0]
+        first_key = (int(first_stage.start_layer), int(first_stage.end_layer))
+        blob = encode({
+            "hidden_states": hidden.cpu(),
+            "attention_mask": attention_mask.cpu(),
+        })
+        # Cache the input to the first stage for failure replay.
+        self.cache.append(request_id, first_key, blob)
+        invoke_start = time.perf_counter()
+        try:
+            result_blob = self._invoke(first_stage, request_id, blob, is_prefill=is_prefill)
+        except grpc.RpcError as e:
+            log.warning(
+                "request=%d chain head %s[%d..%d] failed: %s",
+                request_id, first_stage.device,
+                first_stage.start_layer, first_stage.end_layer, e,
             )
-            # Append AFTER success — failed attempts never enter history, so replay
-            # exactly reproduces the surviving workers' cache state.
-            self.cache.append(request_id, stage_key, blob)
-            decoded = decode(result_blob)
-            hidden = decoded["hidden_states"].to(self.torch_device)
-            attention_mask = decoded["attention_mask"].to(self.torch_device)
-            idx += 1
+            self.mark_dead(first_stage.device)
+            # Phase 1a leaves recovery to the existing replay path —
+            # because we no longer decode intermediate activations, the
+            # cache only has the chain-head input, so replay can only
+            # restore from there. Phase 2's async mirror cache will
+            # capture per-stage inputs so any mid-chain failure can be
+            # recovered without restarting from the head.
+            try:
+                self._replay_stage_history(request_id, first_key)
+            except Exception:  # noqa: BLE001
+                log.exception(
+                    "request=%d chain-head replay failed; propagating",
+                    request_id,
+                )
+                raise e from None
+            # Retry with refreshed plan.
+            plan = self.current_plan()
+            first_stage = plan[0]
+            result_blob = self._invoke(
+                first_stage, request_id, blob, is_prefill=is_prefill,
+            )
+        chain_wall = time.perf_counter() - invoke_start
+        # Single aggregate timing entry for the whole chain — we no longer
+        # have per-stage timings since intermediate hops are coord-blind.
+        timings = [
+            StageTiming(
+                device=first_stage.device,
+                start_layer=int(first_stage.start_layer),
+                end_layer=int(plan[-1].end_layer),
+                invoke_seconds=chain_wall,
+            )
+        ]
+        decoded = decode(result_blob)
+        hidden = decoded["hidden_states"].to(self.torch_device)
+        attention_mask = decoded["attention_mask"].to(self.torch_device)
         return hidden, attention_mask, timings
 
     def _replay_stage_history(

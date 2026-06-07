@@ -35,6 +35,13 @@ service WorkerService {
   // Run radp.profiler.layer_profiler.profile_layers on this worker against
   // the named model. Model is loaded temporarily, profiled, and unloaded.
   rpc ProfileLayers (ProfileLayersRequest) returns (ProfileLayersResponse);
+
+  // --- EXP-D3 chain-topology routing ---------------------------------------
+
+  // Tell the worker the gRPC address of the next stage's worker. Set to an
+  // empty string to clear (worker becomes the last stage; RunStage will
+  // return the activation to the coord instead of forwarding).
+  rpc SetNextHop (SetNextHopRequest) returns (SetNextHopResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -171,4 +178,24 @@ message ProfileLayersResponse {
   bytes  serialized_profiles = 1;
   bool   ok                  = 2;
   string error               = 3;
+}
+
+message SetNextHopRequest {
+  // Address of the next worker in the chain (e.g., "115.145.158.115:50051").
+  // Empty string clears the next-hop, marking this worker as the chain tail.
+  string next_address = 1;
+  // (start, end) range of THIS worker's stage — used as the lookup key so
+  // distinct primary/backup loadouts can register independent next-hops.
+  int32 start_layer = 2;
+  int32 end_layer   = 3;
+  // (start, end) range of the NEXT worker's stage. The forwarder stamps
+  // these into the RunStage request it dispatches downstream so the
+  // downstream worker's stage_runner can pick the right loaded blocks.
+  // Ignored when next_address is empty.
+  int32 next_start_layer = 4;
+  int32 next_end_layer   = 5;
+}
+message SetNextHopResponse {
+  bool   ok    = 1;
+  string error = 2;
 }

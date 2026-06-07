@@ -36,6 +36,59 @@ _GRPC_OPTIONS: list[tuple[str, Any]] = [
 class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc]
     def __init__(self, runner: StageRunner) -> None:
         self._runner = runner
+        self._next_lock = threading.Lock()
+        # Chain forwarding: {(my_start, my_end): (next_addr, channel, stub,
+        # next_start, next_end)}. SetNextHop() populates this for the
+        # *primary* stage; on PromoteBackup the coord will re-issue
+        # SetNextHop for the promoted stage.
+        self._next_hops: dict[
+            tuple[int, int], tuple[str, Any, Any, int, int]
+        ] = {}
+
+    def _get_next_hop(
+        self, start: int, end: int
+    ) -> tuple[str, Any, int, int] | None:
+        """(next_addr, stub, next_start, next_end) or None if chain tail."""
+        with self._next_lock:
+            entry = self._next_hops.get((start, end))
+            if entry is None:
+                return None
+            return entry[0], entry[2], entry[3], entry[4]
+
+    def SetNextHop(self, request: Any, context: grpc.ServicerContext) -> Any:
+        try:
+            next_addr = str(request.next_address).strip()
+            key = (int(request.start_layer), int(request.end_layer))
+            with self._next_lock:
+                prev = self._next_hops.pop(key, None)
+                if prev is not None:
+                    try:
+                        prev[1].close()  # close prior channel
+                    except Exception:  # noqa: BLE001
+                        pass
+                if next_addr:
+                    channel = grpc.insecure_channel(next_addr, options=_GRPC_OPTIONS)
+                    stub = radp_pb2_grpc.WorkerServiceStub(channel)
+                    self._next_hops[key] = (
+                        next_addr, channel, stub,
+                        int(request.next_start_layer),
+                        int(request.next_end_layer),
+                    )
+                    log.info(
+                        "SetNextHop: stage[%d..%d] → %s stage[%d..%d]",
+                        key[0], key[1], next_addr,
+                        int(request.next_start_layer),
+                        int(request.next_end_layer),
+                    )
+                else:
+                    log.info(
+                        "SetNextHop: stage[%d..%d] cleared (chain tail)",
+                        key[0], key[1],
+                    )
+            return radp_pb2.SetNextHopResponse(ok=True)
+        except Exception as e:  # noqa: BLE001
+            log.exception("SetNextHop failed")
+            return radp_pb2.SetNextHopResponse(ok=False, error=str(e))
 
     def LoadStage(self, request: Any, context: grpc.ServicerContext) -> Any:
         try:
@@ -71,6 +124,7 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             return radp_pb2.PromoteBackupResponse(ok=False)
 
     def RunStage(self, request: Any, context: grpc.ServicerContext) -> Any:
+        # Local stage forward.
         result = self._runner.run(
             request_id=RequestId(request.request_id),
             activation_blob=bytes(request.activation),
@@ -78,7 +132,27 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             end=LayerIdx(request.end_layer),
             is_prefill=request.is_prefill,
         )
-        return radp_pb2.RunStageResponse(activation=result, request_id=request.request_id)
+        # EXP-D3 chain forwarding — if a next hop is registered for this
+        # stage, propagate the result downstream synchronously and return
+        # whatever the chain tail produced. With no next hop registered
+        # the worker behaves as the chain tail (legacy coord-mediated star
+        # topology) and returns the activation directly.
+        next_hop = self._get_next_hop(int(request.start_layer), int(request.end_layer))
+        if next_hop is None:
+            return radp_pb2.RunStageResponse(
+                activation=result, request_id=request.request_id,
+            )
+        _next_addr, next_stub, next_start, next_end = next_hop
+        forwarded = next_stub.RunStage(
+            radp_pb2.RunStageRequest(
+                activation=result,
+                request_id=int(request.request_id),
+                is_prefill=bool(request.is_prefill),
+                start_layer=next_start,
+                end_layer=next_end,
+            )
+        )
+        return forwarded
 
     def EvictRequest(self, request: Any, context: grpc.ServicerContext) -> Any:
         self._runner.evict_request(RequestId(request.request_id))

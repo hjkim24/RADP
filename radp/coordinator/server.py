@@ -280,7 +280,16 @@ class CoordinatorServer:
         self._ensure_gateway()
 
     def deploy(self) -> None:
-        """Push primary stages, then backup stages, to their target workers."""
+        """Push primary stages, then backup stages, to their target workers.
+
+        EXP-D3: after every primary is loaded, wire the chain — each
+        worker is told the (address, stage range) of its successor so
+        RunStage can forward downstream without coord encode/decode at
+        every hop. The last stage's next-hop is cleared so it returns
+        the activation to coord, which still owns lm_head + sampling
+        (Phase 1a). Phase 1b will migrate the head + sampling to the
+        chain tail.
+        """
         if not self.placement:
             raise RuntimeError(
                 "deploy() called before placement is known. In auto mode, "
@@ -299,6 +308,39 @@ class CoordinatorServer:
                     end_layer=int(stage.end_layer),
                     model_id=self.config.model_id,
                 )
+
+        # Wire the chain: each stage points at the next stage's address +
+        # (start, end). Chain tail is cleared so it falls back to the
+        # coord-mediated return path.
+        for i, stage in enumerate(self.placement):
+            address = self._addr_lookup[stage.device]
+            if i + 1 < len(self.placement):
+                nxt = self.placement[i + 1]
+                next_address = self._addr_lookup[nxt.device]
+                log.info(
+                    "chain link %s[%d..%d] → %s[%d..%d]",
+                    stage.device, stage.start_layer, stage.end_layer,
+                    nxt.device, nxt.start_layer, nxt.end_layer,
+                )
+                with WorkerClient(address) as client:
+                    client.set_next_hop(
+                        my_start=int(stage.start_layer),
+                        my_end=int(stage.end_layer),
+                        next_address=next_address,
+                        next_start=int(nxt.start_layer),
+                        next_end=int(nxt.end_layer),
+                    )
+            else:
+                log.info(
+                    "chain tail: %s[%d..%d] (returns to coord)",
+                    stage.device, stage.start_layer, stage.end_layer,
+                )
+                with WorkerClient(address) as client:
+                    client.set_next_hop(
+                        my_start=int(stage.start_layer),
+                        my_end=int(stage.end_layer),
+                        next_address="",
+                    )
 
         # Backup deployment: for each k, load every j in R⁻¹(k)'s stage.
         # Skipped under eager_backup=False (A5 lazy mode). In that mode the
