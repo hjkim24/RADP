@@ -1489,6 +1489,69 @@ RADP-Latency dominates RADP-Throughput across:
 
 ---
 
+## Phase EXP-D3 Phase 3 — Chain-aware failure attribution + mirror-replay recovery
+
+**목표**: Phase 2 의 mirror cache 가 *데이터* 를 확보했지만, 실제 *복구 루프* 를 chain topology 에 맞게 wire up 해야 함. 핵심 문제 두 가지:
+
+1. **Attribution**: chain head 의 `next_stub.RunStage(downstream)` 가 실패하면 coord 는 chain head 만 에러로 인식 — 진짜 죽은 mid-chain worker 를 못 찾음.
+2. **State coherence**: 일부 워커는 이미 활성화를 받아 KV cache 를 advance 시킨 상태. 단순히 backup 으로 swap + retry 하면 surviving 워커들이 같은 position 을 두 번 처리 → garbage tokens.
+
+**구현** (commit c4933d4 + 3d3395c):
+
+*Worker side* ([radp/worker/server.py](radp/worker/server.py)):
+- Chain forwarder 가 downstream RunStage RpcError 를 catch → gRPC trailer metadata 에 `(radp-failed-start, radp-failed-end)` stamp → `context.abort(UNAVAILABLE, ...)`. Trailer 가 nested response unwind 통과해 coord 까지 도달.
+- `RunStageRequest.replay_only=True` 플래그: 워커가 자기 stage 만 돌리고 chain forward + head sampling 모두 skip. Backup 의 KV cache 만 rebuilding 할 때 사용.
+- Replay 호출에선 mirror push 도 skip (그 활성화는 이미 cache 에서 온 것).
+
+*Coord side* ([radp/coordinator/gateway.py](radp/coordinator/gateway.py)):
+- `_attribute_chain_failure(head_stage, error)` — trailer 에서 (start, end) 를 읽어 `self.placement` (원본, immutable) 에서 해당 stage 의 owner 식별. 중요: `_execution_plan` (현재 substituted) 가 아닌 *원본 placement* 를 봐야 함 — heartbeat path 가 먼저 substitute 했어도 trailer 는 원래 wiring 을 가리키기 때문.
+- `_recover_from_chain_failure(request_id, head_stage, error, current_position)`:
+  1. `mark_dead` → execution plan rebuild (backup 으로 치환)
+  2. `PromoteBackup` RPC on recovery peer (idempotent)
+  3. `_rewire_chain` — 모든 surviving 워커에 `SetNextHop` 재발행
+  4. `_evict_kv_for_request` — surviving 워커들의 stale KV cache drop
+  5. Cached input history 를 *새 chain* 으로 end-to-end replay; 마지막 호출의 response 가 실패한 step 의 recovered token
+- Heartbeat 가 먼저 도착해 이미 `_dead` 에 들어있는 경우 (live fleet 의 실제 ordering): `mark_dead` 스킵하고 finalise (rewire + replay) 만 수행. PromoteBackup 도 idempotent.
+
+*왜 full-chain replay 인가 vs stage-only replay*: 실패한 step 에서 *upstream surviving 워커들* (head 부터 죽은 stage 의 predecessor 까지) 은 이미 자기 KV cache 를 advance 시킨 상태. 단순 stage 만 replay 하고 step 을 retry 하면 그 surviving 워커들이 같은 position 을 두 번째 처리 → KV 가 doubled → garbage. 전체 chain 을 evict + replay 하면 deterministic rebuild.
+
+**검증 결과**:
+
+*단위 + smoke* (4 new test cases):
+- `tests/test_chain_failure_attribution.py` — worker stamps trailer, gateway 의 `_attribute_chain_failure` 가 원본 placement 에서 dead stage 찾음, trailer 없으면 head fallback
+- `tests/test_chain_recovery_replay.py` — 3-worker fake chain (head → middle → tail) + coord with mirror catcher, middle 죽인 후 trailer 가 caller 까지 도달
+
+*라이브 fault injection* (2026-06-07, on-6 + ao-1 + ax-1 coord, [experiments/run_phase3_recovery.py](experiments/run_phase3_recovery.py)):
+- 시나리오: chain `on-6[1..11] → ao-1[12..24]`, ao-1 에 head/sampling, prompt = "fox jumps over the lazy dog. Once upon a time"
+- step 3 후 `systemctl stop radp-worker && pkill -9` (즉시 kill + auto-restart 차단) on on-6
+- 결과:
+  ```
+  step 0..3: , there was a   (normal chain, TBT 89-97 ms)
+  step 4   :  fox            (recovery step, 3292 ms)
+  step 5..11: . He was a lazy dog.
+  ```
+  → **12 / 12 tokens 생성, 의미 있는 텍스트, 클라이언트에 에러 노출 0**
+- Mirror cache delta: pre=5 → post=17 (+12) — 12 tokens × 1 mirror/step on non-first stage = 12, 정확히 일치
+- Recovery step latency 3292 ms 중 ansible (systemctl stop + ssh) 가 ~3000 ms 차지; 순수 coord-side recovery (mark_dead + promote + rewire + replay) 는 측정 인프라 한계로 정확히 분리하기 어려우나 sub-second 추정
+
+**의도된 한계** (paper limitations 절에 명시):
+- Recovery latency 측정이 ansible overhead 에 dominated. 진정한 wall-clock 측정은 in-process fault injection (e.g. coord 의 `/api/inject_failure` 가 헐트비트 stop 시뮬레이션) 으로 별도 측정해야 정확.
+- Concurrent faults (R(j) 도 죽는 시나리오, plan.md §7.2) 미지원 — 단일 fault 만 보장.
+- Backup-on-same-host (R(j) 가 이미 chain 에 있는 워커): rewire 가 self-loop chain 만들어 RPC self-hop 비용 발생 (정확성은 보존, 최적화 여지).
+- Replay 가 전체 chain 을 re-run → recovery cost = O(positions × stages) RPCs. 단일 fault 가정 하에선 acceptable.
+
+**Paper 기여**:
+- ψ + R 의 모든 시스템 컴포넌트 closure 완성. R 이 단순 placement 결정이 아니라 *실제 런타임 recovery 메커니즘* 으로 작동함을 라이브 측정으로 증명.
+- "Chain topology 가 정상 모드 throughput 을 개선하지만 fault tolerance 를 break 시키는가?" 라는 잠재적 reviewer concern 에 대한 직접 응답: *No, 적절히 wired up 된 mirror cache + chain-aware attribution 으로 chain + RADP-R 양립 가능.*
+
+**커밋**: c4933d4 (chain attribution + recovery 코어) + 3d3395c (heartbeat-first attribution fix)
+**테스트**:
+- 단위 — 3 cases ([tests/test_chain_failure_attribution.py](tests/test_chain_failure_attribution.py))
+- smoke — 1 case (end-to-end live chain + trailer; [tests/test_chain_recovery_replay.py](tests/test_chain_recovery_replay.py))
+- 라이브 — [experiments/run_phase3_recovery.py](experiments/run_phase3_recovery.py) (위 결과)
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).

@@ -84,16 +84,23 @@ def _fetch_mirror_stats(web_base: str) -> dict[str, int]:
 def _kill_worker_via_ansible(
     inventory: str, device_id: str
 ) -> dict[str, object]:
-    """Stop the radp-worker systemd unit on the named host. That makes
-    the worker's gRPC port refuse connections — the upstream chain worker
-    catches the resulting RpcError and stamps the trailer.
+    """Take the radp-worker down hard AND keep it down for the duration
+    of the test. We chain ``systemctl stop`` (so systemd doesn't view the
+    death as a crash and auto-restart it 5s later) with ``pkill -9``
+    (which yanks the gRPC server immediately, mid-stream, instead of
+    letting it drain in-flight requests during graceful shutdown).
     """
     t0 = time.perf_counter()
     cp = subprocess.run(
         [
             "ansible", "-i", inventory, device_id,
-            "-m", "systemd",
-            "-a", "name=radp-worker state=stopped",
+            "-m", "shell",
+            "-a",
+            (
+                "systemctl stop radp-worker; "
+                "pkill -9 -f /radp/.venv/bin/radp-worker; "
+                "true"
+            ),
             "--become",
         ],
         capture_output=True, text=True, timeout=30,
@@ -102,6 +109,29 @@ def _kill_worker_via_ansible(
         "rc": cp.returncode,
         "elapsed_ms": (time.perf_counter() - t0) * 1000,
         "stderr_tail": cp.stderr.splitlines()[-3:] if cp.stderr else [],
+    }
+
+
+def _start_worker_via_ansible(
+    inventory: str, device_id: str
+) -> dict[str, object]:
+    """Bring the worker systemd unit back up after a fault-injection run.
+    Run this AFTER the test so the next iteration starts from a healthy
+    fleet — otherwise the killed worker stays down across re-runs.
+    """
+    t0 = time.perf_counter()
+    cp = subprocess.run(
+        [
+            "ansible", "-i", inventory, device_id,
+            "-m", "systemd",
+            "-a", "name=radp-worker state=started",
+            "--become",
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    return {
+        "rc": cp.returncode,
+        "elapsed_ms": (time.perf_counter() - t0) * 1000,
     }
 
 
@@ -178,6 +208,11 @@ def main() -> None:
         f"[post] generated {len(steps)} tokens total: "
         f"{''.join(s.text for s in steps)!r}"
     )
+
+    # Bring the killed worker back up so the next run starts healthy.
+    if killed:
+        restart = _start_worker_via_ansible(args.inventory, args.kill_worker)
+        print(f"[post] restarted {args.kill_worker}: {restart}")
 
     if len(steps) < args.max_tokens:
         print(

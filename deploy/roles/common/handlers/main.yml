@@ -1,0 +1,18 @@
+---
+# Cross-host code-sync restart. After "Clone or update RADP repo" reports
+# changed=true, both services (radp-worker and radp-coordinator) need to
+# re-import the freshly-pulled package — otherwise the running unit keeps
+# the old import cached. The common role's play targets BOTH worker and
+# coord hosts, so the handler tries both systemd units and tolerates
+# "Unit not found" (each host only has one of the two).
+- name: Restart radp service (worker on workers, coordinator on coord)
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: true
+  loop:
+    - radp-worker
+    - radp-coordinator
+  become: true
+  failed_when: false  # tolerate "Unit not found" on the inapplicable unit
+  listen: restart radp service
