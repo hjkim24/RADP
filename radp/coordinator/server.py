@@ -332,10 +332,14 @@ class CoordinatorServer:
                     )
             else:
                 log.info(
-                    "chain tail: %s[%d..%d] (returns to coord)",
+                    "chain tail: %s[%d..%d] — deploying head + clearing next-hop",
                     stage.device, stage.start_layer, stage.end_layer,
                 )
                 with WorkerClient(address) as client:
+                    # Phase 1b: deploy lm_head + final_layer_norm so the
+                    # chain tail samples on-device and returns the
+                    # next_token_id directly to coord.
+                    client.load_head(model_id=self.config.model_id)
                     client.set_next_hop(
                         my_start=int(stage.start_layer),
                         my_end=int(stage.end_layer),

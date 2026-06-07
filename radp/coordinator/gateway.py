@@ -367,11 +367,15 @@ class RequestGateway:
             attention_mask_4d = _prepare_4d_causal_attention_mask(
                 attention_mask_2d, input_ids.shape, hidden, past_key_values_length=0
             )
-            hidden, _, timings = self._run_pipeline(
+            hidden, _, timings, tail_token = self._run_pipeline(
                 request_id, hidden, attention_mask_4d, is_prefill=True
             )
-            logits = self._head(hidden)
-            next_id = sampler(logits[0, -1, :])
+            if tail_token is not None:
+                next_id = int(tail_token)
+            else:
+                assert hidden is not None
+                logits = self._head(hidden)
+                next_id = sampler(logits[0, -1, :])
 
         self._requests[request_id] = _RequestState(
             past_length=seq_len, generated_token_ids=[next_id]
@@ -395,11 +399,15 @@ class RequestGateway:
             attention_mask_4d = _prepare_4d_causal_attention_mask(
                 attn_2d, (1, 1), hidden, past_key_values_length=past_len
             )
-            hidden, _, timings = self._run_pipeline(
+            hidden, _, timings, tail_token = self._run_pipeline(
                 request_id, hidden, attention_mask_4d, is_prefill=False
             )
-            logits = self._head(hidden)
-            next_id = sampler(logits[0, -1, :])
+            if tail_token is not None:
+                next_id = int(tail_token)
+            else:
+                assert hidden is not None
+                logits = self._head(hidden)
+                next_id = sampler(logits[0, -1, :])
 
         state.generated_token_ids.append(next_id)
         return timings
@@ -414,7 +422,22 @@ class RequestGateway:
         attention_mask: torch.Tensor,
         *,
         is_prefill: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor, list[StageTiming]]:
+    ) -> tuple[
+        torch.Tensor | None,
+        torch.Tensor | None,
+        list[StageTiming],
+        int | None,
+    ]:
+        """Run the deployed pipeline.
+
+        Returns ``(hidden, attention_mask, timings, next_token_id)``:
+          - Phase 1a (coord-mediated head): the chain tail returns the
+            final activation. hidden/attention_mask are populated,
+            next_token_id is None — coord applies its own head + sampler.
+          - Phase 1b (head on chain tail): tail samples on-device and
+            returns next_token_id; hidden/attention_mask are None and
+            coord skips its head/sampler entirely.
+        """
         plan = self.current_plan()
         if not plan:
             raise RuntimeError("empty plan — no workers to dispatch to")
@@ -434,7 +457,7 @@ class RequestGateway:
         self.cache.append(request_id, first_key, blob)
         invoke_start = time.perf_counter()
         try:
-            result_blob = self._invoke(first_stage, request_id, blob, is_prefill=is_prefill)
+            resp = self._invoke(first_stage, request_id, blob, is_prefill=is_prefill)
         except grpc.RpcError as e:
             log.warning(
                 "request=%d chain head %s[%d..%d] failed: %s",
@@ -442,12 +465,6 @@ class RequestGateway:
                 first_stage.start_layer, first_stage.end_layer, e,
             )
             self.mark_dead(first_stage.device)
-            # Phase 1a leaves recovery to the existing replay path —
-            # because we no longer decode intermediate activations, the
-            # cache only has the chain-head input, so replay can only
-            # restore from there. Phase 2's async mirror cache will
-            # capture per-stage inputs so any mid-chain failure can be
-            # recovered without restarting from the head.
             try:
                 self._replay_stage_history(request_id, first_key)
             except Exception:  # noqa: BLE001
@@ -456,15 +473,12 @@ class RequestGateway:
                     request_id,
                 )
                 raise e from None
-            # Retry with refreshed plan.
             plan = self.current_plan()
             first_stage = plan[0]
-            result_blob = self._invoke(
+            resp = self._invoke(
                 first_stage, request_id, blob, is_prefill=is_prefill,
             )
         chain_wall = time.perf_counter() - invoke_start
-        # Single aggregate timing entry for the whole chain — we no longer
-        # have per-stage timings since intermediate hops are coord-blind.
         timings = [
             StageTiming(
                 device=first_stage.device,
@@ -473,10 +487,14 @@ class RequestGateway:
                 invoke_seconds=chain_wall,
             )
         ]
-        decoded = decode(result_blob)
+        # Phase 1b path: chain tail sampled the token on-device.
+        if getattr(resp, "has_next_token", False):
+            return None, None, timings, int(resp.next_token_id)
+        # Phase 1a path: tail returned the final activation; coord head + sample.
+        decoded = decode(bytes(resp.activation))
         hidden = decoded["hidden_states"].to(self.torch_device)
         attention_mask = decoded["attention_mask"].to(self.torch_device)
-        return hidden, attention_mask, timings
+        return hidden, attention_mask, timings, None
 
     def _replay_stage_history(
         self, request_id: RequestId, stage_key: tuple[int, int]
@@ -529,7 +547,9 @@ class RequestGateway:
         activation_blob: bytes,
         *,
         is_prefill: bool,
-    ) -> bytes:
+    ) -> Any:
+        """Returns the raw RunStageResponse — callers branch on
+        has_next_token (Phase 1b) vs activation (Phase 1a)."""
         stub = self._get_stub(stage.device)
         req = radp_pb2.RunStageRequest(
             activation=activation_blob,
@@ -538,8 +558,7 @@ class RequestGateway:
             start_layer=int(stage.start_layer),
             end_layer=int(stage.end_layer),
         )
-        resp = stub.RunStage(req)
-        return bytes(resp.activation)
+        return stub.RunStage(req)
 
     def _evict_everywhere(self, request_id: RequestId) -> None:
         """Best-effort: ask every (currently-alive) worker to drop this request's cache."""

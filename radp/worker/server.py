@@ -90,6 +90,14 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             log.exception("SetNextHop failed")
             return radp_pb2.SetNextHopResponse(ok=False, error=str(e))
 
+    def LoadHead(self, request: Any, context: grpc.ServicerContext) -> Any:
+        try:
+            self._runner.load_head(model_id=str(request.model_id))
+            return radp_pb2.LoadHeadResponse(ok=True)
+        except Exception as e:  # noqa: BLE001
+            log.exception("LoadHead failed")
+            return radp_pb2.LoadHeadResponse(ok=False, error=str(e))
+
     def LoadStage(self, request: Any, context: grpc.ServicerContext) -> Any:
         try:
             self._runner.load_primary(
@@ -124,6 +132,23 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             return radp_pb2.PromoteBackupResponse(ok=False)
 
     def RunStage(self, request: Any, context: grpc.ServicerContext) -> Any:
+        next_hop = self._get_next_hop(int(request.start_layer), int(request.end_layer))
+        # EXP-D3 Phase 1b: chain tail with a head loaded runs the local
+        # stage AND applies head + greedy argmax, returning the next token
+        # id directly. Coord skips its own head + sampling step.
+        if next_hop is None and self._runner.has_head:
+            next_token = self._runner.run_tail_and_sample(
+                request_id=RequestId(request.request_id),
+                activation_blob=bytes(request.activation),
+                start=LayerIdx(request.start_layer),
+                end=LayerIdx(request.end_layer),
+                is_prefill=request.is_prefill,
+            )
+            return radp_pb2.RunStageResponse(
+                request_id=request.request_id,
+                has_next_token=True,
+                next_token_id=int(next_token),
+            )
         # Local stage forward.
         result = self._runner.run(
             request_id=RequestId(request.request_id),
@@ -132,12 +157,11 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             end=LayerIdx(request.end_layer),
             is_prefill=request.is_prefill,
         )
-        # EXP-D3 chain forwarding — if a next hop is registered for this
-        # stage, propagate the result downstream synchronously and return
-        # whatever the chain tail produced. With no next hop registered
-        # the worker behaves as the chain tail (legacy coord-mediated star
-        # topology) and returns the activation directly.
-        next_hop = self._get_next_hop(int(request.start_layer), int(request.end_layer))
+        # EXP-D3 Phase 1a chain forwarding — if a next hop is registered for
+        # this stage, propagate the result downstream synchronously and
+        # return whatever the chain tail produced. With no next hop
+        # registered and no head loaded the worker behaves as the legacy
+        # coord-mediated star-topology tail and returns the activation.
         if next_hop is None:
             return radp_pb2.RunStageResponse(
                 activation=result, request_id=request.request_id,

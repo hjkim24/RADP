@@ -42,6 +42,13 @@ service WorkerService {
   // empty string to clear (worker becomes the last stage; RunStage will
   // return the activation to the coord instead of forwarding).
   rpc SetNextHop (SetNextHopRequest) returns (SetNextHopResponse);
+
+  // Deploy the head modules (final_layer_norm + project_out + lm_head) to
+  // a worker that will serve as the chain tail. Once loaded, RunStage on
+  // that worker applies the head + greedy argmax sampling and returns the
+  // next_token_id directly instead of the final hidden activation —
+  // removing coord from the per-token critical path.
+  rpc LoadHead (LoadHeadRequest) returns (LoadHeadResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +88,11 @@ message RunStageRequest {
 message RunStageResponse {
   bytes activation = 1;
   int32 request_id = 2;
+  // EXP-D3 Phase 1b: chain tail with a head loaded fills these in and
+  // omits the activation. Coord detects has_next_token=true and skips
+  // its local lm_head + sampling, going straight to streaming the token.
+  bool  has_next_token = 3;
+  int32 next_token_id  = 4;
 }
 
 message LoadBackupRequest {
@@ -196,6 +208,14 @@ message SetNextHopRequest {
   int32 next_end_layer   = 5;
 }
 message SetNextHopResponse {
+  bool   ok    = 1;
+  string error = 2;
+}
+
+message LoadHeadRequest {
+  string model_id = 1;
+}
+message LoadHeadResponse {
   bool   ok    = 1;
   string error = 2;
 }

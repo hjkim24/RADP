@@ -58,6 +58,16 @@ class StageRunner:
         self._kv_cache: dict[CacheKey, DynamicCache] = {}
         self._arch: ModelArchitecture | None = None
         self._aux: dict[str, nn.Module] = {}
+        # EXP-D3 Phase 1b: chain-tail head deployment. When a worker is the
+        # chain tail and a head has been loaded, RunStage applies the
+        # arch-specific `head` (final_layer_norm + project_out + lm_head)
+        # plus greedy argmax sampling, returning the next token id
+        # directly to the coord. Coord stays out of the per-token critical
+        # path entirely. _head_decoder is a stub that just carries the
+        # final_layer_norm / project_out submodules (matches the
+        # ModelArchitecture.head() signature).
+        self._head_lm_head: nn.Linear | None = None
+        self._head_decoder: nn.Module | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -105,6 +115,49 @@ class StageRunner:
                 self.device_id, for_device_id, start, end,
                 measure_resident_bytes() / (1024 * 1024),
             )
+
+    def load_head(self, model_id: str) -> None:
+        """Load the arch-specific head modules (final_layer_norm + project_out
+        + lm_head) so this worker can serve as the chain tail with sampling.
+        """
+        from radp.common.model_utils import load_model
+        with self._lock:
+            self._ensure_model(model_id)
+            handle = load_model(
+                model_id, dtype=self.dtype, torch_device=self.torch_device,
+            )
+            # The arch.head() signature wants a `decoder` from which it pulls
+            # `final_layer_norm` and `project_out`. For OPT that's
+            # model.model.decoder; we keep a reference so the modules live
+            # on the right device and stay attached for inference.
+            decoder = (
+                handle.model.model.decoder
+                if hasattr(handle.model, "model") and hasattr(handle.model.model, "decoder")
+                else getattr(handle.model, "model", handle.model)
+            )
+            self._head_decoder = decoder
+            self._head_lm_head = handle.model.lm_head
+            log.info(
+                "worker=%s head loaded (rss=%.1f MB) — chain-tail sampling enabled",
+                self.device_id,
+                measure_resident_bytes() / (1024 * 1024),
+            )
+
+    @property
+    def has_head(self) -> bool:
+        return self._head_lm_head is not None and self._head_decoder is not None
+
+    def sample_next_token(self, hidden: torch.Tensor) -> int:
+        """Apply the loaded head + greedy argmax to the final hidden state."""
+        if self._arch is None or not self.has_head:
+            raise RuntimeError(
+                f"worker={self.device_id} sample_next_token called but no head loaded"
+            )
+        with torch.no_grad():
+            logits = self._arch.head(
+                self._head_decoder, self._head_lm_head, hidden,
+            )
+            return int(torch.argmax(logits[0, -1, :]).item())
 
     def promote_backup(self, for_device_id: DeviceId) -> None:
         with self._lock:
@@ -181,6 +234,60 @@ class StageRunner:
             cache.get_seq_length() if cache is not None else 0,
         )
         return encode(out_payload)
+
+    def run_tail_and_sample(
+        self,
+        request_id: RequestId,
+        activation_blob: bytes,
+        *,
+        start: LayerIdx,
+        end: LayerIdx,
+        is_prefill: bool,
+    ) -> int:
+        """Chain-tail path: run the loaded stage, apply the head + greedy
+        argmax in a single forward pass, return the next token id.
+
+        Avoids the round-trip through an encoded bytes activation that
+        ``run()`` produces — the head wants the tensor directly. Saves
+        ~1-2 ms of CPU encode per token at the chain tail.
+        """
+        if not self.has_head:
+            raise RuntimeError(
+                f"worker={self.device_id} run_tail_and_sample called but no head loaded"
+            )
+        with self._lock:
+            key = (int(start), int(end))
+            blocks = self._stages.get(key)
+            if blocks is None:
+                raise RuntimeError(
+                    f"worker={self.device_id} no stage loaded for layers[{start}..{end}]"
+                )
+            cache_key = (request_id, key)
+            if is_prefill:
+                self._kv_cache[cache_key] = DynamicCache()
+            cache = self._kv_cache.setdefault(cache_key, DynamicCache())
+
+        payload = decode(activation_blob)
+        hidden = payload["hidden_states"].to(self.torch_device)
+        attention_mask = payload["attention_mask"].to(self.torch_device)
+        first_layer_idx = int(start) - 1
+        past_length = (
+            int(cache.get_seq_length(layer_idx=first_layer_idx))
+            if not is_prefill
+            else 0
+        )
+        with torch.no_grad():
+            hidden = self._run_blocks(blocks, hidden, attention_mask, cache, past_length)
+            assert self._arch is not None  # ensured by load_head/run path
+            logits = self._arch.head(
+                self._head_decoder, self._head_lm_head, hidden,
+            )
+            next_token = int(torch.argmax(logits[0, -1, :]).item())
+        log.debug(
+            "worker=%s request=%d TAIL+sample → token=%d cache_len=%d",
+            self.device_id, request_id, next_token, cache.get_seq_length(),
+        )
+        return next_token
 
     # ------------------------------------------------------------------
     # Internal

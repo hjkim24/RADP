@@ -111,6 +111,14 @@ class WorkerClient:
         req = radp_pb2.EvictRequestRequest(request_id=int(request_id))
         self._require_stub().EvictRequest(req)
 
+    def load_head(self, *, model_id: str) -> None:
+        """Deploy lm_head + final_layer_norm + project_out to this worker so
+        it can serve as the chain tail with on-worker sampling."""
+        req = radp_pb2.LoadHeadRequest(model_id=model_id)
+        resp = self._require_stub().LoadHead(req)
+        if not resp.ok:
+            raise RuntimeError(f"LoadHead failed on {self.address}: {resp.error}")
+
     def set_next_hop(
         self,
         *,
