@@ -1455,6 +1455,40 @@ RADP-Latency dominates RADP-Throughput across:
 
 ---
 
+## Phase EXP-D3 Phase 2 — Async mirror cache (worker → coord)
+
+**목표**: Phase 1a/1b 가 *chain forwarding* 으로 throughput 을 끌어올렸지만, coord 는 chain head 의 input 만 로컬에 갖고 있어 *mid-chain worker failure 시 backup 으로 replay 할 activation 이 없는* 상황이 됨. Phase 2 는 워커 측에서 자기 input 활성화를 coord 로 fire-and-forget 으로 mirror 하여 — 진정한 의미의 *recovery-aware DP 의 R 항이 chain topology 에서도 실효성을 갖게* 함.
+
+**구현** (commit 2696a27 + 8f81533):
+- 프로토 — `CoordinatorService.MirrorActivation(request_id, stage range, position, bytes, is_prefill)`. `RunStageRequest.position` 추가 → coord 가 step index (0=prefill, 1+=decode) 를 stamp, 각 워커가 그대로 mirror 로 전파.
+- 워커 ([radp/worker/server.py:36](radp/worker/server.py#L36)) — `_MirrorDispatcher`: persistent gRPC channel + single-thread executor. `submit()` 이 RunStage 를 절대 block 하지 않음. start_layer == 1 (chain head) 은 mirror skip — coord 가 그 input 의 source 이기 때문에 의미 없음.
+- 코디네이터 ([radp/coordinator/gateway.py:160](radp/coordinator/gateway.py#L160)) — `record_mirror` → `ActivationCache.put(req, stage_key, position, bytes)`. Idempotent (재시도 안전), out-of-order 도착 수용.
+- `ActivationCache` — `list[bytes]` → `dict[position, bytes]` 변경. `get_history()` 가 contiguous prefix [0, 1, ...] 만 반환 → stalled mirror 가 step 을 건너뛰지 않게.
+- `/api/mirror_stats` — lifetime ingress 카운터 + 현재 캐시 점유. 배포 후 mirror path 가 실제로 hot 한지 확인용.
+
+**라이브 검증** (2026-06-07 ax-1 coord + 3 workers chain on-6 → ao-1 → on-1):
+- Pre-request: `lifetime_pushes=0, lifetime_bytes=0`
+- 8 tokens 생성 (1 prefill + 7 decode = 8 steps)
+- Post-request: `lifetime_pushes=16, lifetime_bytes=72064`
+- ⇒ **8 steps × 2 non-first stages = 16 mirrors**. 산수 일치 → mirror path 가 실제 chain topology 에서 작동.
+
+**의도된 한계** (Phase 3 후속):
+- **Chain failure attribution 부정확**. Mid-chain worker 가 죽으면 coord 가 받는 gRPC 에러는 chain head 의 RunStage 호출 실패 — 누가 진짜 죽었는지 모름. 현재는 `mark_dead(head)` 잘못 호출. Heartbeat path 가 결국 정정하지만 in-flight 요청에선 wrong attribution. Phase 3 (이후) 가 worker 가 downstream 실패를 coord 로 별도 시그널링 / heartbeat-based wait-and-retry 로 보완해야.
+- Phase 2 의 mirror 는 *fire-and-forget*. 워커가 mirror 보낸 직후 죽으면 그 step 의 mirror 는 미달 → `get_history` 가 그 position 까지만 반환 → replay 가 정확히 마지막 성공 step 에서 재개됨. 데이터 무결성 보장.
+- 측정은 mirror 성공 path 에 한정. 진짜 failure 주입 시나리오는 Phase 3 의 chain-aware recovery loop 가 갖춰진 뒤 별도로 측정해야.
+
+**Paper 기여**:
+- Recovery-aware DP 의 *R* 항이 chain topology 에서도 유효하게 만든 마지막 시스템 컴포넌트.
+- "ψ 가 chain forwarding 으로 정상 모드를 가속해도, *R 의 mirror cache* 가 정상 모드 비용 (push bytes) 을 동시에 부담하면서 fault tolerance 를 보존" 이라는 trade-off 가 명확히 측정 가능.
+
+**커밋**: 2696a27 (mirror cache 코어) + 8f81533 (/api/mirror_stats diagnostic)
+**테스트**:
+- 단위 — [tests/test_activation_cache.py](tests/test_activation_cache.py) (positioned put, out-of-order collation, idempotent dup) 3 cases
+- smoke — [tests/test_mirror_activation.py](tests/test_mirror_activation.py) (fake gRPC fleet, first-stage no-mirror, monotonic positions) 3 cases
+- 라이브 — `/api/mirror_stats` pre/post Generate 비교 (위 표)
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
