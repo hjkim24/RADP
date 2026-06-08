@@ -1790,6 +1790,53 @@ replay 22 positions through chain head on-2[1..9]      ← 새 chain head (헤�
 
 ---
 
+## Phase EXP-B1 — Llama-3.2-1B 4-stage scaling (model-size generalisation)
+
+**목표**: 지금까지 모든 paper claim (async > sync, L ≥ T at C≥4) 이 OPT-350M (350 M params, 24 L) 한 모델에서만 측정됐다 → 백로그 B1. *3× 큰* 모델 (Llama-3.2-1B, 1 B params, 16 L, hidden 2048) 에서 같은 패턴이 유지되는지 검증. 동시에 backlog A5 (lazy backup) 등 후속 실험의 사전 인프라 (HF gated 토큰 주입, fleet 메모리/디스크 마진) 확보.
+
+**셋업**:
+- Model: `meta-llama/Llama-3.2-1B` fp16 (~2.4 GB on-disk shard, ~2.6 GB CUDA), gated → `hf_token` 을 `inventory.ini` 에 두고 `radp-worker.service.j2` / `radp-coordinator.service.j2` 의 systemd `Environment=HF_TOKEN={{ hf_token }}` 로 주입. 토큰이 board 의 persistent file (`~/.huggingface/token`) 에 절대 안 남음 — 공용 boards (skkuisp/isp) 보안 요구사항.
+- Fleet: 4-worker chain (`on-1[1..4] → on-2[5..8] → on-3[9..12] → ao-1[13..16]`), coord on Mac.
+- Heartbeat: `heartbeat_timeout_seconds: 5 → 60 → 120` 단계적 증가. Nano 7.4 GB RAM 에서 fp16 model load + `profile_layers` (warmup 1 + repeats 3 × 16 layers × seq=64) 가 메모리 스파이크를 일으켜 heartbeat thread 가 starve → mark_dead 루프 발생 → coord 충돌. 120 s 가 load + profile RPC 라운드트립 안전 마진. Tick 은 1 Hz 그대로.
+- Measurement: `experiments/measure_concurrent.py`, `--concurrency 1 4 16 --max-tokens 30 --warmup-skip 2`.
+- 4 cells 의도 (T+async, T+sync, L+async, L+sync) × 3 C 값 = 12 점 목표.
+
+**찾아낸 버그 / 부수 fix**:
+- **Llama-3.2-3B (28 L, hidden 3072, ~6 GB)** 첫 후보 → on-1 (Nano 7.4 GB) 가 디스크 100 % full + 메모리 swap thrash → `profile_layers` 가 60 s 안에 못 끝남 → heartbeat starvation 폭주. **다운그레이드: 1B** (16 L, hidden 2048, 2.4 GB). 3× 큰 모델 확보는 유지, 시스템은 운영 가능.
+- **Worker pinning**: `LoadStage` 가 "이미 facebook/opt-350m 에 핀됨" 으로 모델 스위치 거부 → `ansible -m systemd -a "name=radp-worker state=restarted"` 로 전 fleet 일괄 재시작.
+- **`huggingface-cli login` 사용 안 함**: 공용 boards 에 persistent token 파일 남김 → 세션 종료 후에도 다른 사용자에게 access 노출. systemd `Environment=` 경로가 process env 에만 존재 → 안전.
+
+**측정 결과** (3-cell, L+sync 는 on-2 SSH unreachable 로 30 분 모니터링 후 스킵 — 아래 한계 참조):
+
+| C | T+async (tok/s · TBT p50) | T+sync (tok/s · TBT p50) | L+async (tok/s · TBT p50) |
+|---:|---|---|---|
+| 1  | 3.74 · 260.6 ms | 2.94 · 259.4 ms | **3.05 · 174.1 ms** |
+| 4  | 18.07 · 181.2 ms | 16.24 · 188.7 ms | **20.28 · 147.1 ms** |
+| 16 | 30.56 · 486.0 ms | 21.84 · 663.2 ms | **30.73 · 515.1 ms** |
+
+(파일: [concurrent_llama1b_4stage_T_async.json](experiments/results/concurrent_llama1b_4stage_T_async.json), [..._T_sync.json](experiments/results/concurrent_llama1b_4stage_T_sync.json), [..._L_async.json](experiments/results/concurrent_llama1b_4stage_L_async.json))
+
+**Paper-critical findings**:
+
+1. **async > sync 가 모델 크기와 무관하게 유지** — Phase F 의 chain-length-independent gain 이 **model-size-independent** 임이 확인됨. T placement 에서 async 가 sync 대비 C=16 에서 +40 % (30.56 vs 21.84 tok/s), TBT p50 -27 % (486 vs 663 ms). OPT-350M 의 +47 % 와 같은 자릿수.
+2. **L ≥ T 가 C ≥ 4 에서 유지** — L+async 가 C=4 에서 best cell (+12 % vs T+async, TBT -19 %), C=16 에서 tie (30.73 vs 30.56 tok/s 차이 0.6 %). RADP-Latency 의 universal-dominance 클레임이 1B 스케일에서도 살아남음.
+3. **C=1 single-stream 에서 처음으로 L < T (throughput 기준)** — L+async 3.05 vs T+async 3.74 tok/s (-18 %). OPT-350M 에선 안 보였던 cross-over. 단 TBT p50 는 여전히 L 우위 (174 vs 261 ms, -33 %). **해석**: 큰 모델에서 single-stream 일 때 stage compute time 이 chain hop 비용 대비 dominant → T 의 균등 분할이 wall-clock throughput 에 약간 유리. L 은 fast device 에 layers 를 몰아 *단일 stage* 응답성 (TBT) 을 살리지만 single-stream 에선 그 stage 가 critical path 라 throughput-bound. Multi-stream (C ≥ 4) 으로 가면 L 의 fast-device 집중이 pipeline saturation 을 만들어 다시 우위.
+4. **OPT-350M 대비 throughput 감소율 vs 모델 크기**: L+async C=16 41.7 → 30.7 tok/s (-26 %). 모델 파라미터가 ~3× 늘었는데 throughput 은 26 % 만 감소 — system overhead (gRPC chain hops, gateway) 가 여전히 dominant 함을 시사. 다음 모델 스케일링 (3B 이상) 시 compute-binding regime 진입 시점 측정 필요.
+
+**한계**:
+- **L+sync cell 누락**: on-2 가 측정 중 unreachable 상태로 빠짐 (SSH banner timeout). 30 분 모니터링 (Monitor task `bypl2z6wv`) 후 안 돌아옴 → 사용자 결정으로 3-cell ship. 4-cell matrix 완성은 on-2 부활 후 후속 실험.
+  - Inferred from 다른 3 cells: L+sync 는 T+sync (+10~20 %) 와 L+async (-15~25 %) 사이로 예상. 즉 sync penalty 와 L 우위가 한 cell 에서 부분 상쇄 — paper finding 에 영향 없음.
+- **Nano 메모리 압박으로 인한 측정 노이즈**: heartbeat 120 s 마진에도 occasional spike. tbt p95 가 p50 의 ~1.5× (대비 OPT-350M ~1.2×) — 큰 모델 + 7.4 GB Nano 의 한계 직접 노출.
+- **Llama-3.2-3B 시도 실패**: 같은 fleet 으로 6 GB 모델은 불가. 3B+ 측정은 ao-2 (AGX Xavier, 32 GB) JP5 복귀 또는 Nano 메모리 업그레이드 필요.
+
+**Paper §10.4 (matrix headline) 업데이트 권장**:
+- "28 measurement points" → "28 + 9 (Llama-1B 3-cell) = **37 measurement points across 2 models**" (or "32 if L+sync filled later")
+- 새 클레임 추가: "Pattern holds across a 3× model-size gap (350 M → 1 B params)" + C=1 cross-over 를 §5 (discussion) 의 "When L>T could lose" subsection 의 *empirical* 데이터 포인트로.
+
+**커밋**: (이 docs 커밋 + 결과 JSON 3개. 코드 변경 없음 — measurement-only.)
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).

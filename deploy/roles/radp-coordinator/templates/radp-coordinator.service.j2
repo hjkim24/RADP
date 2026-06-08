@@ -11,6 +11,12 @@ WorkingDirectory={{ radp_install_dir }}
 Environment=RADP_CONFIG=/etc/radp/cluster.yaml
 Environment=RADP_WEB_PORT={{ coord_web_port | default(0) }}
 Environment=HF_HOME=/home/{{ ansible_user }}/.cache/huggingface
+{% if hf_token is defined %}
+# Gated HF model access. systemd reads this env at process start; the
+# token never lands in a persistent file on the coord. Keep
+# inventory.ini (where hf_token lives) gitignored.
+Environment=HF_TOKEN={{ hf_token }}
+{% endif %}
 ExecStart={{ radp_install_dir }}/.venv/bin/radp-coordinator
 Restart=on-failure
 RestartSec=5

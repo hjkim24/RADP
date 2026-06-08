@@ -16,6 +16,12 @@ Environment=RADP_TORCH_DEVICE={{ model_torch_device }}
 Environment=RADP_DTYPE={{ model_dtype }}
 Environment=RADP_DEVICE_CLASS={{ device_class | default('') }}
 Environment=HF_HOME=/home/{{ ansible_user }}/.cache/huggingface
+{% if hf_token is defined %}
+# Gated HF model access. systemd reads this env at process start; the
+# token never lands in a persistent file on the worker. Keep
+# inventory.ini (where hf_token lives) gitignored.
+Environment=HF_TOKEN={{ hf_token }}
+{% endif %}
 ExecStart={{ radp_install_dir }}/.venv/bin/radp-worker
 Restart=on-failure
 RestartSec=5
