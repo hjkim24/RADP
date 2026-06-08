@@ -5,13 +5,23 @@
 % longer outline is collapsed to bulleted limit notes inline.
 
 % Paragraph 1: when L>T could lose; bounded-claim honesty.
-% - L+async is best on this fleet, but in workloads where the AGX
-%   runs out of memory before the Nano's layer-floor binds, where
-%   the model is deep enough that a bulk-on-AGX placement
-%   overflows (hypothetical Llama-7B INT4 with 7 layers per Nano),
-%   or where bandwidth dominates compute, throughput placement
-%   could re-take the lead. Operators tune via
-%   `optimization_mode = blended` with a sweepable $\alpha$.
+% - L+async is best on this fleet at C>=4, but the single-stream
+%   big-model regime has a measured cross-over: on Llama-3.2-1B
+%   at C=1, T+async beats L+async on aggregate throughput by
+%   +22% (3.74 vs 3.05 tok/s) even though L still wins TBT p50
+%   by -33%. The intuition: when a stage's compute time dominates
+%   chain-hop cost (bigger model, single in-flight stream), L's
+%   fast-device-heavy placement makes that single stage the
+%   throughput-bottlenecking critical path, while T's even
+%   division saturates wall-clock. Multi-stream amortises the
+%   chain hop and L's pipeline-saturation advantage returns.
+%   Additional regimes where T could re-take the lead — AGX
+%   running out of memory before the Nano's layer-floor binds,
+%   models deep enough that bulk-on-AGX overflows (hypothetical
+%   Llama-7B INT4 with 7 layers per Nano), bandwidth-dominated
+%   networks — remain extrapolations from the cost model.
+%   Operators tune via `optimization_mode = blended` with a
+%   sweepable $\alpha$.
 
 % Paragraph 2: async chain failure-attribution trade-off.
 % - +47% throughput at C=16 buys 5-30s extra failure-attribution
@@ -25,14 +35,19 @@
 % - RADP folds placement and recovery into one DP, with two
 %   runtime mechanisms (async mirror cache, async chain
 %   forwarding) that make that joint optimization viable on a
-%   real edge fleet. The 28-point matrix shows the L>T dominance
-%   is structural to $\psi$+$R$, not architectural. Async chain
-%   adds 17--47% throughput without ever reversing the ordering,
+%   real edge fleet. The 28-point OPT-350M matrix shows L>T
+%   dominance is structural to $\psi$+$R$, not architectural;
+%   the Llama-3.2-1B sub-matrix (3x larger model) shows the
+%   same pattern holds at C>=4, with a measured C=1 cross-over
+%   that bounds the claim cleanly. Async chain adds 17--47%
+%   throughput without ever reversing the ordering at C>=4,
 %   confirming the two mechanisms are orthogonal. Future work:
-%   sharded loader for Llama-2-7B INT4 (lets us probe the
-%   memory-binding regime we couldn't reach on OPT-350M),
-%   $R$-as-backup-list for cascade failures, marginal-layer
-%   term in the cost function to close the predicted-vs-measured
+%   sharded loader is already in (used for Llama-1B); pushing
+%   into the 7B INT4 regime requires more memory per Nano than
+%   we have (the bigger-model 1B run already exposes Nano
+%   memory pressure as a real operational binder), $R$-as-
+%   backup-list for cascade failures, marginal-layer term in
+%   the cost function to close the predicted-vs-measured
 %   discrepancy.
 
 \todo{Write 3 short paragraphs from outlines.}

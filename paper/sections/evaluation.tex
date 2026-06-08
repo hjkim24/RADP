@@ -63,32 +63,46 @@
 %   - Mirror cache arithmetic check: 8-token Generate produces
 %     exactly 16 mirror pushes (8 steps * 2 non-first stages).
 
-\subsection{Latency placement strictly dominates throughput placement across 28 measurement points}\label{sec:eval:matrix}
+\subsection{Latency placement dominates throughput placement at C $\geq$ 4 across two model sizes}\label{sec:eval:matrix}
 % Outline (~0.8 page — the headline result):
 % - Big 2x2x{C,depth} matrix. The figure version is a compact
-%   heatmap-coloured table; the prose calls out three deltas:
-%   (i) L > T at every one of the 28 points across two chain
-%       lengths * four cells * 3-4 C levels;
+%   heatmap-coloured table; the prose calls out four deltas:
+%   (i) On OPT-350M: L > T at every one of the 28 points across
+%       two chain lengths * four cells * 3-4 C levels;
 %   (ii) async > sync everywhere at C >= 4, biggest at
 %       C=16 throughput placement (+47%);
 %   (iii) async gain is chain-length-INDEPENDENT (3-stage T@C=16
 %       sync->async = +47%, 4-stage = +46%). The cost is O(C),
 %       not O(stages * C).
+%   (iv) Model-size generalisation: on Llama-3.2-1B (1 B params,
+%       3x OPT-350M, 4-stage chain, 9 additional points captured
+%       across 3 cells), async > sync persists (T+async C=16
+%       +40% over T+sync, TBT p50 -27%) and L >= T persists for
+%       C >= 4 (L+async @ C=4 best cell, +12% over T+async).
+%       Point (i) — universal L > T dominance — bends at C=1:
+%       in the single-stream big-model regime, T+async (3.74
+%       tok/s) beats L+async (3.05) on aggregate throughput,
+%       though L still wins TBT p50 by -33% (174 vs 261 ms).
+%       The L+sync cell is missing from this 3x9 sub-matrix
+%       (one Nano went unreachable mid-sweep); the 3 captured
+%       cells suffice to bound the claim.
 % - Best operating point on this fleet: L+async @ C=16 = 41.7
-%   tok/s (4-stage) vs worst (T+sync @ C=16) = 24.5 tok/s. +71%
-%   span covered by two runtime knobs the operator can flip.
+%   tok/s (OPT-350M 4-stage) vs worst (T+sync @ C=16) = 24.5
+%   tok/s. +71% span covered by two runtime knobs the operator
+%   can flip.
 % - Caveat — stage count isn't a free knob: 3-stage L+async @ C=4
 %   = 33.7 tok/s; 4-stage = 23.9 (-29%). Each Nano in the
 %   4-stage chain gets only 1 layer to compute but pays a full
 %   network hop. RADP's DP picks stage count cost-aware; we
 %   forced 4-stage via fleet composition to expose this.
 
-\todo{Figures: (i) headline 28-point matrix as a single compact
-table with two-color highlighting for L>T cells (all 28); (ii)
-recovery wall-clock CDF showing star topology mean 617 ms p95 670 ms
-vs the chain topology's noisier distribution; (iii) per-tier
-per-layer compute bar chart anchoring the heterogeneity claim. The
-sensitivity-study subsection from the longer outline is dropped to
-hit the 7-page budget — alpha sweep, eager-vs-lazy, and
-activation\_bytes calibration become 2-sentence anchors in
+\todo{Figures: (i) headline matrix as a single compact table —
+OPT-350M (28 cells, two-color highlighting for L>T) with a
+Llama-3.2-1B side-panel (3 cells x 3 C) flagging the C=1 cross-over;
+(ii) recovery wall-clock CDF showing star topology mean 617 ms
+p95 670 ms vs the chain topology's noisier distribution; (iii)
+per-tier per-layer compute bar chart anchoring the heterogeneity
+claim. The sensitivity-study subsection from the longer outline
+is dropped to hit the 7-page budget — alpha sweep, eager-vs-lazy,
+and activation\_bytes calibration become 2-sentence anchors in
 \S\ref{sec:disc}.}
