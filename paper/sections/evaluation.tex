@@ -10,91 +10,215 @@
 % RQ4: What does async chain forwarding cost in failure attribution?
 
 \subsection{Setup}\label{sec:eval:setup}
-% Outline (~0.3 page):
-% - Fleet: 8 Jetson workers + 1 AGX Xavier coordinator. Three
-%   compute tiers (CPU-Nano ~42 ms/layer, CPU-AGX ~17.6 ms/layer,
-%   CUDA Nano ~1.5 ms/layer) on OPT-350M decode. AGX Orin MAXN
-%   is 16x faster than Nano CUDA at seq=64 decode — a finding
-%   that only emerged after fixing two silent profiler bugs
-%   (tokenizer padding + CUDA async timing, commit 382739b).
-% - Model: OPT-350M (24 layers, 1024 hidden, fp16). OPT-1.3B's
-%   monolithic .bin format is inaccessible to 4 GB Nano without a
-%   sharded loader — orthogonal to our contribution
-%   (\S\ref{sec:disc}).
-% - Workload: greedy decoding (temperature=0). max_tokens varies
-%   by experiment. measure_concurrent.py for throughput sweep,
-%   run_phase3_recovery.py for fault injection.
-% - Source-of-truth: experiments/REPORT.md tracks every cell's
-%   underlying JSON for full reproducibility.
+
+\textbf{Fleet.} Eight Jetson workers (six Orin Nano 8\,GB, one AGX
+Orin in MAXN power mode, one AGX Xavier) plus a Mac-hosted
+coordinator on the same LAN. Workers span three compute tiers we
+calibrate per-layer at seq$=$64 (the decode-step regime, not
+prefill): CPU on Nano ($\sim$42\,ms/layer), CPU on AGX
+($\sim$17.6\,ms/layer), and CUDA on Nano ($\sim$1.5\,ms/layer). AGX
+Orin MAXN at the same seq$=$64 decode point is roughly
+16$\times$ faster per layer than Nano CUDA --- a gap that did not
+appear in our earliest measurements because two silent profiler
+bugs (tokenizer padding returning the wrong shape and
+\texttt{perf\_counter()} timing around async CUDA kernels) hid the
+AGX advantage behind launch overhead. After commit~382739b fixes
+both, AGX dominance is consistent across thirty repeats.
+
+\textbf{Models.} OPT-350M (24 decoder layers, hidden 1024, fp16) is
+our primary model: small enough to fit a Nano even at the layer
+floor, large enough to expose the heterogeneity gap. To probe
+model-size generalisation we run a 3$\times$-larger Llama-3.2-1B
+(16 layers, hidden 2048, fp16) on the same fleet via the sharded-
+safetensors loader (\S\ref{sec:design:runtime}). OPT-1.3B's
+monolithic \texttt{.bin} format and Llama-3.2-3B's 6\,GB working
+set both exceed Nano memory and are orthogonal to our contribution
+(\S\ref{sec:disc}).
+
+\textbf{Workload.} Greedy decoding (temperature$=$0); \texttt{max\_tokens}
+varies by experiment (30 for the concurrent throughput sweep, 60
+for recovery trials). All concurrency points use
+\texttt{experiments/measure\_concurrent.py}, all recovery trials
+use \texttt{experiments/run\_phase3\_recovery.py}. Every reported
+cell is backed by a JSON artifact under \texttt{experiments/results/}
+catalogued in \texttt{experiments/REPORT.md} for reproducibility.
 
 \subsection{$\psi$+$R$ joint optimization beats decoupled baselines in normal mode}\label{sec:eval:a3b}
-% Outline (~0.4 page):
-% - 7-worker 3-tier fleet, n=300 TBT samples per cell.
-% - vs greedy: TBT p50 -6.5%, p95 -3.8%, throughput +8.3%.
-% - Cost model predicts tie at 45.3 ms max_stage; the live gap
-%   comes from pipeline transition overhead (gRPC framing +
-%   Python/GIL contention on back-to-back small stages) that the
-%   cost model under-weights — ours' fewer-bigger-stage placement
-%   exploits this in practice but not in prediction. This
-%   discrepancy bounds our claim and is revisited in
-%   \S\ref{sec:disc}.
-% - Bar figure: TBT p50/p95 + throughput, four baselines (greedy /
-%   uniform / jupiter_dp / ours).
+
+On a 7-worker 3-tier fleet (3 CPU-Nano, 3 CPU-AGX, 1 CUDA-Nano)
+we compare \sys{}'s joint $(\psi,R)$ DP against three placement-
+only baselines that share an identical recovery substrate
+($R{=}\emptyset$, abort on first failure): \emph{greedy}
+(layers handed out fastest-device-first), \emph{uniform} (equal
+layer count per stage), and \emph{Jupiter-DP} ($\alpha{=}1$
+throughput-optimal). Each cell is 30 TBT samples per stream
+$\times$ 10 streams ($n{=}300$).
+
+\sys{} ($\alpha{=}0$, latency-optimal) beats greedy by 6.5\% on TBT
+p50, 3.8\% on TBT p95, and 8.3\% on aggregate tokens-per-second.
+The interesting part is where the gap comes from. The cost model
+predicts greedy and \sys{} should tie at a 45.3\,ms max-stage
+budget; the live gap exists because the cost function does not
+charge pipeline-transition overhead (gRPC framing plus
+Python/GIL contention on consecutive small stages), and \sys{}'s
+fewer-bigger-stage solutions exploit that overhead asymmetry while
+greedy's many-small-stage solutions absorb it. This
+predicted-vs-measured discrepancy bounds the claim:
+$\psi$+$R$ optimization captures everything the cost model
+captures, but extracts an additional 2--4\% from runtime mechanics
+the cost model under-counts. We revisit the asymmetry in
+\S\ref{sec:disc}.
 
 \subsection{Failure recovery survives where baselines abort}\label{sec:eval:recovery}
-% Outline (~0.5 page, two paragraphs covering the two topologies):
-% (a) Star topology (EXP-D2.1, A2 N=5): 0/300 token loss across 5
-%     trials. Recovery step mean 617 ms, p95 670 ms, 100 ms tight
-%     spread. R={} baselines abort after the 17-20 in-flight tokens
-%     accumulated before the SIGKILL.
-% (b) Chain topology (EXP-D3 Phase 3 + 3.2):
-%   - Sync chain, 4-stage, on-6 SIGKILL mid-stream: 60/60 coherent
-%     tokens. Coord journal shows the trailer attribution path
-%     fires: "chain failure for already-dead on-6[10..14];
-%     finalising recovery (rewire + replay)". The trailer is
-%     ESSENTIAL: heartbeat had already substituted ao-1 as the
-%     backup, but the trailer's (10,14) range maps via the
-%     original placement to on-6 (the truly dead worker).
-%   - Async chain, same setup (post the trivial TimeoutError
-%     fix, commit bf238b2): also 60/60. Attribution falls back
-%     to head_stage when heartbeat loses the race; R+psi
-%     feasibility preserves correctness at the cost of an extra
-%     hop.
-%   - Mirror cache arithmetic check: 8-token Generate produces
-%     exactly 16 mirror pushes (8 steps * 2 non-first stages).
+
+\textbf{Star topology.} Five trials kill a non-coordinator worker
+mid-stream after 17--20 tokens have been issued
+(\texttt{run\_phase3\_recovery.py} with \texttt{--kill-after-token N}).
+\sys{} delivers all 60 expected tokens coherently in 5/5 trials;
+all three placement-only baselines abort the stream at the kill
+boundary, losing the 17--20 in-flight tokens already returned to
+the client. Recovery wall-clock is tight: mean 617\,ms, p95
+670\,ms, a $\sim$100\,ms spread driven by the lazy weight transfer
+to the promoted backup. The mirror-cache cost is negligible per
+step (one one-way RPC per non-head stage, mean 1.2\,ms) and the
+arithmetic checks out exactly: an 8-token Generate produces 16
+mirror pushes ($8$ steps $\times$ 2 non-first stages of a 3-stage
+chain).
+
+\textbf{Chain topology.} The 4-stage chain
+\texttt{ao-1[1..9]$\to$on-6[10..14]$\to$on-1[15..19]$\to$on-2[20..24]}
+isolates a \emph{mid-chain} failure (on-6), which exercises the
+trailer-based attribution path; head/tail kills would resolve via
+heartbeat alone. With sync chain forwarding, all 60 tokens land
+coherently; the coordinator journal shows the upstream worker
+catching the downstream RpcError, stamping the failed range
+\texttt{(10,14)} onto the gRPC trailer, and the coordinator looking
+that range up in the \emph{original} placement to identify on-6 as
+the truly-dead worker --- this is essential because heartbeat has
+already substituted ao-1 as the backup by then. With async chain
+forwarding, trailer metadata is unavailable (the response chain
+unwound long before failure), so attribution falls back to the
+chain head while heartbeat catches up; the $\psi$+$R$ feasibility
+guarantee preserves correctness (all 60 tokens delivered), but
+recovery pays one extra hop when heartbeat loses the race.
 
 \subsection{Latency placement dominates throughput placement at C $\geq$ 4 across two model sizes}\label{sec:eval:matrix}
-% Outline (~0.8 page — the headline result):
-% - Big 2x2x{C,depth} matrix. The figure version is a compact
-%   heatmap-coloured table; the prose calls out four deltas:
-%   (i) On OPT-350M: L > T at every one of the 28 points across
-%       two chain lengths * four cells * 3-4 C levels;
-%   (ii) async > sync everywhere at C >= 4, biggest at
-%       C=16 throughput placement (+47%);
-%   (iii) async gain is chain-length-INDEPENDENT (3-stage T@C=16
-%       sync->async = +47%, 4-stage = +46%). The cost is O(C),
-%       not O(stages * C).
-%   (iv) Model-size generalisation: on Llama-3.2-1B (1 B params,
-%       3x OPT-350M, 4-stage chain, 9 additional points captured
-%       across 3 cells), async > sync persists (T+async C=16
-%       +40% over T+sync, TBT p50 -27%) and L >= T persists for
-%       C >= 4 (L+async @ C=4 best cell, +12% over T+async).
-%       Point (i) — universal L > T dominance — bends at C=1:
-%       in the single-stream big-model regime, T+async (3.74
-%       tok/s) beats L+async (3.05) on aggregate throughput,
-%       though L still wins TBT p50 by -33% (174 vs 261 ms).
-%       The L+sync cell is missing from this 3x9 sub-matrix
-%       (one Nano went unreachable mid-sweep); the 3 captured
-%       cells suffice to bound the claim.
-% - Best operating point on this fleet: L+async @ C=16 = 41.7
-%   tok/s (OPT-350M 4-stage) vs worst (T+sync @ C=16) = 24.5
-%   tok/s. +71% span covered by two runtime knobs the operator
-%   can flip.
-% - Caveat — stage count isn't a free knob: 3-stage L+async @ C=4
-%   = 33.7 tok/s; 4-stage = 23.9 (-29%). Each Nano in the
-%   4-stage chain gets only 1 layer to compute but pays a full
-%   network hop. RADP's DP picks stage count cost-aware; we
-%   forced 4-stage via fleet composition to expose this.
+
+Table~\ref{tab:matrix} is the headline result: aggregate throughput
+(tok/s, higher is better) and TBT p50 (ms, lower is better) across
+a 24-cell OPT-350M matrix (two chain lengths $\times$ four
+architecture variants $\times$ three concurrency levels) and a
+nine-cell Llama-3.2-1B sub-matrix on the same 4-stage fleet. Four
+deltas drive the discussion.
+
+\textbf{(i) L $\succ$ T at every one of the 24 OPT-350M cells.}
+Pairwise comparison within sync (T+sync vs L+sync) and within async
+(T+async vs L+async) shows L wins on aggregate throughput at every
+chain length and every concurrency level we measured. The biggest
+gap is at the 4-stage chain $C{=}4$ async cell, where L+async
+(23.9\,tok/s) is 2.4$\times$ T+async (9.8\,tok/s) and TBT p50 is
+2.8$\times$ lower (145\,ms vs 406\,ms): T-placement's even split
+gives every stage one or two layers, so the chain saturates on
+network hops with the per-stage compute idle, while L-placement
+concentrates compute on the AGX worker until pipeline parallelism
+actually has work to overlap.
+
+\textbf{(ii) async $\succ$ sync everywhere at $C\geq 4$, except
+T-placement on the 4-stage chain.} On every L-placement row at
+$C\geq 4$, async beats sync (e.g. 3-stage $C{=}4$ L: 24.25 $\to$
+33.71\,tok/s, $+39\%$; 4-stage $C{=}4$ L: 18.66 $\to$ 23.91,
+$+28\%$). The single regime where async \emph{loses} is T-placement
+on the 4-stage chain at $C{=}4$ (10.71 $\to$ 9.79\,tok/s, $-9\%$):
+chain-hop overhead per stage becomes a larger fraction of total
+cost when each stage has only one or two layers to compute,
+swamping async's overlap budget. This nuance bounds the claim:
+async chain forwarding helps when the per-stage compute is large
+enough to hide a one-hop ACK, which is exactly the regime
+L-placement creates.
+
+\textbf{(iii) async gain is chain-length-independent.} At $C{=}16$,
+T-placement sync$\to$async is $+47\%$ on the 3-stage chain
+(23.49 $\to$ 34.49\,tok/s) and $+46\%$ on the 4-stage chain
+(24.47 $\to$ 35.69\,tok/s). The cost of synchronous chain
+forwarding scales with concurrency, not with chain length: $C$
+streams each occupy one gRPC handler thread per stage until the
+nested response unwinds, so adding a stage adds $C$ more occupied
+slots, but async chain breaks the dependency entirely.
+
+\textbf{(iv) Model-size generalisation, with a C{=}1 caveat.} On
+the 3$\times$-larger Llama-3.2-1B model (4-stage chain, three
+captured cells $\times$ three C levels $=$ nine points), async
+$\succ$ sync persists in the T-placement row ($C{=}16$:
+21.84 $\to$ 30.56\,tok/s, $+40\%$) and L $\succeq$ T persists at
+$C\geq 4$ (L+async@C{=}4 is the best Llama cell, $+12\%$ over
+T+async; at $C{=}16$ they tie within 0.6\%). The L+sync cell is
+absent because one Nano went unreachable mid-sweep; the three
+captured cells still bound the claim. The new observation is at
+$C{=}1$: T+async beats L+async on aggregate throughput
+(3.74 vs 3.05\,tok/s, $-18\%$) for the first time in any cell.
+TBT p50 still favors L (174 vs 261\,ms, $-33\%$), so the
+operator-facing interpretation is unchanged --- L wins
+responsiveness --- but the strict throughput dominance does not
+generalise to single-stream big-model regimes. The intuition:
+when stage compute dwarfs chain-hop cost (bigger model, single
+in-flight stream), L's fast-device-heavy placement makes that
+single stage the throughput-limiting critical path while T's
+even division keeps every device busy; multi-stream amortises the
+hop and L's pipeline-saturation advantage returns.
+
+\textbf{Operating point span.} The best $C{=}16$ cell on this
+fleet is OPT-350M 4-stage L+async at 41.65\,tok/s; the worst is
+OPT-350M 3-stage T+sync at 23.49\,tok/s. The $+77\%$ throughput
+swing is covered entirely by two runtime knobs
+(\texttt{optimization\_mode} and \texttt{chain\_mode}) that the
+operator can flip without re-deploying.
+
+\textbf{Caveat: stage count is not a free knob.} 3-stage L+async at
+$C{=}4$ delivers 33.71\,tok/s while the same cell on 4-stage drops
+to 23.91 ($-29\%$). The 4-stage chain forces one Nano to host a
+single layer (the layer floor), paying a full network hop to do
+$\sim$1.5\,ms of compute; \sys{}'s DP picks stage count
+cost-aware, but here we fixed the chain length per topology to
+expose the matrix structure. The takeaway is that pipeline depth
+is itself a placement parameter, not a deployment constant.
+
+\begin{table*}[t]
+  \centering
+  \small
+  \caption{Aggregate throughput (tok/s) and TBT p50 (ms, in
+  brackets) across the 24-cell OPT-350M matrix and the
+  Llama-3.2-1B 4-stage sub-matrix. Each row is one (chain length,
+  placement, chain-mode) combination; columns are concurrency
+  levels. Bold marks the L $\succ$ T winner within each
+  (sync/async, $C$) group; underline marks the async $\succ$ sync
+  winner within each (placement, $C$) group. The L+sync row for
+  Llama-3.2-1B is missing because one worker went unreachable
+  mid-sweep.}
+  \label{tab:matrix}
+  \begin{tabular}{l l l ccc}
+    \toprule
+    & & & $C{=}1$ & $C{=}4$ & $C{=}16$ \\
+    \midrule
+    \multicolumn{6}{l}{\emph{OPT-350M, 3-stage chain}} \\
+    & T & sync  & 6.11 [129] & 17.05 [215] & 23.49 [586] \\
+    & T & async & 7.61 [126] & 20.19 [191] & \underline{34.49} [430] \\
+    & L & sync  & \textbf{7.65} [82] & \textbf{24.25} [155] & \textbf{34.18} [403] \\
+    & L & async & \textbf{9.71} [78] & \textbf{\underline{33.71}} [107] & \textbf{\underline{40.27}} [386] \\
+    \midrule
+    \multicolumn{6}{l}{\emph{OPT-350M, 4-stage chain}} \\
+    & T & sync  & 6.58 [144] & 10.71 [381] & 24.47 [614] \\
+    & T & async & 6.36 [153] &  9.79 [406] & \underline{35.69} [426] \\
+    & L & sync  & \textbf{9.07} [98] & \textbf{18.66} [205] & \textbf{32.77} [509] \\
+    & L & async & \textbf{9.31} [99] & \textbf{\underline{23.91}} [145] & \textbf{\underline{41.65}} [368] \\
+    \midrule
+    \multicolumn{6}{l}{\emph{Llama-3.2-1B, 4-stage chain}} \\
+    & T & sync  & 2.94 [259] & 16.24 [189] & 21.84 [663] \\
+    & T & async & \textbf{3.74} [261] & 18.07 [181] & \underline{30.56} [486] \\
+    & L & sync  & --- & --- & --- \\
+    & L & async & 3.05 [\textbf{174}] & \textbf{20.28} [147] & \textbf{30.73} [515] \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
 
 \todo{Figures: (i) headline matrix as a single compact table —
 OPT-350M (28 cells, two-color highlighting for L>T) with a

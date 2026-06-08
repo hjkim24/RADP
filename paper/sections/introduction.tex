@@ -69,10 +69,10 @@ We make the following contributions:
         17--47\% throughput gain at $C{=}16$ over synchronous
         chains (\S\ref{sec:design:async}).
   \item Live measurement on an 8-worker Jetson fleet across
-        \emph{28} operating points on OPT-350M (two chain lengths
-        $\times$ four architecture variants $\times$ three--four
-        concurrency levels) plus a 3$\times$-larger-model
-        sub-matrix on Llama-3.2-1B, showing latency-optimal
+        \emph{24} operating points on OPT-350M (two chain lengths
+        $\times$ four architecture variants $\times$ three
+        concurrency levels) plus a nine-cell 4-stage sub-matrix
+        on a 3$\times$-larger Llama-3.2-1B, showing latency-optimal
         placement dominates throughput-optimal placement at every
         point with $C{\geq}4$ and that the dominance generalises
         across a 3$\times$ model-size gap --- a structural
