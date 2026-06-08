@@ -15,6 +15,30 @@
 \documentclass[10pt,twocolumn,a4paper]{article}
 
 \usepackage{kotex}
+
+% --- 한글 폰트: KoPubWorld Batang (본문) + KoPubWorld Dotum (제목) ----
+% 원본 docx 는 한양신명조 + 산돌고딕 조합을 쓰지만 둘 다 상용
+% 라이선스라 commit 할 수 없다. KoPub 은 한국출판인회의 무료 배포
+% 폰트로 한양신명조와 가장 가까운 명조 인상을 주며 라이선스 부담
+% 없이 paper/fonts/ 에 .otf 를 commit 해 어느 환경에서든 동일하게
+% 빌드된다.
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont[
+  Path=fonts/,
+  Extension=.otf,
+  UprightFont=KoPubBatang-Light,
+  BoldFont=KoPubBatang-Bold,
+]{KoPubBatang}
+\setCJKsansfont[
+  Path=fonts/,
+  Extension=.otf,
+  UprightFont=KoPubDotum-Light,
+  BoldFont=KoPubDotum-Bold,
+]{KoPubDotum}
+% 본문 한글 = Batang (default), 강조/제목 한글 = Dotum
+\xeCJKsetup{CJKecglue={\hskip 0.15em plus 0.05em minus 0.05em}}
+
 \usepackage[margin=2cm,top=2.5cm,bottom=2.5cm]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
