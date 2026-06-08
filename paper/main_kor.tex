@@ -72,20 +72,24 @@
 \setlength{\emergencystretch}{2em}
 
 % --- Title block --------------------------------------------------------
+% Async chain forwarding 은 §3 의 runtime 기여로 머무르고, 제목은
+% 핵심 두 축인 "Recovery-Aware" (장애 복구 인지) + "DP 기반 layer
+% placement" 만 노출한다. "RADP" 의 "DP" 가 dynamic programming 을
+% 함축하므로 본문에서 별도 명시 없이도 의미가 닿는다.
 \title{%
   \vspace{-2em}%
-  이기종 edge cluster 에서의 distributed LLM inference 를 위한\\
-  Recovery-Aware DP 기반 layer placement 및 asynchronous chain forwarding\\
+  이기종 edge cluster 의 distributed LLM inference 를 위한\\
+  Recovery-Aware DP 기반 layer placement\\
   \vspace{0.3em}%
   \large \mdseries\textit{%
-    \sys{}: Recovery-Aware Layer Placement and\\
-    Asynchronous Chain Forwarding for Distributed LLM Inference on Edge Clusters%
+    \sys{}: Recovery-Aware Layer Placement\\
+    for Distributed LLM Inference on Edge Clusters%
   }%
 }
 \author{%
   김학재\textsuperscript{*}, 임완수\textsuperscript{*$\dagger$}\\[0.3em]
   \small\normalfont
-  \textsuperscript{*}성균관대학교 신소재공학과 \quad
+  \textsuperscript{*}성균관대학교 신소재공학부 \quad
   \textsuperscript{$\dagger$}성균관대학교 전자전기공학부\\
   \texttt{hjkim24@g.skku.edu, wansu.lim@skku.edu}\\[-0.5em]
   \small{(\textsuperscript{$\dagger$}교신저자)}
