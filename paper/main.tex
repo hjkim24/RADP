@@ -24,7 +24,10 @@
 \usepackage{listings}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
-\usepackage{amsmath, amssymb}
+% acmart already loads amsmath + amssymb; double-loading amssymb
+% triggers a "\Bbbk already defined" clash. amsmath we keep implicit
+% via acmart too.
+\usepackage{xcolor}      % for \todo color
 \usepackage{xspace}
 
 % --- Macros ------------------------------------------------------------
@@ -41,9 +44,13 @@
 
 \begin{document}
 
+% acmart requires the abstract environment to be defined BEFORE
+% \maketitle; otherwise it complains "Abstract must be defined before
+% maketitle command." Counter-intuitive but documented.
+\input{sections/abstract}
+
 \maketitle
 
-\input{sections/abstract}
 \input{sections/introduction}
 \input{sections/background}
 \input{sections/design}
