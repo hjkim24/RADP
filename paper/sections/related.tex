@@ -1,25 +1,22 @@
 \section{Related Work}\label{sec:related}
 
-% ~0.3 page. One dense paragraph (or two if it grows naturally).
-% Three threads to acknowledge, no per-system subsection.
-
-% Edge LLM inference: Petals~\cite{borzunov2023petals,borzunov2023distributed} demonstrated
-% collaborative inference on consumer hardware with greedy
-% placement and redundancy-based recovery, but its 16+~GB peer
-% assumption excludes 4~GB Nano. EdgeShard~\cite{zhang2024edgeshard}
-% adds a DP-based latency-optimal placement (our $\alpha=0$
-% boundary) but assumes a redundant copy of each shard exists; its
-% recovery story is implicit. Jupiter~\cite{ye2025jupiter} introduces
-% throughput-optimal pipeline parallelism (our $\alpha=1$ boundary,
-% Eq.~11) and TBT-SLO constraints but offers no recovery and no
-% chain forwarding. Helix~\cite{mei2025helix} measures greedy
-% placement's 2.38$\times$ throughput tax on heterogeneous fleets,
-% motivating our DP-based approach. RADP unifies these threads:
-% the same DP yields EdgeShard's or Jupiter's placement via the
-% $\alpha$ knob, and our async mirror cache + chain-aware recovery
-% adds fault tolerance neither prior system provides on
-% memory-tight edge. Among pipeline-parallel training systems
-% (GPipe~\cite{gpipe2019}, Megatron) and inference engines
-% (vLLM~\cite{vllm2023}), only vLLM is request-granular, and even
-% it assumes a single-GPU executor — none address chain-stage
-% recovery on a multi-host edge fleet.
+Petals~\cite{borzunov2023petals,borzunov2023distributed}
+demonstrated collaborative LLM inference on consumer hardware with
+greedy placement and swarm-redundancy-based recovery, but its
+16+\,GB peer assumption excludes the 4\,GB Nano regime \sys{}
+targets. EdgeShard~\cite{zhang2024edgeshard} introduces a DP-based
+latency-optimal placement --- recoverable as our $\alpha{=}0$
+boundary (Eq.~\ref{eq:rank}) --- but assumes a redundant copy of
+each shard exists somewhere on the cluster; its recovery model
+is implicit and pays no memory cost at placement time.
+Jupiter~\cite{ye2025jupiter} pushes the throughput-optimal end
+($\alpha{=}1$) with explicit TBT-SLO constraints, but offers no
+recovery mechanism and no chain forwarding for high $C$.
+Helix~\cite{mei2025helix} measures greedy placement's
+2.38$\times$ throughput tax on heterogeneous GPU fleets via a
+max-flow formulation, motivating DP-based approaches more
+generally. \sys{} unifies these threads: the same DP yields
+EdgeShard's or Jupiter's placement via the $\alpha$ knob, and the
+asynchronous mirror cache plus chain-aware recovery add fault
+tolerance neither prior system provides at the 4\,GB-per-peer
+edge frontier.

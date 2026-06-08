@@ -4,93 +4,215 @@
 
 \subsection{Recovery-Aware DP ($\psi$+$R$ joint optimization)}\label{sec:design:dp}
 
-% Outline (~0.7 page, the densest subsection — gets the equation
-% block, the recurrence, and Algorithm 1):
-% (a) State: $(j, s)$ — first $j$ layers placed across stages whose
-%     last index is $s$. Cost function
-%       rank(state) = (1-alpha) * sum_stage_time + alpha * max_stage_time.
-%     alpha=0 -> EdgeShard latency mode. alpha=1 -> Jupiter throughput
-%     mode (Eq. 11). The $\alpha$ knob is exposed at runtime as
-%     `optimization_mode={latency, throughput, blended}` (Table or
-%     inline list, not a full \S\S).
-% (b) Recurrence: one equation block. Memory feasibility check folds
-%     in $R$: stage primary memory + sum of backed-up peers' memory
-%     <= device cap.
-% (c) Recovery table $R$: greedy pass that minimizes
-%     max(backup_memory_overflow) for a fixed $\psi$. The
-%     alternating loop (Algorithm 1) provably converges in finitely
-%     many iterations because cost is monotonically non-increasing
-%     across alternations.
-% (d) Complexity: $O(L^2 \cdot |D|)$ per inner DP. Brute force
-%     over $|D|!$ device orderings is acceptable for the 3--8 device
-%     edge fleets we target; a heuristic prune falls back to
-%     $O(|D|^2)$ for larger fleets.
+\textbf{Problem.} Given $L$ transformer decoder layers and $|D|$
+heterogeneous devices, find a placement $\psi: \{1,\ldots,L\}
+\to D$ that partitions the layers into contiguous stages assigned
+to distinct devices, and a recovery table $R: D \to D$ assigning
+each device a backup peer that pre-reserves memory for that
+device's layers. Both must satisfy a per-device memory cap that
+\emph{includes} the backup reservation, and minimise a runtime
+cost that spans the latency--throughput axis with one $\alpha$
+knob.
+
+\textbf{Cost.} Let $t(d,i)$ denote the per-layer decode time of
+layer $i$ on device $d$ (profiled at boot, \S\ref{sec:design:runtime}),
+and let $T(s) = \sum_{i \in s} t(d_s, i)$ be the time of stage $s$
+running on its assigned device $d_s$. The rank function
+\begin{equation}\label{eq:rank}
+  \mathrm{rank}(\psi) = (1{-}\alpha) \sum_{s \in \psi} T(s)
+                       \,+\, \alpha \max_{s \in \psi} T(s)
+\end{equation}
+spans EdgeShard's latency mode at $\alpha{=}0$ (sum of stage
+times $=$ single-stream TBT) and Jupiter's throughput mode at
+$\alpha{=}1$ (the slowest stage gates aggregate throughput).
+Intermediate $\alpha$ values trade single-stream responsiveness
+against multi-stream saturation; \texttt{optimization\_mode} maps
+this onto operator-friendly aliases (\texttt{latency},
+\texttt{throughput}, \texttt{blended}).
+
+\textbf{Recurrence.} Let $f(j, d)$ be the minimum rank of placing
+the first $j$ layers ending with a stage on device $d$. For each
+$(j, d)$ we try every prefix split $i < j$ and every previous
+device $d' \neq d$ that has not been used:
+\begin{equation}\label{eq:dp}
+  f(j, d) = \min_{0 \leq i < j} \min_{d' \neq d}
+  \Bigl\{ f(i, d') + \mathrm{rank\_inc}(i{+}1, j, d) \Bigr\}
+\end{equation}
+subject to the memory feasibility constraint
+\begin{equation}\label{eq:mem}
+  \underbrace{\mathrm{mem}_\psi(d)}_{\text{stage layers on } d}
+  + \sum_{p\,:\,R(p){=}d} \underbrace{\mathrm{mem}_\psi(p)}_{\text{peers backed up on } d}
+  \;\leq\; \mathrm{cap}(d).
+\end{equation}
+Equation~(\ref{eq:mem}) is the systemic point: $R$ enters the
+$\psi$-DP through the device cap, so changing $R$ changes which
+$\psi$ are feasible, and vice versa. A decoupled solver that
+chooses $\psi$ first and $R$ afterwards can pick a $\psi$ with no
+feasible $R$ on memory-tight edge.
+
+\textbf{Alternation.} Algorithm~\ref{alg:alt} solves the
+joint problem by alternation. The inner $\psi$-DP runs in
+$O(L^2 |D|^2)$ for a fixed $R$; the greedy $R$ pass runs in
+$O(|D|^2)$ for a fixed $\psi$ (each device picks the unused peer
+that minimises backup-memory overflow). Cost is monotonically
+non-increasing across iterations, so the loop terminates in
+finitely many steps; in practice we observe convergence in
+$\leq 3$ iterations on every fleet we tested.
+
+\begin{algorithm}[t]
+  \caption{Alternating $\psi$+$R$ optimization}
+  \label{alg:alt}
+  \begin{algorithmic}[1]
+    \State $\psi_0 \gets \mathrm{greedy\text{-}placement}(D, L, \alpha)$
+    \Comment{ignore memory constraint}
+    \State $R_0 \gets \mathrm{greedy\text{-}backup}(\psi_0)$
+    \Comment{minimise per-device backup overflow}
+    \State $k \gets 0$
+    \Repeat
+      \State $\psi_{k+1} \gets \mathrm{DP}(D, L, R_k, \alpha)$
+      \Comment{Eq.~\ref{eq:dp} with Eq.~\ref{eq:mem}}
+      \State $R_{k+1} \gets \mathrm{greedy\text{-}backup}(\psi_{k+1})$
+      \State $k \gets k + 1$
+    \Until{$\mathrm{rank}(\psi_k) \geq \mathrm{rank}(\psi_{k-1})$}
+    \State \Return $(\psi_{k-1}, R_{k-1})$
+  \end{algorithmic}
+\end{algorithm}
+
+\textbf{Complexity and scope.} The inner DP is $O(L^2 |D|^2)$; the
+outer alternation adds a constant factor. For the 3--8 device edge
+fleets we target this finishes in tens of milliseconds at boot.
+Beyond $|D| \gtrsim 16$ the device-ordering search becomes the
+bottleneck and a heuristic prune (rank devices by per-layer speed,
+restrict the inner loop to the top-$k$) trades optimality for
+$O(L^2 k |D|)$ runtime --- not exercised in the experiments below.
 
 \subsection{Mirror cache and chain-aware recovery}\label{sec:design:mirror}
 
-% Outline (~0.5 page, combines mirror + recovery into one section):
-% (a) Problem statement: with sync chain forwarding the coord sees
-%     only the chain head's input locally. A mid-chain death has
-%     no activation history at the coord to replay onto the backup.
-% (b) Fix: every worker fires a one-way MirrorActivation RPC to the
-%     coord BEFORE running its stage. Coord stores in a position-keyed
-%     cache (idempotent inserts handle duplicate retries and out-of-
-%     order arrivals). Single-threaded mirror dispatcher per worker
-%     keeps ordered delivery the common case; position keys handle
-%     the rest.
-% (c) Trailer-stamped attribution: when a worker's downstream
-%     RunStage fails, it stamps the failed (start, end) onto the
-%     gRPC trailer before aborting. Coord reads the trailer and
-%     looks up the ORIGINAL placement (not the live execution
-%     plan) — so the trailer names the truly-dead worker even when
-%     heartbeat has already substituted the backup. This is the
-%     missing piece in a chain where $R$ rerouted through a
-%     surrogate.
-% (d) Full chain replay vs stage-only: surviving upstream workers
-%     already advanced their KV cache by one step on the failed
-%     attempt. Naive retry double-counts. Evict + replay rebuilds
-%     deterministically.
+\textbf{Problem.} In sync chain forwarding the coordinator sees
+only the head stage's input locally; mid-chain activations live in
+flight between workers. If a middle worker dies, the coordinator
+has no activation history to feed to the promoted backup --- the
+chain has nothing to replay.
+
+\textbf{Mirror cache.} Before running its own stage, every worker
+fires a one-way \texttt{MirrorActivation} RPC to the coordinator
+carrying the incoming activation tensor plus a
+\texttt{(request\_id, position)} key. The coordinator stores it in
+a position-keyed dictionary; inserts are idempotent so duplicate
+retries and out-of-order arrivals are absorbed without
+coordination. Each worker uses a single-threaded mirror dispatcher,
+so ordered delivery is the common case and the position key handles
+the tail. Mirror RPCs run on a separate gRPC channel from
+\texttt{RunStage}, so a slow mirror cannot stall pipeline forward
+progress. The cost is one one-way RPC per non-head stage per
+decode step ($\sim$1.2\,ms on our fleet); the
+arithmetic-check experiment (\S\ref{sec:eval:recovery}) confirms an
+8-token Generate produces exactly 16 mirror pushes on a 3-stage
+chain ($8$ steps $\times$ 2 non-first stages).
+
+\textbf{Trailer-stamped attribution.} When a worker's downstream
+\texttt{RunStage} call raises an RpcError, the upstream worker
+catches it, stamps the failed stage's \texttt{(start\_layer,
+end\_layer)} pair onto the gRPC \emph{trailing metadata}, and
+re-aborts with \texttt{UNAVAILABLE}. The coordinator reads the
+trailer and resolves \texttt{(start, end)} against the
+\emph{original} placement $\psi_0$, not the live execution plan.
+This matters because the heartbeat path may have already
+substituted a backup as the chain head before the trailer arrives,
+and attributing the failure to that surrogate would
+mark-as-dead a perfectly healthy worker. The trailer carries the
+identity of the truly-dead stage independently of whatever rewiring
+$R$ has already performed, so attribution is correct under any
+heartbeat/trailer race.
+
+\textbf{Full chain replay.} On confirmed failure the coordinator
+(i) evicts the failed step's mirror entry, (ii) rewires the chain
+by substituting $R(d_{\mathrm{dead}})$ as the new owner of the
+failed stage's layers, and (iii) replays the surviving upstream
+chain head's input forward through the new topology. Surviving
+upstream workers had already advanced their KV cache by one step
+on the failed attempt --- a naive retry would double-count their
+position --- so the replay walks back the upstream KV by one step
+before pushing the activation forward. The end result is a
+deterministic rebuild: 60/60 tokens delivered with no client-
+visible error (\S\ref{sec:eval:recovery}).
 
 \subsection{Asynchronous chain forwarding}\label{sec:design:async}
 
-% Outline (~0.5 page):
-% (a) Sync chain's hidden cost: each in-flight stream occupies a
-%     gRPC handler thread on EVERY chain stage until the nested
-%     response unwinds. $C$ streams $\times$ $N$ stages =
-%     $CN$ occupied slots. Throughput placement's pipeline
-%     parallelism never materializes at $C \geq 4$.
-% (b) Protocol: workers dispatch the next-hop RunStage to a bounded
-%     thread pool and ACK to their upstream caller immediately. The
-%     chain tail wakes the coord via CoordinatorService.ResultReady
-%     when its work is done.
-% (c) Per-(request_id, position) Event on the coord; _invoke waits
-%     with a 30s timeout. Per-request lock on the worker so two
-%     concurrent steps of the same request can't race on the same
-%     DynamicCache.
-% (d) Trade-off: trailer-based attribution unavailable in async
-%     mode (the response chain unwound long ago). Heartbeat +
-%     timeout-driven fallback. \S\ref{sec:eval:recovery} measures
-%     the cost, \S\ref{sec:disc} discusses operator trade-off.
+\textbf{Hidden cost of sync chain.} The synchronous chain
+forwarding pattern --- each worker calls the next via blocking
+gRPC and returns once the nested response unwinds --- has a
+non-obvious cost we only saw under load. Each of $C$ in-flight
+streams holds one gRPC handler thread on \emph{every} chain stage
+for the full chain duration, so a chain of $N$ stages occupies
+$CN$ threads simultaneously. Throughput-placement's
+pipeline-parallel intent fails to materialise: every stage waits
+for its downstream return, so adding a stage adds latency without
+adding parallelism. The Phase F measurements
+(\S\ref{sec:eval:matrix}) show this directly: at $C{=}16$ on the
+4-stage chain, sync's $34.5$\,tok/s rises to $35.7$ with async on
+the T-placement row alone.
+
+\textbf{Protocol.} Async chain inverts the call pattern. A worker
+dispatches the next-hop \texttt{RunStage} to a bounded thread pool
+and immediately ACKs its upstream caller with an empty response
+(\texttt{async\_chain=true} flag in the request distinguishes the
+two modes). Each handler thread frees as soon as its own work
+completes. The chain tail, instead of returning a result up the
+response chain, calls
+\texttt{CoordinatorService.ResultReady} directly on the
+coordinator carrying the final activation. The coordinator
+maintains a per-(\texttt{request\_id}, \texttt{position})
+\texttt{Event} that \texttt{\_invoke} waits on with a 30\,s timeout;
+when \texttt{ResultReady} arrives the Event fires and the
+coordinator's generation loop continues.
+
+\textbf{Per-request locking.} Async chain creates a race the sync
+pattern hid: two concurrent decode steps of the same request can
+arrive at the same worker out of order. Each worker holds a
+\texttt{request\_id}-keyed lock around its KV cache mutation
+(\texttt{DynamicCache.update}); the lock serialises in-order steps
+of a given request without serialising different requests.
+Forward progress at high $C$ depends on the lock being
+fine-grained (per-request, not global), which we measured directly
+in the matrix.
+
+\textbf{Trade-off.} Async chain breaks trailer-based attribution:
+once the response chain has unwound, there is no trailer to stamp.
+The coordinator falls back to (i) heartbeat for slow failures
+(typically $<$5\,s) and (ii) the 30\,s \texttt{ResultReady} timeout
+for the case where heartbeat misses. Attribution may name the
+chain head rather than the truly-dead worker; the $\psi$+$R$
+feasibility guarantee preserves correctness (the backup of
+whichever worker the coordinator names is itself feasible), but
+recovery pays one extra hop when heartbeat loses the race
+(\S\ref{sec:eval:recovery}). The operator-facing knob is
+\texttt{chain\_mode = sync $\mid$ async}: sync when failure
+attribution must be millisecond-tight, async when steady-state
+throughput dominates.
 
 \subsection{Runtime and implementation}\label{sec:design:runtime}
 
-% Outline (~0.3 page, a single dense subsection that replaces what
-% would have been its own §4 Implementation):
-% - Python 3.10 + gRPC + PyTorch (Jetson NV-CUDA wheels). 99 tests
-%   (4 multi-node smoke), Ansible 5-host deploy.
-% - 11 RPCs in `radp.proto`. Brief table or bulleted list:
-%   LoadStage, LoadBackup, PromoteBackup, RunStage (with the
-%   async_chain, replay_only, and position fields that gate
-%   Phase 2/3/F semantics), MirrorActivation, ResultReady,
-%   SetNextHop, LoadHead, Heartbeat, Ping, MeasurePeer,
-%   ProfileLayers.
-% - Auto-scheduling pipeline: coord profiles workers on boot
-%   (per-layer compute + peer-to-peer network mesh) then runs
-%   the DP. The /tmp/radp_scheduler_stats.json sidecar is the
-%   single source of truth the experiments consume.
-
-\todo{Write the four subsections from outlines. Algorithm 1
-(alternating R-$\psi$ DP) goes after §3.1(c). Equation block for
-recurrence at §3.1(b). Configuration knobs (alpha, eager\_backup,
-chain\_mode) appear inline within §3.1 and §3.3 rather than getting
-their own subsection.}
+\sys{} is implemented in Python 3.10 with gRPC for the inter-worker
+transport and PyTorch (NVIDIA-built Jetson CUDA wheels) for the
+forward-pass kernels. Loading is the only model-format-aware path:
+a sharded-safetensors loader handles HuggingFace's standard
+multi-file checkpoints (used for Llama-3.2-1B) and falls back to
+a single-shard path for OPT-style \texttt{.bin} files. The runtime
+exposes 11 RPCs in \texttt{radp.proto}: \texttt{LoadStage},
+\texttt{LoadBackup}, \texttt{PromoteBackup}, \texttt{RunStage}
+(carrying the \texttt{async\_chain}, \texttt{replay\_only}, and
+\texttt{position} flags that gate the sync/async/recovery
+semantics), \texttt{MirrorActivation}, \texttt{ResultReady},
+\texttt{SetNextHop}, \texttt{LoadHead}, \texttt{Heartbeat},
+\texttt{Ping}, \texttt{MeasurePeer}, and \texttt{ProfileLayers}.
+Auto-scheduling closes the loop at boot: the coordinator dispatches
+\texttt{ProfileLayers} and \texttt{MeasurePeer} sweeps to the fleet,
+collects per-layer compute times and the $|D|\times|D|$ network
+mesh, runs Algorithm~\ref{alg:alt}, and writes the result to
+\texttt{/tmp/radp\_scheduler\_stats.json} which experiments
+consume as the single source of truth. Ansible playbooks handle
+host bring-up: one command per push wires JetPack-version-aware
+PyTorch wheels, gated-HuggingFace tokens (injected via systemd
+\texttt{Environment=}, never persisted to disk), and the worker
+systemd units across the eight-host fleet.

@@ -1,53 +1,65 @@
 \section{Discussion and Conclusion}\label{sec:disc}
 
-% ~0.7 page. Three short paragraphs: trade-offs / limitations,
-% then a closing recap. The four-subsection discussion in the
-% longer outline is collapsed to bulleted limit notes inline.
+\textbf{When L could lose to T.} The matrix
+(\S\ref{sec:eval:matrix}) shows latency placement dominates
+throughput placement at every $C \geq 4$ cell on both models, but
+we already see one measured exception: at $C{=}1$ on
+Llama-3.2-1B, T+async beats L+async on aggregate throughput by
+22\% (3.74 vs 3.05\,tok/s) while L still wins TBT p50 by 33\%
+(174 vs 261\,ms). The intuition is that when a single stage's
+compute time grows larger than the chain-hop cost (bigger model,
+single in-flight stream), L's fast-device-heavy placement makes
+that one stage the throughput-bottlenecking critical path, while
+T's even division saturates wall-clock by keeping every device
+busy. Multi-stream amortises the hop and L's pipeline-saturation
+advantage returns at $C \geq 4$. Further regimes where T could
+take the lead --- the AGX running out of memory before the Nano's
+layer-floor binds, models deep enough that bulk-on-AGX overflows
+(a hypothetical 7B INT4 with seven layers per Nano), bandwidth-
+dominated networks --- remain extrapolations from the cost
+function; we expose \texttt{optimization\_mode = blended} with a
+sweepable $\alpha$ so operators can navigate the space without
+re-deploying.
 
-% Paragraph 1: when L>T could lose; bounded-claim honesty.
-% - L+async is best on this fleet at C>=4, but the single-stream
-%   big-model regime has a measured cross-over: on Llama-3.2-1B
-%   at C=1, T+async beats L+async on aggregate throughput by
-%   +22% (3.74 vs 3.05 tok/s) even though L still wins TBT p50
-%   by -33%. The intuition: when a stage's compute time dominates
-%   chain-hop cost (bigger model, single in-flight stream), L's
-%   fast-device-heavy placement makes that single stage the
-%   throughput-bottlenecking critical path, while T's even
-%   division saturates wall-clock. Multi-stream amortises the
-%   chain hop and L's pipeline-saturation advantage returns.
-%   Additional regimes where T could re-take the lead — AGX
-%   running out of memory before the Nano's layer-floor binds,
-%   models deep enough that bulk-on-AGX overflows (hypothetical
-%   Llama-7B INT4 with 7 layers per Nano), bandwidth-dominated
-%   networks — remain extrapolations from the cost model.
-%   Operators tune via `optimization_mode = blended` with a
-%   sweepable $\alpha$.
+\textbf{Failure attribution is an explicit trade-off, not a free
+choice.} Async chain forwarding buys 17--47\% additional
+throughput at $C{=}16$ but loses trailer-based attribution; the
+coordinator falls back to heartbeat (typically wins within $\sim$5\,s)
+or the 30\,s \texttt{ResultReady} timeout (rare). Heartbeat winning
+the race keeps recovery exactly as efficient as the sync path,
+losing it costs one extra hop while $\psi$+$R$ feasibility
+preserves correctness (all 60 tokens delivered in both regimes,
+\S\ref{sec:eval:recovery}). Sync chain is the right choice when
+failure attribution must be millisecond-tight (real-time
+monitoring, regulatory SLOs); async chain is the right choice
+when steady-state throughput dominates. The \texttt{chain\_mode}
+flag is an explicit operator-facing knob, not an internal
+implementation choice.
 
-% Paragraph 2: async chain failure-attribution trade-off.
-% - +47% throughput at C=16 buys 5-30s extra failure-attribution
-%   latency. Heartbeat usually wins the race within 5s; when it
-%   doesn't, R+psi feasibility preserves correctness but charges
-%   an extra hop. Sync chain is the right choice when failure
-%   attribution must be millisecond-tight; async when steady-state
-%   throughput dominates.
+\textbf{Limitations and future work.} \sys{} treats $R$ as a
+single-backup table; cascade failures (two workers in $T_R$ apart)
+fall back to a degraded chain. The natural extension is
+$R: D \to \mathrm{List}[D]$ with cascading promotion; the
+DP recurrence extends cleanly but the memory feasibility
+constraint (Eq.~\ref{eq:mem}) sums over more backed-up peers and
+pushes more cells infeasible. The sharded-safetensors loader
+already in production handles Llama-3.2-1B; pushing into the 7B
+INT4 regime is bounded by Nano memory rather than software
+(the 1B-on-Nano run in \S\ref{sec:eval:matrix} already exposes
+real swap-thrash pressure). Finally, the cost function under-counts
+pipeline-transition overhead by 2--4\% (\S\ref{sec:eval:a3b}); a
+marginal-layer term would close the predicted-vs-measured gap.
 
-% Paragraph 3: closing.
-% - RADP folds placement and recovery into one DP, with two
-%   runtime mechanisms (async mirror cache, async chain
-%   forwarding) that make that joint optimization viable on a
-%   real edge fleet. The 24-point OPT-350M matrix shows L>T
-%   dominance is structural to $\psi$+$R$, not architectural;
-%   the Llama-3.2-1B sub-matrix (3x larger model) shows the
-%   same pattern holds at C>=4, with a measured C=1 cross-over
-%   that bounds the claim cleanly. Async chain adds 17--47%
-%   throughput without ever reversing the ordering at C>=4,
-%   confirming the two mechanisms are orthogonal. Future work:
-%   sharded loader is already in (used for Llama-1B); pushing
-%   into the 7B INT4 regime requires more memory per Nano than
-%   we have (the bigger-model 1B run already exposes Nano
-%   memory pressure as a real operational binder), $R$-as-
-%   backup-list for cascade failures, marginal-layer term in
-%   the cost function to close the predicted-vs-measured
-%   discrepancy.
-
-\todo{Write 3 short paragraphs from outlines.}
+\textbf{Conclusion.} \sys{} folds layer placement and recovery
+routing into a single alternating dynamic program whose memory
+feasibility check sees both decisions at once, with two runtime
+mechanisms --- asynchronous mirror cache and asynchronous chain
+forwarding --- that make that joint optimisation viable on a real
+edge fleet. The 24-point OPT-350M matrix shows L $\succ$ T
+dominance is structural to $\psi$+$R$, not architectural; a
+3$\times$-larger Llama-3.2-1B sub-matrix shows the same dominance
+holds at $C\geq 4$ across a model-size gap, with a measured
+$C{=}1$ cross-over that bounds the claim cleanly. Async chain
+adds 17--47\% throughput at $C{=}16$ without ever reversing the
+placement ordering at $C\geq 4$, confirming that placement and
+chain mode are orthogonal knobs for the operator to navigate.

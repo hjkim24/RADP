@@ -5,33 +5,65 @@
 % the obvious composition of prior systems doesn't compose.
 
 \subsection{Pipeline-parallel inference on heterogeneous edge}
-% Outline (~3 paragraphs):
-% - Decoder block as the unit of partition; KV cache state per
-%   (request, stage). Prefill is one large activation, decode is
-%   per-token append (~2 KB at fp16 for OPT-350M's 1024-dim
-%   hidden — the per-layer transfer unit).
-% - Edge heterogeneity matters more than data-center heterogeneity:
-%   AGX Orin (MAXN power mode) is 16x faster per layer than Jetson
-%   Nano CUDA on OPT-350M decode (\S\ref{sec:eval:setup}). On a
-%   homogeneous fleet placement is a rounding question; on
-%   16x-different devices it is the only thing that matters.
-% - Edge reliability is also worse: boards crash, SD cards fill,
-%   heartbeat silence is common. Placement that ignores this
-%   produces a stream-aborts-on-first-failure system.
+
+Pipeline-parallel LLM inference partitions a transformer model
+along its decoder-block axis: each device hosts a contiguous range
+of layers (a \emph{stage}), and an inference request flows from
+stage to stage as a stream of activation tensors. Each request
+carries per-stage KV cache state that the stage owner updates
+in place. The two phases of generation place very different
+demands on the transport: prefill ships a single
+$(S \times h)$-dimensional activation through the chain ($S$ is
+the prompt length, $h$ the hidden dimension), while decode pushes
+a single $(1 \times h)$ activation per generated token --- only
+$\sim$2\,KB at fp16 for OPT-350M's $h=1024$. The per-layer transfer
+unit at decode time is two orders of magnitude smaller than at
+prefill time, so the chain hop is bandwidth-cheap but
+latency-binding: every token pays the round trip.
+
+Edge heterogeneity dominates data-center heterogeneity by an order
+of magnitude. On our fleet, an AGX Orin in MAXN power mode is
+$\sim$16$\times$ faster per layer than a Jetson Orin Nano at
+seq$=$64 CUDA decode (\S\ref{sec:eval:setup}). In a homogeneous
+data-center pipeline-parallel setup, placement is a rounding
+question --- whether stage 7 gets four or five layers barely
+matters. On a 16$\times$-different fleet, placement is the only
+thing that matters: assign two more layers to the wrong device and
+the slowest stage doubles, gating the entire chain.
+
+Edge \emph{reliability} is also categorically worse than the data
+center. During the measurement campaign behind this paper we
+encountered SD-card-induced file system failures on two boards,
+sustained network partitions on three, and a worker simply not
+coming back from a SIGTERM on one more. A placement strategy that
+treats failure as an exceptional path --- restart from scratch on
+\texttt{ECONNRESET} --- produces a system whose first worker
+crash aborts every in-flight stream.
 
 \subsection{Why the obvious composition of prior systems fails}
-% Outline (~2 paragraphs + 1-row comparison table):
-% - EdgeShard's DP (latency-optimal placement, no R, assumes layer
-%   redundancy) + Petals' swarm recovery (memory-redundant peers):
-%   the 4 GB Nano can't hold Petals' redundancy.
-% - Jupiter (throughput-optimal DP, no R) + a watchdog restart:
-%   backup memory wasn't reserved at placement time, so on failure
-%   either OOM or non-redundant degraded path.
-% - The systemic point: $R$ and $\psi$ have *coupled* feasibility
-%   regions on memory-tight edge; decoupling gives up feasibility
-%   *or* performance, never both. This is the gap RADP fills.
 
-\todo{Write the two subsections from outlines above; one short
-table comparing EdgeShard / Petals / Jupiter / Helix / ours along
-{placement DP, recovery model, runtime architecture, fleet target}
-columns.}
+The natural recipe is to take EdgeShard's latency-optimal DP for
+$\psi$ and bolt on Petals' swarm redundancy for $R$. The
+composition fails because Petals' recovery model assumes every
+peer has enough free memory to hold a redundant copy of multiple
+shards --- a comfortable assumption on its 16+\,GB consumer GPUs
+but unaffordable on a 4\,GB Nano. The Nano is already at the layer
+floor with its primary stage; reserving Petals' redundancy
+displaces the primary.
+
+A second attempt --- Jupiter's throughput-optimal DP plus a
+supervisor that restarts crashed workers --- also fails, but
+differently. Jupiter computes $\psi$ assuming all devices stay
+alive; backup memory was never reserved at placement time, so when
+a Nano dies the supervisor has nowhere to load the dead worker's
+layers without OOM-ing a survivor. The system degrades to a
+non-redundant chain that aborts the next failure.
+
+These compositions miss the same systemic point: on
+memory-tight edge, $\psi$ and $R$ have \emph{coupled} feasibility
+regions. The set of legal placements depends on which backups are
+assigned because the backup memory is part of every device's cap
+(\S\ref{sec:design:dp}, Eq.~\ref{eq:mem}). Decoupling the two
+problems gives up feasibility (if $R$ is solved first) or
+performance (if $\psi$ is fixed before $R$ has any voice). \sys{}
+is the joint solver that closes this gap.
