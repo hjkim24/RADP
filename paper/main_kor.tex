@@ -22,22 +22,23 @@
 % 폰트로 한양신명조와 가장 가까운 명조 인상을 주며 라이선스 부담
 % 없이 paper/fonts/ 에 .otf 를 commit 해 어느 환경에서든 동일하게
 % 빌드된다.
+%
+% kotex 가 이미 한글 처리를 담당하므로 xeCJK 를 따로 쓰면 kotex 의
+% glue 처리와 충돌해 본문 띄어쓰기가 뭉치거나 벌어진다. kotex 가
+% 직접 제공하는 \setmainhangulfont / \setsanshangulfont 만 사용한다.
 \usepackage{fontspec}
-\usepackage{xeCJK}
-\setCJKmainfont[
+\setmainhangulfont[
   Path=fonts/,
   Extension=.otf,
   UprightFont=KoPubBatang-Light,
   BoldFont=KoPubBatang-Bold,
 ]{KoPubBatang}
-\setCJKsansfont[
+\setsanshangulfont[
   Path=fonts/,
   Extension=.otf,
   UprightFont=KoPubDotum-Light,
   BoldFont=KoPubDotum-Bold,
 ]{KoPubDotum}
-% 본문 한글 = Batang (default), 강조/제목 한글 = Dotum
-\xeCJKsetup{CJKecglue={\hskip 0.15em plus 0.05em minus 0.05em}}
 
 \usepackage[margin=2cm,top=2.5cm,bottom=2.5cm]{geometry}
 \usepackage{amsmath,amssymb}
