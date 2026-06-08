@@ -1,47 +1,25 @@
 \section{Related Work}\label{sec:related}
 
-\subsection{Edge-distributed LLM inference}
-% - Petals: greedy placement across a public swarm. Memory-permissive
-%   (assumes >=16 GB nodes). Has redundancy-based recovery but treats
-%   placement and redundancy as decoupled.
-% - EdgeShard: DP-based optimal placement (latency mode). No
-%   recovery model. Authors assume a redundant copy of each shard
-%   sits somewhere on the cluster, which is exactly the
-%   assumption we cannot afford on 4 GB Nano.
-% - Jupiter: throughput-mode DP (Eq. 11 sets our throughput
-%   baseline). Coordinator-mediated star topology, no chain
-%   forwarding, no recovery.
-% - Llama.cpp + RPC: model-parallel via a wrapper protocol on
-%   CPU-class devices. No placement DP. Cited as the de-facto
-%   "just split it across what you have" baseline.
+% ~0.3 page. One dense paragraph (or two if it grows naturally).
+% Three threads to acknowledge, no per-system subsection.
 
-\subsection{Pipeline-parallel training and inference}
-% - GPipe / Megatron: synchronous pipeline-parallel training on
-%   homogeneous hardware. Provides the conceptual basis for
-%   throughput placement.
-% - DeepSpeed-MII / FasterTransformer: production inference engines.
-%   Not designed for the edge fleet model; rather the data center.
-% - Helix: measured Petals' 2.38x throughput cost from greedy
-%   placement on heterogeneous fleets — gives us the headline
-%   "greedy leaks 2.38x" number.
-
-\subsection{Fault tolerance for distributed inference}
-% - Ray / Spark style executor restart: too coarse for a
-%   token-by-token chain. We need stage-level recovery within a
-%   single in-flight request.
-% - Checkpoint-and-restart: orthogonal to the activation-replay
-%   mechanism RADP uses. We could combine the two for very long
-%   contexts.
-% - vLLM's request-level retry: closer in spirit, but vLLM
-%   targets a single GPU. The chain-aware attribution +
-%   replay-onto-backup we propose has no analogue there.
-
-\subsection{Cost-aware DP formulations}
-% - EdgeShard Eq. 6 = our alpha=0 boundary.
-% - Jupiter Eq. 11 = our alpha=1 boundary (plus the TBT_SLO
-%   inline constraint they fold into the recurrence).
-% - The unified (sum, max) cost rank we use generalises both
-%   under one knob, and we believe is novel — no prior work
-%   we are aware of exposes alpha as a runtime configuration
-%   tied to operational mode (batch=1 single-stream vs
-%   batched multi-stream).
+% Edge LLM inference: Petals~\cite{petals2023} demonstrated
+% collaborative inference on consumer hardware with greedy
+% placement and redundancy-based recovery, but its 16+~GB peer
+% assumption excludes 4~GB Nano. EdgeShard~\cite{edgeshard2024}
+% adds a DP-based latency-optimal placement (our $\alpha=0$
+% boundary) but assumes a redundant copy of each shard exists; its
+% recovery story is implicit. Jupiter~\cite{jupiter2024} introduces
+% throughput-optimal pipeline parallelism (our $\alpha=1$ boundary,
+% Eq.~11) and TBT-SLO constraints but offers no recovery and no
+% chain forwarding. Helix~\cite{helix2024} measures greedy
+% placement's 2.38$\times$ throughput tax on heterogeneous fleets,
+% motivating our DP-based approach. RADP unifies these threads:
+% the same DP yields EdgeShard's or Jupiter's placement via the
+% $\alpha$ knob, and our async mirror cache + chain-aware recovery
+% adds fault tolerance neither prior system provides on
+% memory-tight edge. Among pipeline-parallel training systems
+% (GPipe~\cite{gpipe2019}, Megatron) and inference engines
+% (vLLM~\cite{vllm2023}), only vLLM is request-granular, and even
+% it assumes a single-GPU executor — none address chain-stage
+% recovery on a multi-host edge fleet.

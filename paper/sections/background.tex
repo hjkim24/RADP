@@ -1,49 +1,37 @@
 \section{Background and Motivation}\label{sec:background}
 
-% Outline:
-% 2.1 Pipeline-parallel LLM inference primer
-%     - decoder block as the unit of partition; KV cache state per
-%       (request, stage) pair
-%     - prefill vs decode: prefill is one large activation, decode
-%       is per-token append (~2 KB at fp16 for OPT-350M's 1024-dim
-%       hidden vs the 1 MB hardcoded default we found buried in
-%       D2.3)
-%     - the gateway (coordinator) holds the embedding + lm_head
-%       and shuttles activations
-%
-% 2.2 Two prior systems we directly compete with:
-%     - EdgeShard (latency-optimal DP, no R, assumes redundancy)
-%     - Petals (greedy placement, no DP, no R for memory-constrained
-%       edge — they assume swarms)
-%     - Jupiter (throughput-optimal DP, no R; Eq. 11 sets the floor
-%       our throughput mode reproduces)
-%   Comparison table: who optimizes placement / who handles failure
-%   / cost-function family / runtime architecture.
-%
-% 2.3 Why the obvious composition fails:
-%     - run EdgeShard's DP, then add Petals' swarm recovery: 4 GB
-%       Nano can't hold the layer-redundancy Petals needs. Show
-%       memory accounting that breaks.
-%     - run Petals' placement, then run Jupiter's throughput pass:
-%       greedy first commits placements that no DP fix can recover.
-%     - run EdgeShard's DP, hope a watchdog handles failures:
-%       backup peer's memory wasn't reserved at placement time, so
-%       on failure the substitution either OOM-kills or the
-%       gateway falls through to a non-redundant degraded path.
-%   The systemic point: R and $\psi$ have *coupled* feasibility
-%   regions on memory-tight edge, and decoupling them gives up
-%   feasibility *or* performance — never both.
-%
-% 2.4 D2.5 motivation: showing the gateway bottleneck on sync chains
-%     - Petals-style chain forwarding (synchronous nested response)
-%       was supposed to unblock the throughput regime, but our
-%       measurement showed the aggregate ceiling held at ~26 tok/s.
-%       The cause turned out to be a structural one: every in-flight
-%       stream holds a gRPC thread on every chain stage until the
-%       chain tail's response unwinds. The async chain protocol of
-%       \S\ref{sec:design:async} addresses this without giving up
-%       Phase-3 recovery semantics.
+% Compressed to ~1 page. Two subsections covering (a) what edge LLM
+% inference looks like and where heterogeneity bites, and (b) why
+% the obvious composition of prior systems doesn't compose.
 
-\todo{Write 4-5 paragraphs from outline. Pull the 16x AGX/Nano gap
-finding from EXP-D2.2 (commit 382739b — profiler tokenizer + CUDA
-timing bug fixes) into 2.1 as the "why heterogeneity matters" hook.}
+\subsection{Pipeline-parallel inference on heterogeneous edge}
+% Outline (~3 paragraphs):
+% - Decoder block as the unit of partition; KV cache state per
+%   (request, stage). Prefill is one large activation, decode is
+%   per-token append (~2 KB at fp16 for OPT-350M's 1024-dim
+%   hidden — the per-layer transfer unit).
+% - Edge heterogeneity matters more than data-center heterogeneity:
+%   AGX Orin (MAXN power mode) is 16x faster per layer than Jetson
+%   Nano CUDA on OPT-350M decode (\S\ref{sec:eval:setup}). On a
+%   homogeneous fleet placement is a rounding question; on
+%   16x-different devices it is the only thing that matters.
+% - Edge reliability is also worse: boards crash, SD cards fill,
+%   heartbeat silence is common. Placement that ignores this
+%   produces a stream-aborts-on-first-failure system.
+
+\subsection{Why the obvious composition of prior systems fails}
+% Outline (~2 paragraphs + 1-row comparison table):
+% - EdgeShard's DP (latency-optimal placement, no R, assumes layer
+%   redundancy) + Petals' swarm recovery (memory-redundant peers):
+%   the 4 GB Nano can't hold Petals' redundancy.
+% - Jupiter (throughput-optimal DP, no R) + a watchdog restart:
+%   backup memory wasn't reserved at placement time, so on failure
+%   either OOM or non-redundant degraded path.
+% - The systemic point: $R$ and $\psi$ have *coupled* feasibility
+%   regions on memory-tight edge; decoupling gives up feasibility
+%   *or* performance, never both. This is the gap RADP fills.
+
+\todo{Write the two subsections from outlines above; one short
+table comparing EdgeShard / Petals / Jupiter / Helix / ours along
+{placement DP, recovery model, runtime architecture, fleet target}
+columns.}

@@ -1,109 +1,94 @@
 \section{Evaluation}\label{sec:eval}
 
-% Section opening paragraph: what we're answering and the table of contents.
-% RQ1: Does psi+R joint optimization outperform decoupled baselines
-%      in normal operation when device heterogeneity is meaningful?
-% RQ2: Does psi+R survive a mid-stream worker failure on edge?
+% ~2 pages. Four subsections answering four research questions.
+% RQ1: Does $\psi$+$R$ joint optimization outperform decoupled
+%      baselines in normal operation when heterogeneity is meaningful?
+% RQ2: Does $\psi$+$R$ survive a mid-stream worker failure on edge?
 % RQ3: Does latency-optimal placement (alpha=0) dominate throughput-
-%      optimal placement (alpha=1) across the design space we can
-%      vary at runtime (topology, chain mode, chain length, C)?
-% RQ4: What's the cost of asynchronous chain forwarding's failure
-%      attribution fallback, relative to its throughput gain?
+%      optimal placement (alpha=1) across the runtime knobs (topology,
+%      chain mode, chain length, C)?
+% RQ4: What does async chain forwarding cost in failure attribution?
 
-\subsection{Experimental setup}\label{sec:eval:setup}
-% - Fleet table (cf REPORT.md §1.1): on-1..on-6 + ao-1 + ao-2 + ax-1
-% - Model: OPT-350M (24 layers, 1024 hidden, fp16). State that
-%   OPT-1.3B's monolithic weight format made it inaccessible to
-%   this fleet (Negative result §X) — would need sharded loader
-%   work that's orthogonal to RADP's contribution.
-% - Workload: prompt = "fox jumps over the lazy dog. Once upon a
-%   time", greedy decoding (temperature=0), max_tokens varies by
-%   experiment.
-% - Tools: experiments/run_a3_remote.py, measure_concurrent.py,
-%   run_phase3_recovery.py (cf REPORT.md §1.3).
-% - Critical fixes applied: 934ea27 (OPT project_in order),
-%   246a02b (safetensors prefix mismatch), 382739b (profiler
-%   tokenizer + CUDA timing). All measurements post-fix.
+\subsection{Setup}\label{sec:eval:setup}
+% Outline (~0.3 page):
+% - Fleet: 8 Jetson workers + 1 AGX Xavier coordinator. Three
+%   compute tiers (CPU-Nano ~42 ms/layer, CPU-AGX ~17.6 ms/layer,
+%   CUDA Nano ~1.5 ms/layer) on OPT-350M decode. AGX Orin MAXN
+%   is 16x faster than Nano CUDA at seq=64 decode — a finding
+%   that only emerged after fixing two silent profiler bugs
+%   (tokenizer padding + CUDA async timing, commit 382739b).
+% - Model: OPT-350M (24 layers, 1024 hidden, fp16). OPT-1.3B's
+%   monolithic .bin format is inaccessible to 4 GB Nano without a
+%   sharded loader — orthogonal to our contribution
+%   (\S\ref{sec:disc}).
+% - Workload: greedy decoding (temperature=0). max_tokens varies
+%   by experiment. measure_concurrent.py for throughput sweep,
+%   run_phase3_recovery.py for fault injection.
+% - Source-of-truth: experiments/REPORT.md tracks every cell's
+%   underlying JSON for full reproducibility.
 
-\subsection{Profiler sanity (per-layer compute landscape)}\label{sec:eval:profiling}
-% - Per-layer compute (ms) on each tier post-D2.2 fix
-% - AGX Orin MAXN is 16x faster than Nano CUDA at seq=64 decode
-% - Without the MAXN power-mode lock the gap collapses, hiding
-%   in the noise — practical reproducibility note for systems
-%   reviewers
+\subsection{$\psi$+$R$ joint optimization beats decoupled baselines in normal mode}\label{sec:eval:a3b}
+% Outline (~0.4 page):
+% - 7-worker 3-tier fleet, n=300 TBT samples per cell.
+% - vs greedy: TBT p50 -6.5%, p95 -3.8%, throughput +8.3%.
+% - Cost model predicts tie at 45.3 ms max_stage; the live gap
+%   comes from pipeline transition overhead (gRPC framing +
+%   Python/GIL contention on back-to-back small stages) that the
+%   cost model under-weights — ours' fewer-bigger-stage placement
+%   exploits this in practice but not in prediction. This
+%   discrepancy bounds our claim and is revisited in
+%   \S\ref{sec:disc}.
+% - Bar figure: TBT p50/p95 + throughput, four baselines (greedy /
+%   uniform / jupiter_dp / ours).
 
-\subsection{Headline: $\psi$+$R$ joint optimization beats decoupled baselines in normal mode}\label{sec:eval:a3b}
-% From REPORT.md §4.1 (OPT-350M 3-tier, A3b' N=3):
-% - TBT p50 -6.5%, throughput +8.3% vs greedy, n=300 samples per cell
-% - Cost-model tie at 45.3 ms max_stage_time hides the live gap
-%   that pipeline transition overhead exposes (REPORT.md §4.2)
-% - Bar chart figure: TBT p50/p95 + throughput for greedy / uniform
-%   / jupiter_dp / ours
+\subsection{Failure recovery survives where baselines abort}\label{sec:eval:recovery}
+% Outline (~0.5 page, two paragraphs covering the two topologies):
+% (a) Star topology (EXP-D2.1, A2 N=5): 0/300 token loss across 5
+%     trials. Recovery step mean 617 ms, p95 670 ms, 100 ms tight
+%     spread. R={} baselines abort after the 17-20 in-flight tokens
+%     accumulated before the SIGKILL.
+% (b) Chain topology (EXP-D3 Phase 3 + 3.2):
+%   - Sync chain, 4-stage, on-6 SIGKILL mid-stream: 60/60 coherent
+%     tokens. Coord journal shows the trailer attribution path
+%     fires: "chain failure for already-dead on-6[10..14];
+%     finalising recovery (rewire + replay)". The trailer is
+%     ESSENTIAL: heartbeat had already substituted ao-1 as the
+%     backup, but the trailer's (10,14) range maps via the
+%     original placement to on-6 (the truly dead worker).
+%   - Async chain, same setup (post the trivial TimeoutError
+%     fix, commit bf238b2): also 60/60. Attribution falls back
+%     to head_stage when heartbeat loses the race; R+psi
+%     feasibility preserves correctness at the cost of an extra
+%     hop.
+%   - Mirror cache arithmetic check: 8-token Generate produces
+%     exactly 16 mirror pushes (8 steps * 2 non-first stages).
 
-\subsection{Fault recovery survives where baselines abort}\label{sec:eval:recovery}
-% Two layers:
-% (a) Star-topology recovery (EXP-D2.1, A2 N=5): 0/300 token loss,
-%     recovery step mean 617 ms, p95 670 ms. 100 ms tight spread.
-% (b) Chain-topology recovery (EXP-D3 Phase 3 + 3.2):
-%     - sync chain, 4-stage, on-6 SIGKILL mid-stream: 60/60
-%       coherent tokens, trailer attribution log fires correctly,
-%       "chain failure for already-dead on-6[10..14]; finalising
-%       recovery (rewire + replay)"
-%     - async chain, same setup: 60/60 (post-TimeoutError fix),
-%       but attribution falls back to head_stage when heartbeat
-%       loses the race; the substitution still produces a feasible
-%       plan so accuracy is preserved
-%     - Mirror cache verification: 8-token Generate => exactly 16
-%       mirror pushes (8 steps * 2 non-first stages), arithmetic
-%       confirms the data substrate works as designed
+\subsection{Latency placement strictly dominates throughput placement across 28 measurement points}\label{sec:eval:matrix}
+% Outline (~0.8 page — the headline result):
+% - Big 2x2x{C,depth} matrix. The figure version is a compact
+%   heatmap-coloured table; the prose calls out three deltas:
+%   (i) L > T at every one of the 28 points across two chain
+%       lengths * four cells * 3-4 C levels;
+%   (ii) async > sync everywhere at C >= 4, biggest at
+%       C=16 throughput placement (+47%);
+%   (iii) async gain is chain-length-INDEPENDENT (3-stage T@C=16
+%       sync->async = +47%, 4-stage = +46%). The cost is O(C),
+%       not O(stages * C).
+% - Best operating point on this fleet: L+async @ C=16 = 41.7
+%   tok/s (4-stage) vs worst (T+sync @ C=16) = 24.5 tok/s. +71%
+%   span covered by two runtime knobs the operator can flip.
+% - Caveat — stage count isn't a free knob: 3-stage L+async @ C=4
+%   = 33.7 tok/s; 4-stage = 23.9 (-29%). Each Nano in the
+%   4-stage chain gets only 1 layer to compute but pays a full
+%   network hop. RADP's DP picks stage count cost-aware; we
+%   forced 4-stage via fleet composition to expose this.
 
-\subsection{Headline: Latency placement strictly dominates throughput placement across 28 measurement points}\label{sec:eval:matrix}
-% This is the new central finding from EXP-D3 Phase F + F.2.
-% Big 4x4x2 table:
-%             T+sync   T+async   L+sync   L+async
-% 3-stage:
-%   C=1
-%   C=4
-%   C=16
-% 4-stage:
-%   C=1
-%   C=4
-%   C=8
-%   C=16
-% Interpretation:
-% (a) L > T at every one of the 28 points (highlight visually)
-% (b) async > sync mostly (esp at C=16, +47% T, +17-27% L)
-% (c) chain-length-independent async gain (3-stage vs 4-stage
-%     deltas)
-% (d) Best operating point: L+async @ C=16 = 41.7 tok/s vs worst
-%     (T+sync @ C=16) = 24.5 tok/s, +71% range covered by the
-%     design space.
-
-\subsection{Pipeline parallelism vs chain length}\label{sec:eval:depth}
-% 3-stage vs 4-stage L+async at matched C:
-% C=1: 9.7 vs 9.3 (-4%, extra hop costs a hair on cold pipeline)
-% C=4: 33.7 vs 23.9 (-29%, network/compute ratio collapses when
-%      each Nano gets only 1 layer)
-% C=16: 40.3 vs 41.7 (+3%, saturated)
-% Lesson: stage count is not a free knob. RADP-Latency DP picks
-% the stage count cost-aware; we forced 4-stage via fleet
-% composition to expose this — the DP itself wouldn't have.
-
-\subsection{Algorithmic predictions in synthetic sweep}\label{sec:eval:synth}
-% From REPORT.md §2: confirms the DP's polynomial runtime and the
-% specific heterogeneity ratios where greedy's rounding error
-% hands us a 14-22% speedup. Not the paper's main result but
-% reassures reviewers about the algorithm in isolation.
-
-\subsection{Sensitivity studies}\label{sec:eval:sens}
-% - activation_bytes calibration (REPORT.md §6): 500x overestimate
-%   in the legacy default flipped the DP's choice; once corrected
-%   the predictions match the live measurement
-% - eager vs lazy backup (PHASES.md A5): trade-off table.
-%   We default eager; lazy gives more layers to the primary at
-%   the cost of slower recovery and possible token loss
-% - chain_mode and optimization_mode are the headline knobs
-
-\todo{Each subsection deserves a figure or table. Headline figures:
-(i) the 28-point matrix in §6.4, (ii) recovery wall-clock CDF in
-§6.3, (iii) compute-tier per-layer ms in §6.2.}
+\todo{Figures: (i) headline 28-point matrix as a single compact
+table with two-color highlighting for L>T cells (all 28); (ii)
+recovery wall-clock CDF showing star topology mean 617 ms p95 670 ms
+vs the chain topology's noisier distribution; (iii) per-tier
+per-layer compute bar chart anchoring the heterogeneity claim. The
+sensitivity-study subsection from the longer outline is dropped to
+hit the 7-page budget — alpha sweep, eager-vs-lazy, and
+activation\_bytes calibration become 2-sentence anchors in
+\S\ref{sec:disc}.}
