@@ -30,7 +30,10 @@ logs/
 *.log
 
 # Editor
-.vscode/
+.vscode/*
+# Keep the workspace LaTeX build config so the paper builds out of the
+# box when contributors check the repo out on a new machine.
+!.vscode/settings.json
 .idea/
 .DS_Store
 

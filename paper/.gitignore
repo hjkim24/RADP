@@ -9,3 +9,7 @@ main.pdf
 *.fls
 *.fdb_latexmk
 *.synctex.gz
+
+# tectonic intermediate artifacts (--keep-intermediates)
+*.synctex.gz
+main.bbl

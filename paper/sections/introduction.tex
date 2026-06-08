@@ -1,51 +1,84 @@
 \section{Introduction}\label{sec:intro}
 
-% Outline — ~1 page, 4 paragraphs:
+Distributed LLM inference on edge clusters has moved from research
+curiosity to viable deployment.  Petals~\cite{petals2023}
+demonstrated that a collaborative swarm of consumer GPUs can serve
+billion-parameter models, EdgeShard~\cite{edgeshard2024} added
+latency-optimal layer placement via dynamic programming, and
+Jupiter~\cite{jupiter2024} pushed throughput-optimal placement with
+explicit Token-Between-Time (TBT) constraints.  Yet these systems
+were built around two assumptions inherited from the data center
+that the edge regime breaks.  First, \emph{homogeneity}: on our
+8-worker Jetson fleet a Jetson AGX Orin in MAXN power mode is
+16$\times$ faster per layer than a Jetson Orin Nano at decode-time
+sequence lengths --- a finding that itself only emerged after we
+fixed two silent profiler bugs (\S\ref{sec:eval:setup}).  Second,
+\emph{reliability}: boards crash, SD cards fill up, networks
+partition.  During the measurement campaign behind this paper we
+encountered all three on multiple boards, and placement that
+ignores them produces a system whose first worker failure aborts
+the stream.
 
-% Paragraph 1: edge LLM inference is becoming real (privacy,
-% latency, cost). Petals / Llama.cpp / EdgeShard show it works
-% at all. But edge clusters break two data-center assumptions:
-% (a) homogeneity — Jetson Nano vs AGX Orin differ by 16x in
-% measured per-layer compute (\S\ref{sec:eval:setup}); (b)
-% reliability — boards crash, networks partition, disks fill.
+Existing systems treat layer placement~($\psi$) and recovery
+routing~($R$) as separate problems.  EdgeShard's DP optimizes
+$\psi$ assuming a redundant copy of every layer exists somewhere
+on the cluster --- a comfortable assumption on a 16+\,GB peer but
+unaffordable on a 4\,GB Nano.  Petals' greedy placement leaks
+2.38$\times$ throughput on heterogeneous fleets~\cite{helix2024}
+and its swarm-redundancy recovery model presupposes spare memory
+the edge does not have.  Jupiter's throughput-optimal DP has no
+recovery story at all.  Composing these systems naively does not
+recover what each gives up: the systemic point we make in
+\S\ref{sec:background} is that $R$ and $\psi$ have \emph{coupled}
+feasibility regions on memory-tight edge.  Decoupling them gives
+up feasibility or performance, never both.
 
-% Paragraph 2: existing systems treat placement and recovery
-% as separate problems. EdgeShard's DP optimizes placement
-% assuming layer redundancy exists. Petals' greedy placement
-% leaks 2.38x throughput when devices differ. Jupiter's
-% throughput-optimal DP has no recovery story. The systemic
-% point: $R$ and $\psi$ have *coupled* feasibility regions on
-% memory-tight edge — decoupling them gives up feasibility or
-% performance, never both.
+\sys{} unifies $\psi$ and $R$ inside a single alternating dynamic
+program whose backup-memory reservation folds back into the
+placement feasibility check.  The same DP that decides which
+worker hosts which transformer block also decides which worker
+absorbs whose stage on failure, with one tunable cost knob $\alpha$
+that lets the optimizer span EdgeShard's latency regime ($\alpha
+{=}0$) and Jupiter's throughput regime ($\alpha{=}1$) under one
+framework (\S\ref{sec:design:dp}).  Two runtime mechanisms make the
+joint optimization viable on a real edge fleet: an
+\emph{asynchronous mirror cache} that ships per-stage activations
+back to the coordinator out-of-band, so a freshly-promoted backup
+can rebuild its KV state without disrupting the surviving chain
+(\S\ref{sec:design:mirror}); and \emph{asynchronous chain
+forwarding} with a \texttt{ResultReady} reverse channel, which
+breaks the synchronous nested-response unwind that we measured
+silently serializes nominally-pipelined chains
+(\S\ref{sec:design:async}).
 
-% Paragraph 3: RADP unifies them. One alternating DP picks
-% $\psi$ and $R$ together; backup-memory reservation folds into
-% placement feasibility. Two runtime mechanisms make the joint
-% optimization viable on a real fleet: an async mirror cache for
-% fault recovery on chain topologies (\S\ref{sec:design:mirror}),
-% and async chain forwarding to unblock pipeline parallelism the
-% synchronous nested-response unwind silently serializes
-% (\S\ref{sec:design:async}).
+We make the following contributions:
 
-% Paragraph 4: contributions, condensed.
-% \begin{itemize}
-%   \item A formal $\psi$+$R$ alternating DP with polynomial
-%         convergence, generalising EdgeShard (latency, $\alpha=0$)
-%         and Jupiter (throughput, $\alpha=1$) under one tunable
-%         cost function (\S\ref{sec:design:dp}).
-%   \item Asynchronous mirror cache + chain-aware recovery
-%         with gRPC-trailer attribution
-%         (\S\ref{sec:design:mirror}).
-%   \item Asynchronous chain forwarding with per-request
-%         locking and a \texttt{ResultReady} reverse channel,
-%         yielding +17--47\% throughput at $C{=}16$
-%         (\S\ref{sec:design:async}).
-%   \item Live measurement on an 8-worker Jetson fleet across
-%         28 operating points: latency placement strictly
-%         dominates throughput placement at every point —
-%         structural to $\psi$+$R$, not architectural
-%         (\S\ref{sec:eval:matrix}).
-% \end{itemize}
-
-\todo{Write 4 paragraphs from outline, ending in the contribution
-list. Approx 1 page in two-column sigconf.}
+\begin{itemize}
+  \item A formal $\psi$+$R$ alternating DP with polynomial-time
+        convergence, generalizing EdgeShard's latency mode and
+        Jupiter's throughput mode under one $\alpha$-tunable
+        rank function (\S\ref{sec:design:dp}).
+  \item An asynchronous mirror cache plus chain-aware failure
+        attribution path that uses gRPC-trailer metadata to
+        identify the truly-dead worker even when the heartbeat
+        path has already substituted its backup
+        (\S\ref{sec:design:mirror}).
+  \item Asynchronous chain forwarding with per-request locking
+        and a coordinator-side \texttt{ResultReady} reverse
+        channel, yielding a chain-length-independent
+        17--47\% throughput gain at $C{=}16$ over synchronous
+        chains (\S\ref{sec:design:async}).
+  \item Live measurement on an 8-worker Jetson fleet across
+        \emph{28} operating points (two chain lengths $\times$
+        four architecture variants $\times$ three--four
+        concurrency levels) showing latency-optimal placement
+        strictly dominates throughput-optimal placement at
+        every point --- a structural property of the $\psi$+$R$
+        joint optimization, not an artifact of any specific
+        topology or runtime architecture
+        (\S\ref{sec:eval:matrix}).  Under a mid-stream worker
+        SIGKILL, \sys{} delivers all 60 expected tokens
+        coherently while the placement-only baselines abort
+        after the 17--20 tokens already in flight
+        (\S\ref{sec:eval:recovery}).
+\end{itemize}

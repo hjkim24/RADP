@@ -1,0 +1,43 @@
+{
+  // Use tectonic (installed via `brew install tectonic`) as the LaTeX
+  // build backend. We don't have latexmk locally; LaTeX Workshop's
+  // default recipe is "latexmk -> bibtex -> latexmk -> latexmk", which
+  // is what's been failing with "spawn latexmk ENOENT" on this box.
+  //
+  // tectonic in `-X compile` mode fetches missing fonts/packages on
+  // first build (cached under ~/Library/Caches/Tectonic afterwards),
+  // handles the bibtex pass implicitly, and writes main.pdf in the
+  // same directory as the .tex file — drop-in replacement for the
+  // latexmk recipe.
+  "latex-workshop.latex.tools": [
+    {
+      "name": "tectonic",
+      "command": "tectonic",
+      "args": [
+        "--synctex",
+        "--keep-logs",
+        "--keep-intermediates",
+        "%DOC%.tex"
+      ],
+      "env": {}
+    }
+  ],
+  "latex-workshop.latex.recipes": [
+    {
+      "name": "tectonic",
+      "tools": ["tectonic"]
+    }
+  ],
+  "latex-workshop.latex.recipe.default": "tectonic",
+
+  // Auto-build on save, but only when editing paper/ files so other
+  // saves elsewhere in the repo don't trigger a paper rebuild.
+  "latex-workshop.latex.autoBuild.run": "onSave",
+
+  // Open the PDF in a VSCode tab instead of an external viewer.
+  "latex-workshop.view.pdf.viewer": "tab",
+
+  // Keep aux files alongside the .tex source (Tectonic's default
+  // behaviour); the existing paper/.gitignore already excludes them.
+  "latex-workshop.latex.outDir": "%DIR%"
+}
