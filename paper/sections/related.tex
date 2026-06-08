@@ -3,16 +3,16 @@
 % ~0.3 page. One dense paragraph (or two if it grows naturally).
 % Three threads to acknowledge, no per-system subsection.
 
-% Edge LLM inference: Petals~\cite{petals2023} demonstrated
+% Edge LLM inference: Petals~\cite{borzunov2023petals,borzunov2023distributed} demonstrated
 % collaborative inference on consumer hardware with greedy
 % placement and redundancy-based recovery, but its 16+~GB peer
-% assumption excludes 4~GB Nano. EdgeShard~\cite{edgeshard2024}
+% assumption excludes 4~GB Nano. EdgeShard~\cite{zhang2024edgeshard}
 % adds a DP-based latency-optimal placement (our $\alpha=0$
 % boundary) but assumes a redundant copy of each shard exists; its
-% recovery story is implicit. Jupiter~\cite{jupiter2024} introduces
+% recovery story is implicit. Jupiter~\cite{ye2025jupiter} introduces
 % throughput-optimal pipeline parallelism (our $\alpha=1$ boundary,
 % Eq.~11) and TBT-SLO constraints but offers no recovery and no
-% chain forwarding. Helix~\cite{helix2024} measures greedy
+% chain forwarding. Helix~\cite{mei2025helix} measures greedy
 % placement's 2.38$\times$ throughput tax on heterogeneous fleets,
 % motivating our DP-based approach. RADP unifies these threads:
 % the same DP yields EdgeShard's or Jupiter's placement via the
