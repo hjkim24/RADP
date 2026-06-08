@@ -9,10 +9,13 @@
 
 \documentclass[10pt, sigconf, anonymous=false]{acmart}
 
-% --- ACM metadata (placeholder; real values once venue is settled) -----
+% --- ACM metadata ------------------------------------------------------
+% Capstone submission: not a real ACM venue, so we suppress the ACM
+% reference block, CCS concepts list, and copyright stamp. acmart's
+% sigconf layout is reused only for the two-column formatting.
 \setcopyright{none}
-\acmConference[Anonymous Submission]{Conference Name}{Conference Year}{City, Country}
-\acmYear{}
+\acmConference[SKKU Capstone]{Sungkyunkwan University Capstone Design}{2026}{Suwon, Republic of Korea}
+\acmYear{2026}
 \acmISBN{}
 \acmDOI{}
 \settopmatter{printacmref=false, printccs=false, printfolios=true}
@@ -38,9 +41,25 @@
 % --- Title -------------------------------------------------------------
 \title{\sys{}: Recovery-Aware Layer Placement and Asynchronous Chain Forwarding for Distributed LLM Inference on Edge Clusters}
 
-% --- Authors (anonymous for submission) --------------------------------
-\author{Anonymous Authors}
-\affiliation{\institution{Submitted for double-blind review}\country{}}
+% --- Authors -----------------------------------------------------------
+\author{Hakjae Kim}
+\email{hjkim24@g.skku.edu}
+\affiliation{%
+  \institution{Sungkyunkwan University}
+  \department{Department of Advanced Materials Science and Engineering}
+  \city{Suwon}
+  \country{Republic of Korea}
+}
+
+\author{Wansu Lim}
+\authornote{Corresponding author.}
+\email{wansu.lim@skku.edu}
+\affiliation{%
+  \institution{Sungkyunkwan University}
+  \department{Department of Electronic and Electrical Engineering}
+  \city{Suwon}
+  \country{Republic of Korea}
+}
 
 \begin{document}
 
