@@ -35,13 +35,14 @@ monolithic \texttt{.bin} format and Llama-3.2-3B's 6\,GB working
 set both exceed Nano memory and are orthogonal to our contribution
 (\S\ref{sec:disc}).
 
-\textbf{Workload.} Greedy decoding (temperature$=$0); \texttt{max\_tokens}
-varies by experiment (30 for the concurrent throughput sweep, 60
-for recovery trials). All concurrency points use
-\texttt{experiments/measure\_concurrent.py}, all recovery trials
-use \texttt{experiments/run\_phase3\_recovery.py}. Every reported
-cell is backed by a JSON artifact under \texttt{experiments/results/}
-catalogued in \texttt{experiments/REPORT.md} for reproducibility.
+\textbf{Workload.} Greedy decoding (temperature$=$0);
+\texttt{max\_tokens} varies by experiment (30 for the concurrent
+throughput sweep, 60 for recovery trials). Concurrency points use
+\texttt{measure\_\allowbreak{}concurrent.py}; recovery trials use
+\texttt{run\_phase3\_\allowbreak{}recovery.py}. Every reported cell
+is backed by a JSON artifact under \texttt{experiments/results/},
+catalogued in the repository's \texttt{REPORT.md} for
+reproducibility.
 
 \subsection{$\psi$+$R$ joint optimization beats decoupled baselines in normal mode}\label{sec:eval:a3b}
 
@@ -72,8 +73,9 @@ the cost model under-counts. We revisit the asymmetry in
 \subsection{Failure recovery survives where baselines abort}\label{sec:eval:recovery}
 
 \textbf{Star topology.} Five trials kill a non-coordinator worker
-mid-stream after 17--20 tokens have been issued
-(\texttt{run\_phase3\_recovery.py} with \texttt{--kill-after-token N}).
+mid-stream after 17--20 tokens have been issued (the harness is
+\texttt{run\_phase3\_\allowbreak{}recovery.py} with the
+\texttt{--kill\allowbreak-after\allowbreak-token N} flag).
 \sys{} delivers all 60 expected tokens coherently in 5/5 trials;
 all three placement-only baselines abort the stream at the kill
 boundary, losing the 17--20 in-flight tokens already returned to
@@ -86,8 +88,9 @@ mirror pushes ($8$ steps $\times$ 2 non-first stages of a 3-stage
 chain).
 
 \textbf{Chain topology.} The 4-stage chain
-\texttt{ao-1[1..9]$\to$on-6[10..14]$\to$on-1[15..19]$\to$on-2[20..24]}
-isolates a \emph{mid-chain} failure (on-6), which exercises the
+\texttt{ao-1[1..9]} $\to$ \texttt{on-6[10..14]} $\to$
+\texttt{on-1[15..19]} $\to$ \texttt{on-2[20..24]} isolates a
+\emph{mid-chain} failure (on-6), which exercises the
 trailer-based attribution path; head/tail kills would resolve via
 heartbeat alone. With sync chain forwarding, all 60 tokens land
 coherently; the coordinator journal shows the upstream worker
@@ -184,7 +187,7 @@ is itself a placement parameter, not a deployment constant.
 
 \begin{table*}[t]
   \centering
-  \small
+  \footnotesize
   \caption{Aggregate throughput (tok/s) and TBT p50 (ms, in
   brackets) across the 24-cell OPT-350M matrix and the
   Llama-3.2-1B 4-stage sub-matrix. Each row is one (chain length,

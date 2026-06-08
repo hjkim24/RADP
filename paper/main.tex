@@ -33,6 +33,21 @@
 \usepackage{xcolor}      % for \todo color
 \usepackage{xspace}
 
+% --- Typesetting tweaks ------------------------------------------------
+% acmart loads microtype by default in final mode; we just give it more
+% room. emergencystretch lets TeX widen interword spacing as a last
+% resort to absorb the dozens of sub-20pt overfull boxes that
+% \texttt{} identifiers create in two-column layout. We do NOT use
+% \sloppy globally — it makes the body widen by ~1 page over the
+% 7-page budget. Per-paragraph \sloppy via \sloppypar{} would also
+% work but emergencystretch alone handles everything we have.
+\setlength{\emergencystretch}{2em}
+% Slightly compress floats so a wide table + algorithm don't eat
+% an extra page of body text.
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\dbltextfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{6pt plus 2pt minus 2pt}
+
 % --- Macros ------------------------------------------------------------
 \newcommand{\sys}{RADP\xspace}
 \newcommand{\psiR}{$\psi$-R\xspace}
