@@ -816,18 +816,21 @@ class RequestGateway:
                 first_stage, request_id, blob, is_prefill=is_prefill,
                 position=position,
             )
-        except grpc.RpcError as e:
+        except (grpc.RpcError, TimeoutError) as e:
+            # Phase F: in async chain mode the ResultReady wake-up never
+            # arrived within async_chain_timeout_seconds, so _invoke
+            # raises TimeoutError instead of an RpcError. There's no
+            # trailer in this case (the fire-and-forget chain unwound
+            # long ago) — _attribute_chain_failure handles the missing
+            # trailing_metadata attribute gracefully and falls back to
+            # the head stage. The recovery driver's "already-dead" branch
+            # then picks up wherever the heartbeat path left things and
+            # finishes the rewire + replay.
             log.warning(
                 "request=%d chain RunStage to %s[%d..%d] raised: %s",
                 request_id, first_stage.device,
                 first_stage.start_layer, first_stage.end_layer, e,
             )
-            # Phase 3: read the worker-stamped trailer to find the *actual*
-            # dead stage (could be head itself OR any downstream). The
-            # recovery driver promotes the backup, rewires the chain,
-            # evicts stale KV caches, replays the cached input history
-            # through the new chain, and returns the response from the
-            # last (= current-position) invocation — which IS our retry.
             first_stage, resp = self._recover_from_chain_failure(
                 request_id, first_stage, e, position
             )
