@@ -1,0 +1,37 @@
+\section{Implementation}\label{sec:impl}
+
+% One subsection per major code surface; ~1 paragraph each.
+% Code references should point at github SHAs of the open-source
+% release. PHASES.md tags each phase with its core commit.
+
+\subsection{Coordinator and worker runtime}
+% - Python 3.10, gRPC, PyTorch (Jetson-specific NV CUDA wheels)
+% - 99 unit/smoke tests, 4 of which exercise live multi-node behavior
+% - Ansible deploy for the 5-host Jetson fleet
+% Numbers: lines of code, # of RPCs in radp.proto, etc.
+
+\subsection{gRPC protocol}
+% - Table of RPCs: LoadStage, RunStage (+ async_chain field),
+%   MirrorActivation, ResultReady, SetNextHop, LoadHead,
+%   Heartbeat, EvictRequest, PromoteBackup, ProfileLayers,
+%   MeasurePeer, Ping
+% - Trailer metadata scheme (radp-failed-start, radp-failed-end)
+
+\subsection{Auto-scheduling}
+% - Coord profiles every worker (per-layer compute, peer-to-peer
+%   network) on boot then runs the DP. The profile sidecar (
+%   /tmp/radp_scheduler_stats.json) is the single source of truth
+%   for the experiments in \S\ref{sec:eval}.
+
+\subsection{Failure detection and recovery}
+% - HeartbeatSender + FailureDetector
+% - When trailer-based attribution beats heartbeat: the recovery
+%   driver's "already-dead" branch finishes whatever heartbeat
+%   started (rewire + replay) without redundant mark_dead
+% - When the gateway's async timeout beats heartbeat: head
+%   fallback (no trailer to read), accuracy preserved by R+psi
+%   feasibility, efficiency degraded
+
+\todo{Fill each subsection. Cross-reference \texttt{PHASES.md}
+sections inline so reviewers can audit any specific implementation
+claim against the live measurement that backed it.}

@@ -1,0 +1,59 @@
+\section{Discussion}\label{sec:disc}
+
+\subsection{When latency-optimal placement could lose}
+% Our 28-point matrix is strong but it's still one fleet, one model
+% family, one workload. Conditions under which throughput placement
+% might win:
+% (a) Workloads where the AGX Orin / fastest device runs out of memory
+%     before the layer-floor on a Nano starts to bind. We never hit
+%     this on OPT-350M.
+% (b) Substantially deeper models where the bulk-on-AGX placement
+%     overflows the AGX (e.g., a hypothetical 7B sharded INT4 where
+%     each Nano legitimately needs to carry ~7 layers).
+% (c) Network-bandwidth-bound regimes where the activation transfer
+%     dominates compute; balanced stages amortize transfer better
+%     than concentrated stages.
+% These are the conditions under which an honest RADP deployment would
+% pick optimization_mode=blended (alpha tuned per fleet).
+
+\subsection{Asynchronous chain's failure-attribution trade-off}
+% (a) +47% throughput at C=16 vs -- the cost: when the trailer-
+%     based attribution path becomes unavailable (response chain
+%     already unwound), we fall back to head_stage attribution.
+% (b) Heartbeat usually wins the race within ~5s and produces an
+%     accurate mark_dead before the gateway's 30s timeout fires.
+%     The "already-dead" branch in the recovery driver then
+%     finalises correctly.
+% (c) When heartbeat loses the race (slow network, heartbeat
+%     interval misconfigured), we mark the wrong device dead. R+psi
+%     feasibility prevents an outright failure — but we pay extra
+%     hops as the chain reshuffles around the wrong node.
+
+\subsection{Edge fleet reliability as a measurement risk}
+% During the live measurement campaign we encountered SSH banner
+% timeouts, disk fills, heartbeat-silent boards, and SD-card
+% wear-out symptoms. Documented in PHASES.md notes for
+% reproducibility (e.g., on-1 disk filled mid-session at
+% 2026-06-08). The cleanest claim a paper of this kind can
+% make is that the *runtime* is robust to these events; the
+% paper's repro instructions should be explicit about which
+% boards in the data point were reachable and what we did when
+% one dropped (almost always: rebalance inventory.ini and
+% re-run, since RADP's auto-schedule handles arbitrary device
+% sets natively).
+
+\subsection{Limits of the joint optimization formulation}
+% (a) R(j) is a single backup device today, not a list. Concurrent
+%     faults (cascade failures) require list-of-backups + a
+%     priority-ordered tie-break. plan.md §7.2 sketches the
+%     extension.
+% (b) The DP's cost function still under-weights pipeline transition
+%     overhead (REPORT.md §4.2). The discrepancy is bounded but
+%     real: the algorithmic prediction is ours-and-greedy-tie at
+%     45.3 ms whereas the live measurement shows ours -6.5%. A
+%     marginal-layer or transition-count term would close it
+%     (backlog A6).
+% (c) optimization_mode = blended (alpha free) is exposed today but
+%     we don't sweep alpha in the headline matrix. A finer alpha
+%     sweep could identify the cross-over point for fleets where
+%     L+async stops dominating.

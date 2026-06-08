@@ -1,0 +1,20 @@
+\section{Conclusion}\label{sec:conclusion}
+
+% Outline:
+% - Recap: RADP folds placement and recovery into one DP, with two
+%   runtime mechanisms (async mirror cache, async chain) that make
+%   that joint optimization viable on a real edge fleet.
+% - The strongest empirical claim is the 28-point matrix: latency
+%   placement strictly dominates throughput placement across every
+%   variant we measured. The underlying R+psi joint optimization is
+%   what produces the dominance — not any specific topology or
+%   runtime architecture.
+% - Async chain forwarding adds 17--47% throughput at C=16 over
+%   sync without ever reversing the L>T ordering, confirming the
+%   two mechanisms are *orthogonal*: chain mode is a runtime knob,
+%   not a placement input.
+% - Future work: deeper sharded models (Llama-2-7B INT4), concurrent
+%   fault scenarios (R as a backup-list), cost-function refinement
+%   to close the predicted-vs-measured gap.
+
+\todo{Write 3 paragraphs from outline above.}

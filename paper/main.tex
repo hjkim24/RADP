@@ -1,0 +1,59 @@
+% RADP: Recovery-Aware DP for Distributed LLM Inference on Edge Clusters
+% Target: OSDI/NSDI/EuroSys (systems venue, two-column, ~12 pages)
+%
+% Build:    pdflatex main && bibtex main && pdflatex main && pdflatex main
+% Or:       latexmk -pdf main.tex
+%
+% Sections are included from sections/*.tex so multiple authors can work
+% in parallel without main.tex merge conflicts.
+
+\documentclass[10pt, sigconf, anonymous=false]{acmart}
+
+% --- ACM metadata (placeholder; real values once venue is settled) -----
+\setcopyright{none}
+\acmConference[Anonymous Submission]{Conference Name}{Conference Year}{City, Country}
+\acmYear{}
+\acmISBN{}
+\acmDOI{}
+\settopmatter{printacmref=false, printccs=false, printfolios=true}
+
+% --- Common packages ---------------------------------------------------
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subcaption}
+\usepackage{listings}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath, amssymb}
+\usepackage{xspace}
+
+% --- Macros ------------------------------------------------------------
+\newcommand{\sys}{RADP\xspace}
+\newcommand{\psiR}{$\psi$-R\xspace}
+\newcommand{\todo}[1]{{\color{red}\textbf{[TODO: #1]}}}
+
+% --- Title -------------------------------------------------------------
+\title{\sys{}: Recovery-Aware Layer Placement and Asynchronous Chain Forwarding for Distributed LLM Inference on Edge Clusters}
+
+% --- Authors (anonymous for submission) --------------------------------
+\author{Anonymous Authors}
+\affiliation{\institution{Submitted for double-blind review}\country{}}
+
+\begin{document}
+
+\maketitle
+
+\input{sections/abstract}
+\input{sections/introduction}
+\input{sections/background}
+\input{sections/design}
+\input{sections/implementation}
+\input{sections/evaluation}
+\input{sections/discussion}
+\input{sections/related}
+\input{sections/conclusion}
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}

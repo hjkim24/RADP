@@ -1,0 +1,38 @@
+\begin{abstract}
+Distributed LLM inference on heterogeneous edge clusters—single-board
+computers with 4--32\,GB of RAM and orders-of-magnitude differences in
+compute throughput---faces an unavoidable trade-off: placement
+decisions that maximize normal-mode throughput rarely leave the
+redundancy needed to recover from a worker failure, while
+redundancy-first designs leak performance to backup overhead.
+
+\sys{} unifies layer placement ($\psi$) and recovery routing ($R$) in
+a \emph{single} alternating dynamic program. The same DP that picks
+which worker hosts which transformer block also picks which worker
+absorbs whose stage on failure, with the backup memory reservation
+folded back into the placement constraint.
+
+We pair the optimizer with two system-level mechanisms that make the
+$\psi$+$R$ choice survive on a realistic edge runtime: an
+\emph{asynchronous mirror cache} that ships per-worker activation
+inputs to the coordinator out-of-band so a freshly-promoted backup
+can rebuild its KV state without disrupting the surviving chain, and
+an \emph{asynchronous chain forwarding} protocol that breaks the
+synchronous nested-response unwind we found to silently serialise
+nominally-pipelined chains.
+
+Live measurement on an eight-worker Jetson fleet shows that across 28
+operating points spanning two chain lengths, four architecture
+variants (star and chain topologies with synchronous and asynchronous
+forwarding), and four concurrency levels, \sys{}'s latency-optimized
+placement strictly dominates throughput-optimized placement at
+\emph{every} point---a structural property of the $\psi$+$R$ joint
+optimization, not an artifact of any specific runtime architecture.
+Asynchronous chain forwarding adds a chain-length-independent
+17--47\% throughput gain at $C{=}16$ over synchronous forwarding
+without ever reversing the placement ordering. Under a worker SIGKILL
+mid-stream, \sys{} delivers 60/60 coherent tokens with millisecond
+attribution accuracy in synchronous mode and graceful timeout
+fallback in asynchronous mode, where the baselines deliver only the
+17--20 already-in-flight tokens and then abort with no recovery.
+\end{abstract}

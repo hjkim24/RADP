@@ -1,0 +1,105 @@
+\section{System Design}\label{sec:design}
+
+\subsection{Architecture overview}\label{sec:design:arch}
+
+% Outline: figure of the runtime (coord + workers + the chain links +
+% the mirror cache return arrows). One paragraph each:
+% - coord roles: embed, lm_head (or delegate to tail), gateway
+% - worker roles: stage runner, mirror dispatcher, chain forwarder
+% - heartbeat path (control plane) vs request path (data plane)
+
+\subsection{Recovery-Aware DP ($\psi$+$R$ joint optimization)}\label{sec:design:dp}
+
+% Outline:
+% (a) State: $(j, s)$ = first j layers placed across stages whose
+%     last index is s. Cost: rank(state) = (1-alpha)*sum_stage_time
+%                                          + alpha*max_stage_time.
+%     alpha=0 -> EdgeShard latency mode. alpha=1 -> Jupiter throughput
+%     mode. alpha in between -> blended (Jupiter Eq. 4).
+% (b) Recurrence: equation block. Memory feasibility check folds in
+%     R: stage's primary memory + sum of backed-up peers' memory <=
+%     device cap.
+% (c) Recovery table R: chosen by a greedy pass that minimizes
+%     max(backup_memory_overflow) given a fixed psi. Alternating loop
+%     (Algorithm \ref{alg:alternating}) provably converges in finitely
+%     many iterations because cost is monotonically non-increasing
+%     across alternations.
+% (d) Complexity: O(L^2 * |D|) per inner DP, O(|D|!) when we brute-
+%     force device orderings (justified: |D| is small, edge fleets are
+%     ~3-8 devices); a heuristic prune drops the O(|D|!) to O(|D|^2)
+%     for larger fleets.
+
+\subsection{Async mirror cache}\label{sec:design:mirror}
+
+% Outline:
+% (a) The problem: with synchronous chain forwarding the coord only
+%     sees the chain head's input locally. If a mid-chain worker
+%     dies, the coord has no activation history to replay onto the
+%     backup.
+% (b) The fix: every worker pushes its received activation as a
+%     fire-and-forget MirrorActivation RPC to the coord, before
+%     running its stage. Coord stores it in a position-keyed cache
+%     with idempotent inserts so duplicate retries and out-of-order
+%     arrivals collate correctly.
+% (c) Cost: per non-first stage, one activation worth of bytes
+%     additional traffic per step. The mirror dispatcher is
+%     single-threaded so ordered delivery is the common case;
+%     position keys handle the uncommon out-of-order case.
+% (d) Live verification (anchor for evaluation): 8-token generation
+%     across a 3-stage chain produces exactly 16 mirror pushes (8
+%     steps * 2 non-first stages), arithmetic checks (\S\ref{sec:eval:recovery}).
+
+\subsection{Chain-aware recovery loop}\label{sec:design:recovery}
+
+% Outline:
+% (a) Trailer-stamped failure attribution: when a worker's
+%     downstream RunStage fails, it stamps the failed stage's
+%     (start, end) onto the gRPC trailer before aborting. Coord
+%     reads the trailer and looks up the ORIGINAL placement (not
+%     the live execution plan) to find the truly-dead worker even
+%     when heartbeat has already substituted the backup. This is
+%     the missing piece: in a chain where R substitutes one device
+%     for another, the trailer is the only path that still names
+%     the true victim.
+% (b) Recovery driver: mark_dead -> promote_backup RPC -> chain
+%     rewire (SetNextHop on every worker) -> EvictRequest on
+%     survivors -> replay-history-through-new-chain.
+% (c) Why full chain replay vs stage-only replay: the surviving
+%     upstream workers already advanced their KV cache by one
+%     step on the failed attempt; a naive retry double-counts that
+%     position. Evict + replay rebuilds deterministically.
+
+\subsection{Async chain forwarding}\label{sec:design:async}
+
+% Outline:
+% (a) Synchronous chain forwarding's hidden cost: each in-flight
+%     stream occupies a gRPC handler thread on EVERY chain stage
+%     until the nested response unwinds. C concurrent streams * N
+%     stages = CN occupied slots. Throughput placement's pipeline
+%     parallelism never materializes at C>=4.
+% (b) The protocol: workers dispatch the next-hop RunStage to a
+%     bounded thread pool and return ACK to their upstream caller
+%     immediately. The chain tail wakes the coord via
+%     CoordinatorService.ResultReady when its work is done.
+% (c) Per-(request_id, position) Event on the coord side; _invoke
+%     waits on it with a timeout (default 30s). Per-request lock
+%     on the worker side so two concurrent steps of the same
+%     request can't race on the same DynamicCache.
+% (d) Trade-off: trailer-based attribution becomes unavailable
+%     in async mode (the response chain unwound long ago). We
+%     fall back to heartbeat + timeout-driven recovery. The
+%     limitation paragraph in \S\ref{sec:disc} expands on this.
+
+\subsection{Configuration surface}\label{sec:design:config}
+
+% Outline: one paragraph + table.
+% - optimization_mode: latency | throughput | blended (alpha)
+% - eager_backup: true (preload weights on R(j)) | false (lazy)
+% - chain_mode: sync | async
+% - activation_bytes: 0 (auto from model.hidden_size * dtype_bytes
+%   * batch) | int (override)
+% These are not just knobs — they are the levers Sec~\ref{sec:eval}
+% sweeps to produce the 28-point matrix.
+
+\todo{Write each subsection from its outline. Algorithm
+\ref{alg:alternating} pseudocode block goes after \S3.2(c).}
