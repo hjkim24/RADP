@@ -1,0 +1,410 @@
+% RADP — 한국통신학회 (KICS) 양식 한글본
+%
+% 영문본(main.tex, acmart sigconf)과 같은 references.bib 를 공유하지만
+% 양식이 전혀 다르므로 별도 빌드 타깃으로 관리한다.
+%
+% Build: tectonic main_kor.tex
+%   - kotex 가 한글 폰트(나눔명조/HCR 명조 계열)를 자동으로 fetch.
+%   - 영문 표제·키워드·참고문헌은 그대로 라틴 폰트로 떨어진다.
+%
+% 양식 매핑: paper_kor.docx 의 placeholder 구조를 그대로 따른다.
+%   - 한글/영문 제목 병기
+%   - 요약(국문) + ABSTRACT(영문) + 키워드(국문/영문) 가 1열 폭으로 상단
+%   - 본문은 2단(twocolumn), Ⅰ. 서론 / Ⅱ. 본론 / Ⅲ. 실험 / Ⅳ. 결론
+%   - 표/그림 캡션은 국문/영문 병기
+%   - 참고문헌은 영문, 국내 1편 권장
+%
+\documentclass[10pt,twocolumn,a4paper]{article}
+
+\usepackage{kotex}
+\usepackage[margin=2cm,top=2.5cm,bottom=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{xurl}
+\usepackage{titlesec}
+
+% --- KICS 섹션 형식 -----------------------------------------------------
+% Ⅰ. / Ⅱ. / Ⅲ. / Ⅳ. 로마숫자 + 한글 섹션명 (가운데 정렬, 본문과 한 칸 띄움)
+\renewcommand{\thesection}{\Roman{section}}
+\titleformat{\section}{\centering\large\bfseries}{\thesection.}{0.6em}{}
+\titlespacing*{\section}{0pt}{1.2em}{0.8em}
+\titleformat{\subsection}{\bfseries}{\thesubsection}{0.5em}{}
+\titlespacing*{\subsection}{0pt}{0.8em}{0.4em}
+
+% --- Macros ------------------------------------------------------------
+\newcommand{\sys}{RADP}
+
+% --- 표/그림 캡션: 국·영문 병기 형식 -----------------------------------
+\captionsetup{font=small,labelfont=bf,labelsep=period}
+
+% --- emergencystretch (영문본과 동일 사유) -----------------------------
+\setlength{\emergencystretch}{2em}
+
+% --- Title block (가운데, 한글/영문 병기) ------------------------------
+\title{%
+  \vspace{-2em}%
+  이기종 엣지 클러스터에서의 분산 LLM 추론을 위한\\
+  회복 인지형 동적 계획 기반 계층 배치 및 비동기 체인 전달\\
+  \vspace{0.3em}%
+  \large \mdseries\textit{%
+    \sys{}: Recovery-Aware Layer Placement and\\
+    Asynchronous Chain Forwarding for Distributed LLM Inference on Edge Clusters%
+  }%
+}
+\author{%
+  김학재\textsuperscript{*}, 임완수\textsuperscript{*$\dagger$}\\[0.3em]
+  \small\normalfont
+  \textsuperscript{*}성균관대학교 신소재공학과 \quad
+  \textsuperscript{$\dagger$}성균관대학교 전자전기공학부\\
+  \texttt{hjkim24@g.skku.edu, wansu.lim@skku.edu}\\[-0.5em]
+  \small{(\textsuperscript{$\dagger$}교신저자)}
+}
+\date{}
+
+\begin{document}
+
+% --- 상단 요약·키워드 블록 (두 단을 잠시 1단으로 묶음) -----------------
+\twocolumn[%
+  \begin{@twocolumnfalse}
+  \maketitle
+  \begin{center}
+    \begin{minipage}{0.92\textwidth}
+      \small
+
+      \noindent\textbf{요\quad 약}
+
+      \noindent 이기종 엣지 클러스터에서의 분산 대규모 언어 모델(LLM)
+      추론은 처리량을 극대화하는 계층 배치와 장애에 견디는 복구
+      라우팅을 동시에 만족해야 한다. 본 논문은 이 두 결정을 단일
+      교대 동적 계획법으로 통합한 RADP 시스템을 제안한다. 백업 메모리
+      예약이 배치의 메모리 제약에 자연스럽게 반영되어, 기존 시스템이
+      결합 최적화를 회피하면서 발생시키던 비가능 영역을 제거한다.
+      두 가지 런타임 기법 ─ 비동기 미러 캐시와 비동기 체인 전달 ─ 이
+      결합 최적화를 실 엣지 환경에서 운용 가능하게 만든다.
+      8 대 Jetson 클러스터에서 OPT-350M 24 점 및 Llama-3.2-1B 9 점을
+      측정한 결과, 지연 시간 최적 배치가 동시성 $C\!\geq\!4$의 모든
+      점에서 처리량 최적 배치를 압도하였고, 비동기 체인은 동기 체인
+      대비 $17$--$47\%$의 처리량 향상을 보였다. 작업자 SIGKILL 시
+      RADP 는 60/60 토큰을 일관되게 전달했지만 복구 없는 베이스라인은
+      진행 중이던 17--20 토큰에서 중단되었다.
+
+      \vspace{0.4em}
+      \noindent\textbf{ABSTRACT}
+
+      \noindent Distributed LLM inference on heterogeneous edge clusters
+      faces a trade-off between placement that maximizes throughput and
+      redundancy that survives failure. We propose RADP, which unifies
+      layer placement ($\psi$) and recovery routing ($R$) in a single
+      alternating dynamic program whose backup-memory reservation folds
+      back into the placement constraint. Two runtime mechanisms ---
+      an asynchronous mirror cache and asynchronous chain forwarding
+      with a \texttt{ResultReady} reverse channel --- make the joint
+      optimization viable on a real edge fleet. On an eight-worker
+      Jetson fleet covering 24 OPT-350M cells and a 9-cell
+      Llama-3.2-1B sub-matrix, latency-optimized placement dominates
+      throughput-optimized placement at every point with $C\!\geq\!4$,
+      and asynchronous chain adds $17$--$47\%$ throughput at $C\!=\!16$.
+      Under a worker SIGKILL, RADP delivers 60/60 coherent tokens;
+      placement-only baselines abort after the 17--20 already-buffered
+      tokens.
+
+      \vspace{0.4em}
+      \noindent\textbf{키워드 :} 분산 LLM 추론, 동적 계획법, 엣지 컴퓨팅, 장애 복구, 파이프라인 병렬화\\
+      \noindent\textbf{Key Words :} Distributed LLM Inference, Dynamic Programming, Edge Computing, Fault Recovery, Pipeline Parallelism
+    \end{minipage}
+  \end{center}
+  \vspace{1.5em}
+  \end{@twocolumnfalse}%
+]
+
+% =======================================================================
+\section{서  론}
+% =======================================================================
+
+대규모 언어 모델(LLM) 추론을 엣지 클러스터에서 수행하려는 시도가
+활발하다. Petals~\cite{borzunov2023petals,borzunov2023distributed} 는
+컨슈머 GPU 군집에서의 협동 추론을 시연했고,
+EdgeShard~\cite{zhang2024edgeshard} 는 동적 계획법 기반 지연 시간
+최적 계층 배치를, Jupiter~\cite{ye2025jupiter} 는 명시적 TBT-SLO
+제약 하의 처리량 최적 배치를 추가했다. 그러나 이들 시스템은
+데이터센터에서 통용되던 두 가지 가정에 의존한다. 첫째,
+\textbf{균질성}: 본 연구의 8-worker Jetson fleet 에서 AGX Orin
+(MAXN 전력 모드)은 Orin Nano CUDA 대비 디코드 단계(seq=64) 계층
+시간이 약 16 배 빠르다. 균질한 fleet 에서 계층 배치는 단순한 반올림
+문제이지만, 16 배 이종 환경에서는 배치 결정이 시스템 전체 처리량을
+좌우한다. 둘째, \textbf{신뢰성}: 엣지 보드는 빈번히 충돌하며 SD
+카드가 가득 차거나 네트워크가 끊긴다. 본 연구의 측정 캠페인 동안
+다수의 보드에서 위 세 종류 장애를 모두 경험했다. 장애를 예외 경로로
+처리하는 배치 전략은 첫 워커 충돌 시 진행 중인 모든 스트림을 잃는다.
+
+기존 시스템은 계층 배치 ($\psi$) 와 복구 라우팅 ($R$) 을 별개 문제로
+다룬다. EdgeShard 의 DP 는 어딘가에 모든 계층의 복제본이 존재한다고
+가정하지만 4\,GB Nano 에서는 그러한 중복을 감당할 수 없다. Petals 의
+그리디 배치는 이기종 환경에서 2.38 배의 처리량 손실을
+초래하며~\cite{mei2025helix}, 군집 중복 모델은 엣지에 존재하지 않는
+여유 메모리를 전제한다. Jupiter 의 처리량 최적 DP 에는 복구
+메커니즘 자체가 없다. 본 논문의 시스템적 통찰은 \textbf{메모리가
+빠듯한 엣지에서 $R$ 과 $\psi$ 가 결합된 가능 영역을 갖는다는
+점}이다. 두 결정을 분리하면 가능성 또는 성능 중 하나를 반드시
+양보해야 한다.
+
+본 논문(\sys{}, Recovery-Aware DP)의 기여는 다음과 같다.
+\begin{itemize}
+  \item 백업 메모리 예약이 배치 가능성 검사에 통합된 $\psi$+$R$
+        교대 DP. EdgeShard 의 지연 시간 모드($\alpha\!=\!0$)와
+        Jupiter 의 처리량 모드($\alpha\!=\!1$)가 단일 $\alpha$
+        노브로 통합된다.
+  \item 코디네이터로 활성화 텐서를 비동기 미러링하는 캐시와,
+        gRPC 트레일러 메타데이터를 통해 하트비트 경로가 백업으로
+        대체한 후에도 진정으로 죽은 워커를 정확히 식별하는
+        체인 인지형 장애 책임 추적.
+  \item \texttt{ResultReady} 역방향 채널을 갖춘 비동기 체인 전달.
+        체인 길이에 무관하게 $C\!=\!16$ 에서 $17$--$47\%$의 처리량
+        향상.
+  \item 8 대 Jetson 클러스터에서의 라이브 측정. OPT-350M 24 점 +
+        Llama-3.2-1B 9 점 ─ $L\!\succ\!T$ 우위가 두 모델 크기에
+        걸쳐 $C\!\geq\!4$ 에서 유지됨. 작업자 SIGKILL 시
+        \sys{}는 60/60 토큰 전달, 복구 없는 베이스라인은 17--20
+        토큰에서 중단.
+\end{itemize}
+
+% =======================================================================
+\section{본  론}
+% =======================================================================
+
+\subsection{회복 인지형 DP ($\psi$+$R$ 결합 최적화)}
+
+$L$ 개의 디코더 계층과 $|D|$ 개의 이기종 디바이스가 주어졌을 때,
+배치 $\psi: \{1,\ldots,L\} \to D$ 는 계층을 인접한 스테이지로 분할해
+각 스테이지를 디바이스에 할당하며, 복구 테이블 $R: D \to D$ 는 각
+디바이스에 대해 해당 디바이스의 계층 메모리를 미리 예약하는 백업
+피어를 할당한다. 두 결정 모두 백업 예약을 \emph{포함하는}
+디바이스별 메모리 한도를 만족해야 하며 다음 비용 함수를 최소화한다.
+\begin{equation}\label{eq:rank}
+  \mathrm{rank}(\psi) = (1{-}\alpha) \sum_{s \in \psi} T(s)
+                       \,+\, \alpha \max_{s \in \psi} T(s)
+\end{equation}
+여기서 $T(s)$ 는 디바이스 $d_s$ 에서의 스테이지 $s$ 의 계산
+시간이다. $\alpha\!=\!0$ 은 EdgeShard 의 지연 시간 모드(스테이지
+시간의 합 = 단일 스트림 TBT)에, $\alpha\!=\!1$ 은 Jupiter 의 처리량
+모드(가장 느린 스테이지가 처리량을 제약)에 해당한다. 운용자는 이
+노브를 \texttt{optimization\_mode = \{latency, throughput, blended\}}
+별칭으로 조작한다.
+
+DP 점화식과 메모리 가능성 제약은 다음과 같다.
+\begin{equation}\label{eq:dp}
+  f(j, d) = \min_{i,d'} \Bigl\{ f(i, d') + \mathrm{rank\_inc}(i{+}1, j, d) \Bigr\}
+\end{equation}
+\begin{equation}\label{eq:mem}
+  \mathrm{mem}_\psi(d) + \sum_{p\,:\,R(p)=d} \mathrm{mem}_\psi(p) \leq \mathrm{cap}(d)
+\end{equation}
+식 (\ref{eq:mem}) 이 시스템적 핵심이다. $R$ 이 $\psi$-DP 에 디바이스
+한도를 통해 들어가므로, $R$ 의 변화가 가능한 $\psi$ 의 집합을
+변화시키고 그 역도 성립한다. $\psi$ 를 먼저 정한 후 $R$ 을 결정하는
+분리형 해결자는 메모리가 빠듯한 엣지에서 가능 $R$ 이 없는 $\psi$ 를
+선택할 수 있다.
+
+알고리즘~\ref{alg:alt} 은 두 문제를 교대로 풀어 결합 해를 얻는다.
+내부 $\psi$-DP 는 고정된 $R$ 에서 $O(L^2 |D|^2)$, 그리디 $R$ 패스는
+고정된 $\psi$ 에서 $O(|D|^2)$ 이다. 비용이 단조 비증가이므로 유한
+반복 후 종료가 보장되며, 본 연구의 모든 fleet 에서 3 회 이내에
+수렴했다.
+
+\begin{algorithm}[t]
+  \caption{교대 $\psi$+$R$ 최적화}
+  \label{alg:alt}
+  \begin{algorithmic}[1]
+    \State $\psi_0 \gets \mathrm{greedy\text{-}placement}(D, L, \alpha)$
+    \State $R_0 \gets \mathrm{greedy\text{-}backup}(\psi_0)$
+    \State $k \gets 0$
+    \Repeat
+      \State $\psi_{k+1} \gets \mathrm{DP}(D, L, R_k, \alpha)$
+      \Comment{식 (\ref{eq:dp}), (\ref{eq:mem})}
+      \State $R_{k+1} \gets \mathrm{greedy\text{-}backup}(\psi_{k+1})$
+      \State $k \gets k + 1$
+    \Until{$\mathrm{rank}(\psi_k) \geq \mathrm{rank}(\psi_{k-1})$}
+    \State \Return $(\psi_{k-1}, R_{k-1})$
+  \end{algorithmic}
+\end{algorithm}
+
+\subsection{미러 캐시 및 체인 인지형 복구}
+
+동기 체인 전달에서 코디네이터는 체인 헤드의 입력만을 로컬에 갖는다.
+중간 체인 워커가 죽으면 코디네이터는 백업으로 재생할 활성화 이력이
+없어 진행 중인 스트림이 손실된다.
+
+\textbf{미러 캐시.} 각 워커는 자신의 스테이지를 실행하기 전 들어온
+활성화 텐서와 \texttt{(request\_id, position)} 키를 코디네이터에
+단방향 \texttt{MirrorActivation} RPC 로 전송한다. 코디네이터는 위치별
+사전에 저장하며, 삽입은 멱등(idempotent) 이라 중복 재시도와 비순서
+도착을 자동 흡수한다. 비용은 비-헤드 스테이지당 단방향 RPC 한 번
+(본 fleet 평균 1.2\,ms). 8-토큰 Generate 의 산술 검증: 3-스테이지
+체인에서 정확히 16 개의 미러 푸시(8 스텝 $\times$ 비-첫 스테이지 2 개).
+
+\textbf{트레일러 기반 책임 추적.} 워커의 다운스트림
+\texttt{RunStage} 가 RpcError 를 발생시키면 업스트림 워커는 실패한
+스테이지의 \texttt{(start\_layer, end\_layer)} 를 gRPC 트레일러에
+스탬프한 후 \texttt{UNAVAILABLE} 로 재중단한다. 코디네이터는
+트레일러를 읽어 \emph{원본} 배치 $\psi_0$ 에서 ─ 현재 실행 계획이
+아닌 ─ 조회한다. 이것이 중요한 이유: 하트비트 경로가 이미 백업을
+새 체인 헤드로 대체했을 수 있는데, 그 대체된 워커에 책임을 묻는 것은
+멀쩡한 워커를 죽음으로 표시하는 오류가 된다. 트레일러는 $R$ 이 이미
+수행한 재배선과 무관하게 진정으로 죽은 스테이지의 정체를 운반한다.
+
+\subsection{비동기 체인 전달}
+
+동기 체인의 숨겨진 비용은 부하 측정 후 발견되었다. $C$ 개의 동시
+스트림이 각각 모든 $N$ 개의 체인 스테이지에서 하나의 gRPC 핸들러
+스레드를 \emph{체인 전체 시간 동안} 점유한다. 즉 $CN$ 개의 스레드가
+동시에 점유되며 처리량 최적 배치의 파이프라인 병렬성은 실제로
+발현되지 않는다.
+
+비동기 체인은 호출 패턴을 뒤집는다. 워커는 다음 hop
+\texttt{RunStage} 를 제한된 스레드 풀에 디스패치한 후 즉시 빈
+응답으로 업스트림 호출자에게 ACK 한다. 각 핸들러 스레드는 자신의
+작업이 끝나면 즉시 해제된다. 체인 꼬리는 응답 체인을 통해 결과를
+되돌리는 대신 코디네이터에 \texttt{ResultReady} 를 직접 호출하여 최종
+활성화를 전달한다. 코디네이터는 \texttt{(request\_id, position)} 별
+\texttt{Event} 를 30\,s 타임아웃으로 대기한다.
+
+비동기 모드의 대가는 트레일러 기반 책임 추적이 불가능해진다는
+점이다 ─ 응답 체인이 이미 풀려버려 트레일러를 스탬프할 수 없다.
+코디네이터는 하트비트(보통 5\,s 이내) 또는 30\,s ResultReady
+타임아웃으로 복구하며, 진정으로 죽은 워커 대신 체인 헤드가 표시될
+수 있다. $\psi$+$R$ 가능성 보장이 정확성을 유지하지만(모든 토큰
+일관 전달), 복구는 하트비트가 경합에서 질 경우 한 hop 의 추가 비용을
+지불한다. 운용자는 \texttt{chain\_mode = sync $\mid$ async} 노브로
+trade-off 를 명시적으로 선택한다.
+
+% =======================================================================
+\section{실  험}
+% =======================================================================
+
+\textbf{환경.} 8-worker Jetson cluster(Orin Nano 8\,GB 6 대,
+AGX Orin MAXN 1 대, AGX Xavier 1 대)와 Mac 코디네이터가 동일 LAN
+상에 위치한다. 세 컴퓨트 등급을 디코드 단계(seq=64)에서 계측:
+Nano CPU($\sim$42\,ms/계층), AGX CPU($\sim$17.6\,ms/계층),
+Nano CUDA($\sim$1.5\,ms/계층). AGX Orin MAXN 은 Nano CUDA 대비 동일
+디코드 점에서 약 16 배 빠르다.
+
+\textbf{모델.} OPT-350M(24 계층, hidden 1024, fp16)을 주 모델로,
+Llama-3.2-1B(16 계층, hidden 2048, fp16)를 모델 크기 일반화 검증용으로
+사용했다. Llama 는 sharded safetensors 로더로 적재된다.
+
+\textbf{워크로드.} 그리디 디코딩(\texttt{temperature=0}),
+\texttt{max\_tokens} 은 실험별 가변(동시성 스윕 30, 복구 60). 동시성
+측정은 \texttt{measure\_concurrent.py}, 복구는
+\texttt{run\_phase3\_recovery.py} 가 담당한다. 모든 셀의 결과는
+\texttt{experiments/results/} 에 JSON 형태로 저장된다.
+
+표~\ref{tab:matrix} 는 헤드라인 결과로 24 셀 OPT-350M 매트릭스
+(두 체인 길이 $\times$ 네 아키텍처 변형 $\times$ 세 동시성 수준)와
+동일 4-stage fleet 의 9 셀 Llama-3.2-1B 서브매트릭스에서의
+처리량(tok/s, 클수록 좋음)과 TBT p50(ms, 작을수록 좋음)을 보여준다.
+
+\begin{table*}[t]
+  \centering\footnotesize
+  \caption{24-셀 OPT-350M 매트릭스와 Llama-3.2-1B 4-stage
+  서브매트릭스의 집계 처리량(tok/s)과 TBT p50(ms, 괄호 안). 각 행은
+  (체인 길이, 배치, 체인 모드) 조합이며, 열은 동시성 수준. 굵은
+  글씨는 각 (체인 모드, $C$) 그룹 내 $L\!\succ\!T$ 승자, 밑줄은
+  각 (배치, $C$) 그룹 내 비동기 $\succ$ 동기 승자. Llama 의 L+sync
+  행은 측정 중 한 워커가 도달 불가로 빠져 결측이다.}
+  \label{tab:matrix}
+  \captionsetup{name=Table,labelfont=bf,labelsep=period}
+  \begin{tabular}{l l l ccc}
+    \toprule
+    & & & $C{=}1$ & $C{=}4$ & $C{=}16$ \\
+    \midrule
+    \multicolumn{6}{l}{\emph{OPT-350M, 3-stage chain}} \\
+    & T & sync  & 6.11 [129] & 17.05 [215] & 23.49 [586] \\
+    & T & async & 7.61 [126] & 20.19 [191] & \underline{34.49} [430] \\
+    & L & sync  & \textbf{7.65} [82] & \textbf{24.25} [155] & \textbf{34.18} [403] \\
+    & L & async & \textbf{9.71} [78] & \textbf{\underline{33.71}} [107] & \textbf{\underline{40.27}} [386] \\
+    \midrule
+    \multicolumn{6}{l}{\emph{OPT-350M, 4-stage chain}} \\
+    & T & sync  & 6.58 [144] & 10.71 [381] & 24.47 [614] \\
+    & T & async & 6.36 [153] &  9.79 [406] & \underline{35.69} [426] \\
+    & L & sync  & \textbf{9.07} [98] & \textbf{18.66} [205] & \textbf{32.77} [509] \\
+    & L & async & \textbf{9.31} [99] & \textbf{\underline{23.91}} [145] & \textbf{\underline{41.65}} [368] \\
+    \midrule
+    \multicolumn{6}{l}{\emph{Llama-3.2-1B, 4-stage chain}} \\
+    & T & sync  & 2.94 [259] & 16.24 [189] & 21.84 [663] \\
+    & T & async & \textbf{3.74} [261] & 18.07 [181] & \underline{30.56} [486] \\
+    & L & sync  & --- & --- & --- \\
+    & L & async & 3.05 [\textbf{174}] & \textbf{20.28} [147] & \textbf{30.73} [515] \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+\textbf{발견 1: OPT-350M 24 셀 모두에서 $L \succ T$.} 동기끼리
+(T+sync vs L+sync), 비동기끼리(T+async vs L+async) 짝지어 비교 시
+모든 24 점에서 $L$ 이 $T$ 를 처리량 면에서 압도한다. 최대 격차는
+4-stage 체인 $C\!=\!4$ 비동기 셀로, L+async($23.91$\,tok/s) 가
+T+async($9.79$)의 $2.4\times$이며 TBT p50 는 $2.8\times$ 낮다
+($145$\,ms vs $406$\,ms).
+
+\textbf{발견 2: 비동기 $\succ$ 동기 ($C\!\geq\!4$, 단 T-배치 4-stage
+$C\!=\!4$ 예외).} 모든 $L$ 행 $C\!\geq\!4$ 에서 비동기가 동기를
+압도한다. 유일한 예외는 T-배치 4-stage $C\!=\!4$($10.71 \to 9.79$
+tok/s, $-9\%$)이며, 각 스테이지의 계층 수가 1--2 개로 적을 때 체인
+hop 오버헤드가 비동기의 오버랩 여유를 잡아먹기 때문이다.
+
+\textbf{발견 3: 비동기 이득은 체인 길이 독립적.} T-배치 $C\!=\!16$
+에서 동기$\to$비동기 전환 시 3-stage 는 $+47\%$ ($23.49 \to 34.49$),
+4-stage 는 $+46\%$ ($24.47 \to 35.69$). 동기 체인 비용은 동시성에는
+비례하지만 체인 길이에는 비례하지 않는다.
+
+\textbf{발견 4: 모델 크기 일반화 + $C\!=\!1$ cross-over.} 3 배 큰
+Llama-3.2-1B 에서 비동기 $\succ$ 동기는 T 행에서 유지($C\!=\!16$:
+$21.84 \to 30.56$, $+40\%$), $L \succeq T$ 는 $C\!\geq\!4$ 에서 유지
+(L+async@C=4 가 best Llama cell, T+async 대비 $+12\%$). 새로운 관찰:
+$C\!=\!1$ 단일 스트림에서 처음으로 T+async 가 L+async 를 처리량에서
+누른다($3.74$ vs $3.05$ tok/s, $-18\%$). 그러나 TBT p50 는 여전히
+$L$ 우위($174$ vs $261$\,ms, $-33\%$) ─ 운용자 관점의 응답성에서는
+$L$ 이 이긴다. 직관: 큰 모델 단일 스트림에서 스테이지 계산이 체인
+hop 비용을 압도하면 $L$ 의 빠른 디바이스 집중 배치가 그 단일
+스테이지를 처리량 병목으로 만든다. 다중 스트림은 hop 비용을 분할
+상각하여 $L$ 의 우위가 복귀한다.
+
+\textbf{복구 결과.} Star 위상에서 작업자 SIGKILL 후 \sys{}는 5/5
+시행 모두 60/60 토큰을 일관되게 전달했고, 복구 wall-clock 평균
+$617$\,ms, p95 $670$\,ms 였다. 복구 없는 베이스라인 3 종(greedy,
+uniform, Jupiter-DP)은 SIGKILL 경계에서 모든 진행 토큰 손실 후
+스트림이 중단되었다. 4-stage 체인 위상에서도 동기/비동기 모두 60/60
+토큰을 전달한다.
+
+% =======================================================================
+\section{결  론}
+% =======================================================================
+
+본 논문은 계층 배치와 복구 라우팅을 단일 교대 동적 계획법으로
+통합한 \sys{} 시스템을 제안하고, 두 런타임 기법(비동기 미러 캐시,
+비동기 체인 전달)으로 실 엣지 fleet 에서 결합 최적화의 운용 가능성을
+확보했다. OPT-350M 24 셀 매트릭스는 $\psi$+$R$ 결합 최적화에 의한
+$L$ 우위가 \emph{구조적}이며 특정 위상이나 런타임에 의존하지 않음을
+보였고, 3 배 큰 Llama-3.2-1B 서브매트릭스는 동일 패턴이 모델 크기에
+걸쳐 $C\!\geq\!4$ 에서 유지됨을 확인했다. $C\!=\!1$ 큰 모델
+cross-over 는 클레임을 명확히 한정한다. 비동기 체인은 $C\!=\!16$
+에서 $17$--$47\%$ 처리량 향상을 가져오면서도 $C\!\geq\!4$ 의 배치
+순서를 결코 뒤집지 않아, 두 노브가 운용자에게 직교한 trade-off 를
+제공함을 보였다.
+
+향후 과제는 (i) $R$ 을 단일 백업에서 백업 목록으로 확장한 종속
+장애 대응, (ii) 7B INT4 메모리 결합 환경의 측정(본 1B 측정에서
+이미 Nano 메모리 압박이 운용 한계로 노출됨), (iii) 비용 함수의
+marginal-layer 항으로 현재 $2$--$4\%$ 의 예측-실측 격차 축소가
+포함된다.
+
+% =======================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+% =======================================================================
+
+\end{document}
