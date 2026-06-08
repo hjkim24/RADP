@@ -1705,6 +1705,91 @@ RADP-Latency dominates RADP-Throughput across:
 
 ---
 
+## Phase EXP-D3 Phase 3.2 — Multi-stage failure attribution 라이브 검증 (sync trailer vs async heartbeat)
+
+**목표**: Phase 3 (어제) 의 트레일러-기반 attribution path 가 2-worker fleet (head + tail) 에선 활성화 안 됨 — 죽는 게 head 이므로 coord 가 직접 RpcError 받고 trailer 가 의미 없음. 4-stage chain 에서 *middle worker* kill 로 트레일러 path 가 실제 활성화되는지, 그리고 async chain 에선 같은 시나리오에서 어떻게 동작하는지 검증.
+
+**셋업**: 4-stage chain `ao-1[1..9] → on-6[10..14] → on-1[15..19] → on-2[20..24]`, 5-host fleet, prompt = "fox jumps over the lazy dog. Once upon a time", max_tokens=60, kill_after_token=4.
+
+### 시나리오 A: Sync chain + mid-chain kill (on-6)
+
+```
+[step 0..3]: , there was a              (normal, TBT 117-186 ms)
+[step 4   ]: fox                         (recovery, 3608 ms)
+[step 5..59]: . He was a lazy dog. He was a lazy fox. ...
+            → 60/60 coherent tokens delivered
+```
+
+**Coord 저널** (핵심 라인):
+```
+request=31 chain RunStage to ao-1[1..9] raised:
+  <_InactiveRpcError ... details = "chain downstream 10..14 unreachable">
+request=31 chain failure for already-dead on-6[10..14]; finalising recovery (rewire + replay)
+request=31 replay 1 positions through chain head ao-1[1..9]
+heartbeat timeout: on-6  (8초 후, secondary signal)
+```
+
+**검증 사항**:
+1. ao-1 (chain head) 가 자기 downstream `next_stub.RunStage(on-6)` 의 RpcError 정확히 catch
+2. `context.abort(UNAVAILABLE, "chain downstream 10..14 unreachable")` + trailer stamp `(radp-failed-start=10, radp-failed-end=14)`
+3. Coord 의 `_attribute_chain_failure` 가 트레일러 → `self.placement` (original, immutable) 에서 lookup → **on-6 (진짜 dead)** 정확히 식별
+4. `already-dead` 분기 fire (heartbeat 가 직전 12-token 테스트에서 먼저 fire 한 잔재) → finalise 만 수행 (rewire + replay)
+5. 진짜 paper-critical 발견: **trailer가 heartbeat path 의 mark_dead 와 race 해도, attribution 의 *정확성* 은 보장됨** — heartbeat 이 먼저 도달해 ao-1 이 substitute 로 들어가 있어도 trailer 는 `self.placement` 에서 진짜 dead 워커를 lookup 함
+
+### 시나리오 B: Async chain + mid-chain kill (on-6), **fix 전**
+
+```
+[step 0..3]: , there was a              (normal)
+[step 4..19]: ' fox.' '. He' ... (15 buffered tokens after client blocks on ansible)
+[step 20]: TimeoutError: async chain timed out after 30.0s waiting for ResultReady (req=1, pos=20)
+  → 클라이언트가 20 tokens 후 에러 노출 (FAIL)
+```
+
+**원인**: async chain 의 fire-and-forget forwarding 으로 응답 사슬 unwound → trailer 사용 불가. `_invoke` 가 30초 timeout 후 `TimeoutError` raise — `_run_pipeline` 의 `except grpc.RpcError as e` 가 안 catch (TimeoutError 는 RpcError 아님) → 호출 stack 위로 propagate → SSE stream error frame.
+
+### 시나리오 C: Async chain + mid-chain kill, **fix 후** (commit bf238b2)
+
+Fix: `except grpc.RpcError as e` → `except (grpc.RpcError, TimeoutError) as e`. `_attribute_chain_failure` 의 `trailer = error.trailing_metadata()` 가 AttributeError 잡고 빈 trailer → fallback to `head_stage` attribution.
+
+```
+[step 0..3]: , there was a
+[step 4   ]: fox                         (recovery, 3985 ms)
+[step 5..59]: . He was a lazy dog. ...
+            → 60/60 coherent tokens delivered
+```
+
+**Coord 저널**:
+```
+heartbeat timeout: on-6  (8초)
+chain RunStage to ao-1[1..9] raised:
+  async chain timed out after 30.0s waiting for ResultReady (req=1, pos=21)
+chain failure attributed to ao-1[1..9] (head was ao-1)  ← head 로 fallback
+replay 22 positions through chain head on-2[1..9]      ← 새 chain head (헤드 mark_dead 후 substitute)
+```
+
+**구조적 한계 (paper limitation 절에 명시)**:
+- Async chain 에서 trailer 가 없으므로 attribution 이 *head_stage 로 fallback*. 진짜 dead 워커 (downstream) 가 아닌 *chain head 가 잘못 mark_dead* 될 수 있음.
+- 다행히 heartbeat path 가 ~5초 후 진짜 dead 워커 (on-6) 를 마킹하므로, recovery 가 finalise 단계까지 도달 후 finalise 자체는 정확히 진짜 dead 의 backup 으로 substitute 함 (heartbeat 가 race 에서 이긴 경우).
+- Heartbeat 가 늦으면 → head 가 marked dead → R(head) 의 backup 으로 substitute → request 완료 (degraded). 정확성 보존, 효율 손실.
+
+### Trade-off matrix (paper 에 표 형태)
+
+|                          | **Sync chain (Phase 1b)** | **Async chain (Phase F)** |
+|---|---|---|
+| Normal throughput @ C=16 | 23.5 - 34.0 tok/s | **34.5 - 41.7 tok/s (+47%)** |
+| Failure detection latency | **gRPC 즉시** (trailer stamp) | 5-30초 (heartbeat OR gateway timeout) |
+| Attribution 정확성 | **always correct** (trailer 의 stage range → original placement) | head fallback (heartbeat 이 race 이기기 전까진 부정확) |
+| Failure recovery 자동 | ✅ 60/60 coherent tokens, no client-visible error | ✅ 60/60 (fix 후), heartbeat 늦으면 wrong head 마킹 |
+| Trailer-based propagation | nested response unwind 통해 chain 의 head 까지 stamp 전달 | fire-and-forget 이라 trailer 못 씀 |
+
+### Paper 한 줄 정리
+
+> "On a 4-stage edge chain, we confirm trailer-based attribution propagates accurately even when the heartbeat path has already substituted the backup — both modes recover all 60 tokens, but sync chain attributes the failure in milliseconds (vs async chain's 5-30 second heartbeat / timeout fallback). The trade-off — +47% throughput at C=16 with async chain vs millisecond failure attribution with sync chain — is fundamental to the choice of chain mode and exposed to operators via `chain_mode = sync | async`."
+
+**커밋**: bf238b2 (TimeoutError fallback fix)
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
