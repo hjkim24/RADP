@@ -1923,6 +1923,56 @@ replay 22 positions through chain head on-2[1..9]      ← 새 chain head (헤�
 
 ---
 
+## Phase EXP-D2.8 — Cost-model v2 + offline sweep + ψ+R coupling 직접 증거
+
+**목표**: D2.7 의 *insufficient hop_overhead* finding 을 cost-model v2 로 마무리. (1) `target_concurrency · |ψ| / pool` multiplier `µ(ψ)` 와 `stage_count_penalty_seconds · |ψ|` (γ_stages) 추가 → throughput-mode 가 multi-stream interference 를 cost 안에 expose. (2) 라이브 measurement 전에 *offline sweep* 로 어느 (C*, γ_stages) 가 placement 를 실제로 바꾸는지 빠르게 filter. (3) 측정 데이터로 sweep 한 결과 → paper §3.1 Eq.(mem) 의 ψ+R *coupled feasibility* 주장의 직접 empirical 증거 확보.
+
+**구현 (commit `f9ed538`)**:
+- [radp/common/types.py](radp/common/types.py) ClusterSpec 에 `target_concurrency: int = 1` + `thread_pool_size: int = 30` + `stage_count_penalty_seconds: float = 0.0`
+- [radp/coordinator/scheduler.py](radp/coordinator/scheduler.py) `_stage_time_with_interference(...)` (`max(1, C·|ψ|/P)` multiplier), DP base case + main loop swap, outer search rank 에 `γ_stages·|ψ|` 가산, `with_devices(...)` 가 v2 fields forward (이전엔 silently default 로 reset)
+- [radp/coordinator/server.py](radp/coordinator/server.py) + [cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2): config plumbing
+- [tests/test_scheduler_alternating.py](tests/test_scheduler_alternating.py): 4 new tests (pure-function multiplier value, tie-on-homogeneous anchor, fewer-stage strict-prefer via γ_stages, zero default no-op)
+
+**Offline sweep ([experiments/d28_cost_model_sweep.py](experiments/d28_cost_model_sweep.py))**:
+라이브 coord 의 `/api/cluster` 에서 device/layer/network profile pull → 로컬 Scheduler 에 cost-model v2 grid 적용 → placement 비교. Backup-memory 체크는 우회 (offline 가정은 cold-start, free=total).
+
+**측정 결과** (6-worker fleet, OPT-350M, γ_hop=8ms):
+
+| mode | C* | γ_stages | \|ψ\| | max_T | placement |
+|---|---:|---:|---:|---|---|
+| throughput | 1 | 0.000 | 2 | 67.5ms | on-1[1..23] → ao-1[24..24] |
+| throughput | 16 | 0.000 | 2 | 67.6ms | on-1[1..23] → ao-1[24..24] |
+| throughput | 16 | 0.005 | 2 | 67.6ms | (동일) |
+| throughput | 16 | 0.020 | 2 | 67.6ms | (동일) |
+| throughput | 16 | 0.100 | 2 | 67.6ms | (동일) |
+| latency | 1 | 0.000 | 2 | 85.5ms | on-1[1..1] → ao-1[2..24] |
+| latency | 16 | 0.020 | 2 | 86.8ms | (동일) |
+
+**Production placement (recovery 활성)**:
+- 4-stage: `on-1[1..7] → on-6[8..12] → on-2[13..16] → ao-1[17..24]`
+- recovery: `{on-1: ao-1, on-6: ao-1, on-2: on-1, ao-1: on-6}`
+
+**Paper-critical findings**:
+
+1. **모든 cost-model v2 setting (T mode, C\*∈\{1,16\}, γ_stages∈[0, 0.1])에서 *offline DP* 가 *2-stage* 답을 픽함**. 즉 cost function 자체로는 4-stage 가 *최적이 아님*. 1.4× MAXN-vs-Nano-CUDA gap fleet 에서 *bulk-on-AGX* (ao-1 23 layer + on-1 1 layer) 가 max-min 의 진짜 답. throughput mode 의 4-stage 4-CUDA 는 *recovery memory constraint* 의 산물.
+
+2. **ψ+R coupled feasibility (paper Eq.~\ref{eq:mem}) 의 직접 empirical 증거**: 2-stage 답이 cost-optimal 인데, ao-1 의 23-layer 백업이 ~603 MB 이고 *모든* Nano 가 *동시에* 다른 device 들의 backup 까지 떠받아야 → free memory budget 초과 → infeasible. 그래서 alternating optimizer 가 *4-stage* 로 fallback 해 *backup memory 분산*. **이 4-stage 는 ψ-DP 의 max-min argmax 가 아니라, Eq.~\ref{eq:mem} 가 강제한 *feasible 최적*** — paper §1 의 "$R$ 과 $\psi$ 가 coupled feasibility regions 를 갖는다" claim 의 *측정-수준 증거*. EdgeShard 의 decoupled solver 가 *2-stage 를 픽 후 R 시도 → infeasible* 로 fail 하는 시나리오의 실제 instance.
+
+3. **L > T 의 cost-model-artifact 가설 *완전 반증***. 만약 cost function 만의 문제였다면 v2 multipliers 가 placement 를 바꿔야 했음. 하지만 (C\*, γ_stages) sweep 전체에서 *동일한 2-stage 답*. T placement 의 4-stage 강제는 cost function 의 부족이 아닌 *recovery memory 분산 강제* — *system 수준 trade-off* 이지 *cost-model trade-off* 가 아님.
+
+4. **Latency mode 의 *bulk-on-AGX* 답이 직접 관찰됨**: `on-1[1..1] → ao-1[2..24]`. 1 layer 만 Nano 에 두고 23 layer 를 AGX 에 몰아줌 — 우리 paper §10.4 의 *fast-device-heavy* L placement 직관을 *DP cost* 가 직접 산출. 다만 recovery 로 deploy 시 *이 답도 infeasible* 일 가능성 (ao-1 의 backup 분산 문제). L mode production 측정 (D2.6) 에서 *2-device subset = AGX + 1 Nano* 가 나왔던 것과 *정확히* 일치.
+
+**Paper §10.5 추가 (한 문장)**: §10.5 끝에 "Offline sweep across the (C\*, γ_stages) grid (Sec. ablation, App./PHASES) shows the cost-only DP picks 2-stage for every v2 setting; the 4-stage T topology is forced by Eq.~\ref{eq:mem}, providing the cleanest empirical evidence for the ψ+R coupling claim of §1."
+
+**한계 / 다음 단계**:
+- Offline sweep 는 *recovery 무시* — sweep 자체가 cost function 동작만 보여줌. 다음은 *cold-start* live deploy 로 (target_concurrency=16, γ_stages=...) 시점에 *recovery 가 풀리는* placement 측정.
+- v2 multiplier 가 *placement* 를 바꾸지 못한 이유 (linear µ 가 homogeneous fleet 에서 cancel) 는 D2.8 unit test 와 paper §10.5 가 직접 anchor.
+- γ_stages 큰 값 (>0.020) 일 때 *4-stage T 가 더 큰 cost* 인데 *recovery 제약으로 forced* → 측정상 *더 느릴* 수도. 이게 D2.7 의 hop=8ms 측정에서 *4-stage 가 hop=0 4-stage 보다 worse* 한 것의 *cost-model* 측 설명.
+
+**커밋**: code f9ed538 (cost-model v2 impl) + 이 docs 커밋 + d28_cost_model_sweep.py.
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).

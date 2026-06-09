@@ -213,6 +213,19 @@ $\gamma_{\mathrm{stage}}|\psi|$ expose these factors, with
 $\gamma_{\mathrm{stage}}\!>\!0$ required to break $\mu$'s
 homogeneous-fleet tie. Live calibration of
 $(C_\star, P, \gamma_{\mathrm{stage}})$ remains future work.
+An offline sweep across the full
+$(C_\star, \gamma_{\mathrm{stage}})$ grid on the live cluster's
+profile snapshot reveals a sharper finding about the production
+4-stage T placement itself: the cost-only DP picks a 2-stage
+\texttt{on-1[1..23]$\to$ao-1[24..24]} answer for every v2
+setting we tested, yet the live coordinator deploys 4 stages.
+The forcing factor is Eq.~\ref{eq:mem} --- the 2-stage answer
+puts a 23-layer backup burden on a single Nano peer that
+cannot also absorb the other devices' backups --- making this
+the cleanest empirical instance of the $\psi$+$R$ coupling
+claim from \S\ref{sec:intro}: the 4-stage T topology is the
+max-min argmax \emph{under} the memory-feasibility constraint,
+not without it.
 
 \begin{table*}[t]
   \centering

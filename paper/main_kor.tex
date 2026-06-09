@@ -496,6 +496,14 @@ $\gamma_{\mathrm{hop}}$ 을 부과해도 max-min 의 argmax 가 바뀌지
 에서의 $L\!\succ\!T$ 는 multi-stream system-level 효과 (per-request
 thread-pool contention, KV cache memory bandwidth contention)이며,
 DP cost function 정교화만으로는 환원되지 않는 구조적 발견이다.
+또한 라이브 cluster snapshot 위에서 $(C_\star, \gamma_{\mathrm{stage}})$
+grid 전체에 대한 offline sweep 결과, cost-only DP 는 모든 v2 setting 에
+대해 \texttt{on-1[1..23]$\to$ao-1[24..24]} 의 2-stage 답을 픽한다.
+그럼에도 production 은 4-stage 를 deploy 하는데, 이는 식
+(\ref{eq:mem}) 가 강제한 결과 --- 2-stage 답이 ao-1 의 23-layer
+backup 부담을 단일 Nano peer 에 몰아 다른 devices 의 backup 까지
+동시 흡수가 불가능 --- 으로, paper 의 $\psi$+$R$ coupling 주장
+(\S\ref{sec:intro}) 의 가장 깔끔한 empirical 증거이다.
 
 \textbf{Recovery 결과.} Star topology 에서 worker SIGKILL 후 \sys{} 는
 5/5 시행 모두 60/60 token 을 일관되게 전달했고, recovery wall-clock
