@@ -189,6 +189,17 @@ class ClusterSpec:
     `sum + α·max`. At α=0 collapses to latency; at α=|D|-1 reproduces
     Jupiter's Eq. 4 single-sub-sequence case; large α approaches
     throughput-mode behavior. Ignored for other modes."""
+    hop_overhead_seconds: float = 0.0
+    """Per-hop fixed overhead added to T_comm beyond the wire-level
+    transfer time (activation_bytes / bandwidth + latency). Models the
+    gRPC framing + Python/GIL contention + scheduler delay that the
+    wire-only T_comm misses — measured at ~8–10 ms per hop on live
+    Jetson fleets (EXP-D2.5 + project_dp_comm_cost_underestimate).
+    Default 0.0 preserves the legacy wire-only model; non-zero values
+    make placements with many small stages cost more inside the DP
+    so the optimiser stops loving 4-stage solutions in throughput
+    mode when 2-stage with bulk-on-fast-device is the real max-min
+    answer. EXP-D2.7 tests this directly. See PHASES.md."""
     extras: dict[str, str] = field(default_factory=dict)
 
 

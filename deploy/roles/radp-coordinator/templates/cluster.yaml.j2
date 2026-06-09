@@ -13,6 +13,7 @@ coordinator:
   eager_backup: {{ eager_backup | default(true) | string | lower }}
   optimization_mode: {{ optimization_mode | default('throughput') }}
   blend_alpha: {{ blend_alpha | default(0.0) }}
+  hop_overhead_seconds: {{ hop_overhead_seconds | default(0.0) }}
   chain_mode: {{ chain_mode | default('sync') }}
   slo:
     ttft_seconds: {{ slo_ttft_seconds | default(0.3) }}

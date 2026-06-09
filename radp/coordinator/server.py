@@ -94,6 +94,12 @@ class CoordinatorConfig:
     # actual per-token wall-clock.
     optimization_mode: str = "throughput"
     blend_alpha: float = 0.0
+    # Per-hop fixed overhead (gRPC framing + GIL contention + scheduler
+    # delay) the wire-only T_comm misses. Default 0 keeps the legacy
+    # behavior. Live fleet measurement (EXP-D2.5 / D2.7) puts it at
+    # ~8–10 ms. Setting it on real fleets lets throughput-mode DP stop
+    # over-preferring many-small-stage solutions.
+    hop_overhead_seconds: float = 0.0
     # EXP-D3 Phase F chain mode:
     #   sync  — Phase 1a/1b synchronous chain (each in-flight stream
     #            occupies a thread on every chain stage). Default for
@@ -164,6 +170,7 @@ class CoordinatorConfig:
             eager_backup=bool(coord.get("eager_backup", True)),
             optimization_mode=str(coord.get("optimization_mode", "throughput")),
             blend_alpha=float(coord.get("blend_alpha", 0.0)),
+            hop_overhead_seconds=float(coord.get("hop_overhead_seconds", 0.0)),
             chain_mode=str(coord.get("chain_mode", "sync")),
             profiling_layer_warmup=int(profiling.get("layer_warmup", 1)),
             profiling_layer_repeats=int(profiling.get("layer_repeats", 3)),
@@ -575,6 +582,7 @@ class CoordinatorServer:
             eager_backup=self.config.eager_backup,
             optimization_mode=self.config.optimization_mode,
             blend_alpha=self.config.blend_alpha,
+            hop_overhead_seconds=self.config.hop_overhead_seconds,
         )
 
         log.info("auto-scheduling: solving DP (devices=%d, layers=%d)",

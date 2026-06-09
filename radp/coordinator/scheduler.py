@@ -558,13 +558,27 @@ class Scheduler:
         return total
 
     def _comm_time(self, src: DeviceId, dst: DeviceId) -> float:
-        """Inter-stage activation transfer: activation_bytes / bw + latency."""
+        """Inter-stage activation transfer: activation_bytes / bw + latency
+        + a fixed per-hop overhead for everything the wire-only model
+        misses (gRPC framing, Python/GIL contention, scheduler delay).
+
+        The hop_overhead_seconds knob (default 0) was added in EXP-D2.7 —
+        without it the cost function only sees wire-level transfer
+        (microseconds for OPT-350M's 2 KB activation) and treats
+        many-small-stage placements as essentially free. Live measurement
+        puts the real per-hop cost at 8–10 ms regardless of payload, so
+        a 4-stage chain quietly carries ~30 ms of hidden overhead the
+        DP never charged. Setting this to ~0.008 surfaces the cost so
+        throughput-mode placements stop racing toward 4-stage and start
+        considering bulk-on-fast-device solutions.
+        """
         key = (src, dst)
         bw = self.spec.network.bandwidth.get(key)
         lat = self.spec.network.latency.get(key, 0.0)
         if bw is None or bw <= 0:
             return math.inf
-        return self.spec.activation_bytes / bw + lat
+        wire = self.spec.activation_bytes / bw + lat
+        return wire + self.spec.hop_overhead_seconds
 
 
 # ---------------------------------------------------------------------------
