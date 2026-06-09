@@ -41,6 +41,11 @@
 ]{KoPubDotum}
 
 \usepackage[margin=2cm,top=2.5cm,bottom=2.5cm]{geometry}
+% microtype: xetex 하에서 character protrusion 만 활성화 (font
+% expansion 은 lualatex 필요). 영한 혼용 단락의 자간 spread 를
+% 시각적으로 줄여 Underfull \hbox badness 가 있는 줄도 자연스러운
+% 정렬로 보이게 한다.
+\usepackage[protrusion=true,expansion=false]{microtype}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 \usepackage{multirow}
@@ -68,8 +73,15 @@
 % --- 표/그림 캡션: 국·영문 병기 형식 -----------------------------------
 \captionsetup{font=small,labelfont=bf,labelsep=period}
 
-% --- emergencystretch (영문본과 동일 사유) -----------------------------
-\setlength{\emergencystretch}{2em}
+% --- emergencystretch + sloppy ------------------------------------------
+% 한국어판은 영문본보다 큰 stretch 가 필요하다. 본문에 영한 혼용 토큰
+% (8-worker, gRPC handler, \texttt{(request\_id, position)} 등) 이 많아
+% 한 줄 안에서 break 가 안 되는 긴 토큰이 자주 줄 끝에 걸려 Underfull
+% \hbox 가 badness 10000 까지 발생하기 때문이다. 4em emergencystretch
+% 만으로는 부족해 \sloppy 를 전역으로 켜서 LaTeX 가 단어 사이 spacing
+% 을 자유롭게 stretch 하여 자간이 시각적으로 벌어지지 않게 한다.
+\setlength{\emergencystretch}{4em}
+\sloppy
 
 % --- Title block --------------------------------------------------------
 % Async chain forwarding 은 §3 의 runtime 기여로 머무르고, 제목은
@@ -113,11 +125,11 @@
       recovery routing 을 동시에 만족해야 한다. 본 논문은 두 결정을
       단일 alternating DP 로 통합한 \sys{} 를 제안한다. Backup memory
       예약이 placement 의 memory constraint 에 자연스럽게 반영되어,
-      기존 시스템이 joint optimization 을 회피하며 발생시키던
-      infeasible region 을 제거한다. 두 가지 runtime 기법 ---
+      기존 시스템이 joint optimization 을 회피하면서 발생시키던
+      infeasible region 이 제거된다. 두 가지 runtime 기법 ---
       asynchronous mirror cache 와 asynchronous chain forwarding ---
-      이 결합 최적화를 실 edge fleet 에서 운용 가능하게 만든다.
-      8 worker Jetson fleet 에서 OPT-350M 24 cell 과 Llama-3.2-1B
+      이 결합 최적화를 실 edge fleet 위에서 운용 가능하게 만든다.
+      8-worker Jetson fleet 에서 OPT-350M 24 cell 과 Llama-3.2-1B
       9 cell 을 측정한 결과, latency-optimal placement 가
       concurrency $C\!\geq\!4$ 의 모든 점에서 throughput-optimal
       placement 를 압도하였고, async chain 은 sync chain 대비
@@ -171,9 +183,9 @@ data center 에서 통용되던 두 가지 가정에 의존한다.
 반올림 문제이지만, 16 배 이종 환경에서는 placement 가 시스템 전체
 throughput 을 좌우한다. 둘째, \textbf{신뢰성}: edge board 는 빈번히
 crash 하며 SD card 가 가득 차거나 network 가 끊긴다. 본 연구의
-measurement campaign 중 다수의 board 에서 위 세 종류의 장애를 모두
-경험했다. 장애를 예외 경로로 처리하는 placement 는 첫 worker crash
-시 진행 중인 모든 stream 을 잃는다.
+measurement campaign 동안 다수의 board 에서 위 세 가지 장애가 모두
+관측되었다. 장애를 예외 경로로 처리하는 placement 는 첫 worker crash
+시점에 진행 중이던 모든 stream 을 잃는다.
 
 기존 시스템은 layer placement ($\psi$) 와 recovery routing ($R$) 을
 별개 문제로 다룬다. EdgeShard 의 DP 는 어딘가에 모든 layer 의
@@ -204,18 +216,19 @@ performance 중 하나를 반드시 양보해야 한다.
   \item \texttt{ResultReady} reverse channel 을 갖춘 asynchronous
         chain forwarding. Chain length 와 무관하게 $C\!=\!16$ 에서
         $17$--$47\%$ 의 throughput 향상.
-  \item 8 worker Jetson fleet 라이브 측정. OPT-350M 24 cell +
+  \item 8-worker Jetson fleet 라이브 측정. OPT-350M 24 cell +
         Llama-3.2-1B 9 cell --- $L\!\succ\!T$ dominance 가 두 model
         size 에 걸쳐 $C\!\geq\!4$ 에서 유지됨. Worker SIGKILL 시
-        \sys{}는 60/60 token 전달, recovery 없는 baseline 은 17--20
-        token 에서 중단.
-  \item (i) outer-subset enumeration 으로 자동 device prune 을 켜고
+        \sys{} 는 60/60 token 을 전달하는 반면 recovery 가 없는
+        baseline 은 17--20 token 에서 중단된다.
+  \item (i) outer-subset enumeration 으로 자동 device prune 을 활성화하고
         (ii) $T_{\mathrm{comm}}$ 에 per-hop overhead 항
         $\gamma_{\mathrm{hop}}$ 을 도입한 ablation 결과,
-        $C\!\geq\!4$ 에서 $L\!\succ\!T$ 격차가 \emph{좁혀지지 않고
-        오히려 벌어진다}. 잔여 격차는 wire-cost 항이 아니라
-        multi-stream system-level 효과로, cost-model 정교화만으로는
-        throughput placement 가 회복할 수 없는 한계를 한정한다.
+        $C\!\geq\!4$ 에서 $L\!\succ\!T$ 격차는 \emph{좁혀지지 않고
+        오히려 벌어진다}. 잔여 격차는 wire-cost 항이 아닌
+        multi-stream system-level 효과에 기인하며, 이는 cost-model
+        정교화만으로 throughput placement 가 만회할 수 있는 범위를
+        명확히 한정한다.
 \end{itemize}
 
 % =======================================================================
@@ -232,37 +245,40 @@ $R: D \to D$ 는 각 device 에 대해 해당 device 의 layer memory 를
 reservation 을 \emph{포함하는} device 별 memory cap 을 만족해야 하며,
 다음 cost function 을 최소화한다.
 \begin{equation}\label{eq:rank}
-  \mathrm{rank}(\psi) = (1{-}\alpha) \sum_{s \in \psi} \mu(\psi) T(s)
-                       + \alpha \max_{s \in \psi} \mu(\psi) T(s)
-                       + \gamma_{\mathrm{stage}} |\psi|
+\begin{aligned}
+  \mathrm{rank}(\psi) ={} & (1{-}\alpha) \sum_{s \in \psi} \mu(\psi) T(s) \\
+                          & + \alpha \max_{s \in \psi} \mu(\psi) T(s)
+                            + \gamma_{\mathrm{stage}} |\psi|
+\end{aligned}
 \end{equation}
 여기서 $T(s)$ 는 device $d_s$ 에서의 stage $s$ 의 compute time,
 $\mu(\psi) = \max(1, C_\star |\psi| / P)$ 는 thread-pool
-saturation multiplier (target concurrency $C_\star$ default $1$, pool
-$P$ default $30$ → no-op), $\gamma_{\mathrm{stage}} |\psi|$ 는
-stage-count 에 대한 가산 페널티 (default $0$). $\alpha\!=\!0$ 은
-EdgeShard 의 latency mode (sum of stage times $=$ 단일 stream TBT),
-$\alpha\!=\!1$ 은 Jupiter 의 throughput mode (가장 느린 stage 가
-throughput 을 제약) 에 해당한다. Operator 는 $\alpha$ 를
+saturation multiplier (target concurrency $C_\star$ 의 default 는 $1$,
+pool size $P$ 의 default 는 $30$ 으로, 이 경우 $\mu \equiv 1$ 의 no-op),
+$\gamma_{\mathrm{stage}} |\psi|$ 는 stage-count 에 대한 가산 페널티
+(default $0$) 이다. $\alpha\!=\!0$ 은 EdgeShard 의 latency mode
+(stage time 의 합 $=$ 단일 stream TBT) 에, $\alpha\!=\!1$ 은 Jupiter 의
+throughput mode (가장 느린 stage 가 throughput 을 제약) 에 대응한다.
+Operator 는 $\alpha$ 를
 \texttt{optimization\_mode = \{latency, throughput, blended\}} alias 로
-조작하며, 균질 fleet 에서 $\mu(\psi)$ 단독으로는 모든 subset 크기가
-max-min argmax 에서 \emph{tie} 만 만든다 (각 subset 의 per-stage layer
-밀도가 multiplier 와 반비례하여 상쇄). $\gamma_{\mathrm{stage}}\!>\!0$
-설정이 fewer-stage 를 strict 우선하게 한다.
+조정한다. 균질 fleet 에서는 $\mu(\psi)$ 단독으로 모든 subset 크기가
+max-min argmax 에서 \emph{tie} 가 되는데 (각 subset 의 stage 당 layer
+밀도가 multiplier 와 반비례하여 상쇄됨), 이때 fewer-stage 를 명시적으로
+선호하려면 $\gamma_{\mathrm{stage}}\!>\!0$ 설정이 필요하다.
 
-Device 순서 $D = (d_1, \ldots, d_{|D|})$ 를 outer alternation 의
-permutation search 가 고정한다고 가정하자. $A(y, n)$ 을 첫 $y$
+Device 순서 $D = (d_1, \ldots, d_{|D|})$ 가 outer alternation 의
+permutation search 에 의해 고정되어 있다고 하자. $A(y, n)$ 을 첫 $y$
 layer 를 첫 $n$ device 의 prefix 에 배치하되 device $d_n$ 이
-마지막 stage 를 소유할 때의 minimum rank 라 정의한다. Inner DP 는
+마지막 stage 를 담당할 때의 minimum rank 라 정의한다. Inner DP 는
 ordering 안의 모든 device 가 참여한다는 가정 (각 device 가 최소
-1 stage) 하에서 $A(L, |D|)$ 를 읽지만, outer search 가 모든 ordered
-subset $S \subseteq D$ ($|S| \geq 2$) 에 대해 inner DP 를 재실행하여
-subset selection 을 복원한다 --- 즉 pathologically-slow worker 는
-inner recurrence 의 단순함을 유지한 채 outer search 가 자동으로
-prune 한다. 이는 Jupiter~\cite{ye2025jupiter} 의 LLM partition DP
-가 사용한 문제 분해와 동일하며, 우리 recurrence 는 $\alpha\!=\!1$,
-recovery 없음, $\gamma_{\mathrm{hop}}\!=\!0$ 조건에서 Jupiter Eq.~1
-로 정확히 환원된다.
+1 stage 를 가짐) 하에서 $A(L, |D|)$ 를 읽지만, outer search 가
+모든 ordered subset $S \subseteq D$ ($|S| \geq 2$) 에 대해 inner DP
+를 재실행하므로 subset selection 이 복원된다 --- 즉 pathologically-slow
+worker 는 inner recurrence 를 단순한 형태로 유지한 채 outer search
+가 자동으로 prune 한다. 이 문제 분해는 Jupiter~\cite{ye2025jupiter}
+의 LLM partition DP 가 채택한 방식과 동일하며, 본 recurrence 는
+$\alpha\!=\!1$, recovery 없음, $\gamma_{\mathrm{hop}}\!=\!0$ 조건에서
+Jupiter Eq.~1 과 정확히 일치한다.
 
 DP recurrence 와 memory feasibility constraint 는 다음과 같다.
 \begin{equation}\label{eq:dp}
@@ -291,18 +307,18 @@ cap 을 통해 들어가므로, $R$ 의 변화가 feasible 한 $\psi$ 의 집합
 decoupled solver 는 memory-tight edge 에서 feasible 한 $R$ 이 없는
 $\psi$ 를 선택할 수 있다.
 
-알고리즘~\ref{alg:alt} 은 두 문제를 alternating 으로 풀어 joint
+알고리즘~\ref{alg:alt} 은 두 문제를 alternating 방식으로 풀어 joint
 solution 을 얻는다. Inner $\psi$-DP 는 고정된 device 순서에 대해
 $O(L^2 |D|)$, outer subset+permutation search 는
-$O(2^{|D|} \cdot |D|!)$, greedy $R$ pass 는 $O(|D|^2)$ 이다. Cost
-가 monotonically 비증가이므로 유한 반복 후 종료가 보장되며, 본
-연구의 모든 fleet 에서 3 회 이내에 수렴했다. $|D| \leq 8$ 인 본
-edge fleet 에서는 boot time 1 초 미만 ($|D|\!=\!6$ 의 경우
-$\sim$80\,ms, 1956 candidates) 으로 실용적이며, CPU Nano 와 같이
-극단적으로 느린 worker 는 outer search 가 자동으로 drop 한다
-(\S\ref{sec:eval}). $|D| \gtrsim 12$ regime 에서는 자동 top-$k$
-heuristic (per-layer speed 로 device 를 정렬해 outer search 를
-$k$ 개로 제한) 통합이 future work 로 남는다.
+$O(2^{|D|} \cdot |D|!)$, greedy $R$ pass 는 $O(|D|^2)$ 의 복잡도를
+가진다. Cost 가 매 반복마다 감소하거나 동일하게 유지되므로 유한
+횟수 내에 수렴이 보장되며, 본 연구의 모든 fleet 에서 3 회 이내에
+수렴하였다. $|D| \leq 8$ 인 본 edge fleet 의 경우 boot 시 1 초 미만
+($|D|\!=\!6$ 에서 후보 1956 개 기준 약 $80$\,ms) 으로 실용적이며,
+CPU Nano 와 같이 극단적으로 느린 worker 는 outer search 가 자동으로
+prune 한다 (\S\ref{sec:eval}). $|D| \gtrsim 12$ regime 의 경우 자동
+top-$k$ heuristic (per-layer speed 로 device 를 정렬해 outer search
+를 $k$ 개로 제한) 의 도입이 future work 로 남는다.
 
 \begin{algorithm}[t]
   \caption{Alternating $\psi$+$R$ optimization}
@@ -324,77 +340,79 @@ $k$ 개로 제한) 통합이 future work 로 남는다.
 \subsection{Mirror cache 와 chain-aware recovery}
 
 Sync chain forwarding 에서 coordinator 는 chain head 의 input 만을
-local 에 갖는다. Mid-chain worker 가 죽으면 coordinator 는 backup 으로
-replay 할 activation history 가 없어 진행 중인 stream 이 손실된다.
+local 에 보유한다. Mid-chain worker 가 죽으면 coordinator 는 backup
+으로 replay 할 activation history 가 없어 진행 중이던 stream 이
+손실된다.
 
 \textbf{Mirror cache.} 각 worker 는 자신의 stage 를 실행하기 전에
-들어온 activation tensor 와 \texttt{(request\_id, position)} key 를
-coordinator 에 단방향 \texttt{MirrorActivation} RPC 로 전송한다.
-Coordinator 는 position-keyed dictionary 에 저장하며, insert 는
-idempotent 이라 중복 retry 와 out-of-order 도착을 자동 흡수한다.
-비용은 non-head stage 당 단방향 RPC 한 번 (본 fleet 평균 1.2\,ms).
-8-token Generate 의 산술 검증: 3-stage chain 에서 정확히 16 개의
-mirror push (8 step $\times$ non-first stage 2 개).
+입력 activation tensor 와 위치 key 를 \texttt{MirrorActivation} RPC
+로 coordinator 에 단방향 전송한다. Coordinator 는 이를 position
+별 dictionary 에 저장하며, insert 는 idempotent 이므로 중복 retry
+와 순서 어긋남이 자동으로 흡수된다. 비용은 non-head stage 당 RPC
+1 회, 본 fleet 평균 $1.2$\,ms 이다. 검산: 8-token Generate 의 경우
+3-stage chain 에서 정확히 16 회의 mirror push 가 발생한다
+(8 step $\times$ non-head stage 2 개).
 
 \textbf{Trailer 기반 attribution.} Worker 의 downstream
 \texttt{RunStage} 가 RpcError 를 발생시키면 upstream worker 는 실패한
 stage 의 \texttt{(start\_layer, end\_layer)} 를 gRPC trailer 에
 stamp 한 후 \texttt{UNAVAILABLE} 로 re-abort 한다. Coordinator 는
-trailer 를 읽어 \emph{원본} placement $\psi_0$ 에서 --- 현재 execution
-plan 이 아닌 --- lookup 한다. 이것이 중요한 이유: heartbeat path 가
-이미 backup 을 새 chain head 로 substitute 했을 수 있는데, 그 substitute
-된 worker 에 책임을 묻는 것은 healthy worker 를 mark-as-dead 하는
-오류가 된다. Trailer 는 $R$ 이 이미 수행한 rewiring 과 무관하게
-진정으로 죽은 stage 의 identity 를 운반한다.
+trailer 를 읽어 현재 execution plan 이 아닌 \emph{원본} placement
+$\psi_0$ 에서 lookup 한다. 이 처리가 중요한 이유는, heartbeat path 가
+이미 backup 을 새 chain head 로 substitute 했을 가능성이 있고,
+이 경우 substitute 된 worker 에 실패를 귀속시키면 healthy worker 를
+mark-as-dead 하는 오류로 이어지기 때문이다. Trailer 는 $R$ 이
+이미 수행한 rewiring 과 무관하게 실제로 죽은 stage 의 identity 를
+전달한다.
 
 \subsection{Asynchronous chain forwarding}
 
-Sync chain 의 hidden cost 는 부하 측정 후 발견되었다. $C$ 개의
+Sync chain 의 hidden cost 는 부하 측정 과정에서 드러난다. $C$ 개의
 concurrent stream 이 각각 모든 $N$ 개의 chain stage 에서 하나의
 gRPC handler thread 를 \emph{chain 전체 시간 동안} 점유한다. 즉
-$CN$ 개의 thread 가 동시 점유되며, throughput-optimal placement 의
-pipeline parallelism 이 실제로 발현되지 않는다.
+$CN$ 개의 thread 가 동시에 점유되어 throughput-optimal placement 의
+pipeline parallelism 이 실제로 발현되지 못한다.
 
-Async chain 은 call pattern 을 뒤집는다. Worker 는 next-hop
-\texttt{RunStage} 를 bounded thread pool 에 dispatch 한 후 즉시 빈
-response 로 upstream caller 에게 ACK 한다. 각 handler thread 는
-자신의 작업이 끝나면 즉시 해제된다. Chain tail 은 response chain 을
-통해 결과를 되돌리는 대신 coordinator 에 \texttt{ResultReady} 를 직접
-호출하여 최종 activation 을 전달한다. Coordinator 는
-\texttt{(request\_id, position)} 별 \texttt{Event} 를 30\,s timeout
+Async chain 은 call pattern 을 반전시킨다. Worker 는 next-hop
+\texttt{RunStage} 를 bounded thread pool 에 dispatch 한 직후 빈
+response 로 upstream caller 에게 ACK 를 보낸다. 각 handler thread 는
+자신의 작업이 끝나는 즉시 해제된다. Chain tail 은 response chain 을
+통해 결과를 되돌리는 대신 coordinator 의 \texttt{ResultReady} 를
+직접 호출하여 최종 activation 을 전달한다. Coordinator 는
+\texttt{(request\_id, position)} 별 \texttt{Event} 를 $30$\,s timeout
 으로 대기한다.
 
-Async mode 의 대가는 trailer-based attribution 이 불가능해진다는
+Async mode 의 trade-off 는 trailer-based attribution 이 불가능해진다는
 점이다 --- response chain 이 이미 unwound 되어 trailer 를 stamp 할
-수 없다. Coordinator 는 heartbeat (보통 5\,s 이내) 또는 30\,s
-ResultReady timeout 으로 recovery 하며, 진정으로 죽은 worker 대신
-chain head 가 표시될 수 있다. $\psi$+$R$ feasibility guarantee 가
-correctness 를 유지하지만 (모든 token 일관 전달), recovery 는
-heartbeat 가 race 에서 질 경우 한 hop 의 추가 비용을 지불한다.
-Operator 는 \texttt{chain\_mode = sync $\mid$ async} knob 으로
-trade-off 를 명시적으로 선택한다.
+대상이 없다. Coordinator 는 heartbeat (보통 $5$\,s 이내) 또는
+$30$\,s ResultReady timeout 으로 복구하며, 실제로 죽은 worker 대신
+chain head 가 표시될 수 있다. $\psi$+$R$ feasibility guarantee 덕에
+correctness 는 유지되지만 (모든 token 이 일관되게 전달됨), heartbeat
+가 race 에서 질 경우 recovery 는 hop 1 회분의 비용을 추가로
+부담한다. Operator 는 \texttt{chain\_mode = sync $\mid$ async} knob
+으로 이 trade-off 를 명시적으로 선택한다.
 
 % =======================================================================
 \section{실  험}
 % =======================================================================
 
 \textbf{환경.} 8-worker Jetson fleet (Orin Nano 8\,GB 6 대,
-AGX Orin MAXN 1 대, AGX Xavier 1 대) 와 Mac coordinator 가 동일 LAN
-상에 위치한다. 세 compute tier 를 decode step (seq=64) 에서 측정:
-Nano CPU ($\sim$42\,ms/layer), AGX CPU ($\sim$17.6\,ms/layer),
-Nano CUDA ($\sim$1.5\,ms/layer). AGX Orin MAXN 은 Nano CUDA 대비 동일
-decode 점에서 약 16 배 빠르다.
+AGX Orin MAXN 1 대, AGX Xavier 1 대) 과 Mac coordinator 가 동일 LAN
+상에 위치한다. 세 가지 compute tier 를 decode step (seq=64) 에서
+측정한 결과는 다음과 같다: Nano CPU ($\sim$$42$\,ms/layer),
+AGX CPU ($\sim$$17.6$\,ms/layer), Nano CUDA ($\sim$$1.5$\,ms/layer).
+AGX Orin MAXN 은 동일 decode 조건에서 Nano CUDA 대비 약 16 배 빠르다.
 
-\textbf{Model.} OPT-350M (24 layer, hidden 1024, fp16) 을 주 model
-로, Llama-3.2-1B (16 layer, hidden 2048, fp16) 을 model-size
-generalisation 검증용으로 사용했다. Llama 는 sharded safetensors
+\textbf{Model.} OPT-350M (24 layer, hidden 1024, fp16) 을 주 model 로
+사용하고, model-size generalisation 검증을 위해 Llama-3.2-1B (16 layer,
+hidden 2048, fp16) 을 추가로 사용한다. Llama 는 sharded safetensors
 loader 로 적재된다.
 
-\textbf{Workload.} Greedy decoding (\texttt{temperature=0}),
-\texttt{max\_tokens} 은 실험별 가변 (concurrent sweep 30, recovery 60).
-Concurrency 측정은 \texttt{measure\_concurrent.py}, recovery 측정은
-\texttt{run\_phase3\_recovery.py} 가 담당한다. 모든 cell 의 결과는
-\texttt{experiments/results/} 에 JSON 형태로 저장된다.
+\textbf{Workload.} Greedy decoding 을 사용한다. \texttt{max\_tokens}
+는 실험별로 다르며 concurrent throughput sweep 에서는 30,
+recovery trial 에서는 60 으로 설정한다. Concurrency 측정과 recovery
+측정은 별도의 harness 가 담당하고, 모든 cell 의 결과는 JSON 형태로
+기록되어 재현 가능성을 보장한다.
 
 % Table 1 을 본문 흐름의 더 앞쪽에 두어 마지막 페이지에 떠있는 것을 방지.
 % [!t] 로 본 column 의 상단을 우선시. table* 는 양 column 폭.
@@ -404,9 +422,9 @@ Concurrency 측정은 \texttt{measure\_concurrent.py}, recovery 측정은
   sub-matrix 의 aggregate throughput (tok/s) 과 TBT p50 (ms, 괄호 안).
   각 행은 (chain length, placement, chain mode) 조합이며, 열은
   concurrency level. Bold 는 각 (chain mode, $C$) 그룹 내
-  $L\!\succ\!T$ 승자, underline 은 각 (placement, $C$) 그룹 내
-  async $\succ$ sync 승자. Llama 의 L+sync 행은 측정 중 한 worker 가
-  unreachable 로 빠져 결측이다.}
+  $L\!\succ\!T$ 우위 cell 을, underline 은 각 (placement, $C$) 그룹
+  내 async $\succ$ sync 우위 cell 을 나타낸다. Llama 의 L+sync 행은
+  측정 중 한 worker 가 unreachable 상태에 빠져 결측 처리되었다.}
   \label{tab:matrix}
   \captionsetup{name=Table,labelfont=bf,labelsep=period}
   \begin{tabular}{l l l ccc}
@@ -434,83 +452,87 @@ Concurrency 측정은 \texttt{measure\_concurrent.py}, recovery 측정은
   \end{tabular}
 \end{table*}
 
-표~\ref{tab:matrix} 는 headline 결과로 24-cell OPT-350M matrix
+표~\ref{tab:matrix} 는 headline 결과로, 24-cell OPT-350M matrix
 (두 chain length $\times$ 네 architecture variant $\times$ 세
-concurrency level) 와 동일 4-stage fleet 의 9-cell Llama-3.2-1B
-sub-matrix 에서의 throughput (tok/s, 클수록 좋음) 과 TBT p50 (ms,
-작을수록 좋음) 을 보여준다.
+concurrency level) 와 동일 4-stage fleet 위에서의 9-cell Llama-3.2-1B
+sub-matrix 에 대한 throughput (tok/s, 클수록 우수) 과 TBT p50 (ms,
+작을수록 우수) 를 보여준다.
 
-\textbf{발견 1: OPT-350M 24 cell 모두에서 $L \succ T$.} Sync 끼리
-(T+sync vs L+sync), async 끼리 (T+async vs L+async) 짝지어 비교 시
-모든 24 점에서 $L$ 이 $T$ 를 throughput 면에서 압도한다. 최대 격차는
+\textbf{발견 1: OPT-350M 24 cell 전체에서 $L \succ T$.} Sync 끼리
+(T+sync vs L+sync), async 끼리 (T+async vs L+async) 짝지어 비교한 결과,
+모든 24 점에서 $L$ 이 throughput 측면에서 $T$ 를 앞선다. 최대 격차는
 4-stage chain $C\!=\!4$ async cell 로, L+async ($23.91$\,tok/s) 가
 T+async ($9.79$) 의 $2.4\times$ 이며 TBT p50 는 $2.8\times$ 낮다
 ($145$\,ms vs $406$\,ms).
 
 \textbf{발견 2: Async $\succ$ sync ($C\!\geq\!4$, 단 T-placement
 4-stage $C\!=\!4$ 예외).} 모든 $L$ row $C\!\geq\!4$ 에서 async 가
-sync 를 압도한다. 유일한 예외는 T-placement 4-stage $C\!=\!4$
-($10.71 \to 9.79$ tok/s, $-9\%$) 이며, 각 stage 의 layer 수가
-1--2 개로 적을 때 chain-hop overhead 가 async 의 overlap 여유를
-잡아먹기 때문이다.
+sync 를 앞선다. 유일한 예외는 T-placement 4-stage $C\!=\!4$
+($10.71 \to 9.79$\,tok/s, $-9\%$) 로, 각 stage 의 layer 수가
+1--2 개로 적을 때는 chain-hop overhead 가 async 의 overlap 여유를
+모두 소진하기 때문이다.
 
-\textbf{발견 3: Async gain 은 chain-length-independent.} T-placement
-$C\!=\!16$ 에서 sync $\to$ async 전환 시 3-stage 는 $+47\%$
-($23.49 \to 34.49$), 4-stage 는 $+46\%$ ($24.47 \to 35.69$). Sync
-chain cost 는 concurrency 에 비례하지만 chain length 에는 비례하지
-않는다.
+\textbf{발견 3: Async 의 throughput 이득은 chain length 와 무관.}
+T-placement $C\!=\!16$ 에서 sync $\to$ async 전환 시 3-stage 는
+$+47\%$ ($23.49 \to 34.49$), 4-stage 는 $+46\%$ ($24.47 \to 35.69$)
+의 이득을 보인다. Sync chain cost 는 concurrency 에 비례하지만
+chain length 에는 비례하지 않는다.
 
-\textbf{발견 4: Model-size generalisation + $C\!=\!1$ cross-over.}
-3 배 큰 Llama-3.2-1B 에서 async $\succ$ sync 는 T row 에서 유지
-($C\!=\!16$: $21.84 \to 30.56$, $+40\%$), $L \succeq T$ 는
-$C\!\geq\!4$ 에서 유지 (L+async@C=4 가 best Llama cell, T+async 대비
-$+12\%$). 새로운 관찰: $C\!=\!1$ single stream 에서 처음으로 T+async
-가 L+async 를 throughput 에서 누른다 ($3.74$ vs $3.05$ tok/s,
-$-18\%$). 그러나 TBT p50 는 여전히 $L$ 우위 ($174$ vs $261$\,ms,
-$-33\%$) --- operator 관점의 responsiveness 에서는 $L$ 이 이긴다.
-직관: 큰 model single stream 에서 stage compute 가 chain-hop cost
-를 압도하면 $L$ 의 fast-device-heavy placement 가 그 single stage 를
-throughput-bottlenecking critical path 로 만든다. Multi-stream 은
-hop cost 를 amortise 하여 $L$ 의 pipeline-saturation 우위가 복귀한다.
+\textbf{발견 4: Model-size generalisation 과 $C\!=\!1$ cross-over.}
+3 배 큰 Llama-3.2-1B 에서도 async $\succ$ sync 가 T row 에서 유지
+되며 ($C\!=\!16$: $21.84 \to 30.56$, $+40\%$), $L \succeq T$ 또한
+$C\!\geq\!4$ 에서 유지된다 (L+async@C=4 가 Llama 의 best cell 로
+T+async 대비 $+12\%$). 새로운 관찰점은 $C\!=\!1$ single-stream
+조건에서 throughput 기준 T+async 가 L+async 를 앞선다는 것이다
+($3.74$ vs $3.05$\,tok/s, $-18\%$). 그러나 TBT p50 는 여전히 $L$
+이 우위 ($174$ vs $261$\,ms, $-33\%$) 이므로, operator 관점의
+responsiveness 측면에서는 $L$ 이 앞선다. 해석은 다음과 같다: 큰
+model 의 single-stream 조건에서 stage compute time 이 chain-hop
+cost 를 압도하면 $L$ 의 fast-device-heavy placement 가 그 단일
+stage 자체를 throughput-bottlenecking critical path 로 만든다.
+Multi-stream 으로 갈수록 hop cost 가 amortise 되어 $L$ 의
+pipeline-saturation 우위가 다시 살아난다.
 
 \textbf{발견 5: Subset enumeration 과 hop overhead 는 $L \succ T$
-순서를 뒤집지 않는다.} 자연스러운 cost-model 가설은 (a) DP 가 모든
-worker 를 강제 참여시켜 느린 device 가 max-stage 를 막고, (b)
-wire-only $T_{\mathrm{comm}}$ 이 per-hop overhead 를 과소평가해서
-$T$ 가 진다는 것이다. 두 fix 를 직접 활성화하여 (1 AGX MAXN + 3
-Nano CUDA + 2 Nano CPU, 6-worker fleet, OPT-350M async)
-재측정한다.
-\textbf{(a) Subset enumeration.} CPU Nano 2 대가 자동 prune 된다.
-$L$ mode 는 2-device subset (AGX + 1 Nano CUDA), $T$ mode 는 4-stage
-all-CUDA 를 선택한다. 그러나 $L\!\succ\!T$ 격차는 \emph{확대}된다
-($C\!=\!1$: $1.21\times$, $C\!=\!4$: $1.57\times$, $C\!=\!16$:
-$1.15\times$). 1.4 배 MAXN-vs-Nano-CUDA gap 환경에서 4-stage all-CUDA
-가 max-stage-minimum 의 정당한 답이며, subset enumeration 은 \emph{느린}
-floor 만 잘라낸다.
+순서를 뒤집지 못한다.} 자연스러운 cost-model 가설은 (a) DP 가 모든
+worker 를 강제로 참여시키는 탓에 느린 device 가 max-stage 를
+결정짓고, (b) wire-only $T_{\mathrm{comm}}$ 이 per-hop overhead 를
+과소평가하여 $T$ 가 불리해진다는 것이다. 6-worker fleet (1 AGX MAXN,
+3 Nano CUDA, 2 Nano CPU) 에서 OPT-350M async 로 두 fix 를 직접
+활성화하여 재측정한 결과는 다음과 같다.
+\textbf{(a) Subset enumeration.} CPU Nano 2 대가 자동으로 prune 되어,
+$L$ mode 는 2-device subset (AGX + 1 Nano CUDA) 을, $T$ mode 는
+4-stage all-CUDA 를 선택한다. 그럼에도 $L\!\succ\!T$ 격차는 오히려
+\emph{확대}된다 ($C\!=\!1$: $1.21\times$, $C\!=\!4$: $1.57\times$,
+$C\!=\!16$: $1.15\times$). $1.4\times$ MAXN-vs-Nano-CUDA gap 환경에서
+4-stage all-CUDA 는 max-stage-minimum 의 타당한 해이며, subset
+enumeration 은 \emph{느린} floor 만 잘라낸다.
 \textbf{(b) $\gamma_{\mathrm{hop}}\!=\!8$\,ms.} T placement 는 4-stage
-4-CUDA 그대로이다. 모든 inter-stage transition 에 동일한
-$\gamma_{\mathrm{hop}}$ 을 부과해도 max-min 의 argmax 가 바뀌지
-않는다. 라이브 결과 $C\!=\!1/4/16$: $5.17 / 7.5 / 32.8$\,tok/s
-($T$+async). $C\!=\!16$ 에서 (a) 만 적용한 $T$ 대비 $-5\%$.
+4-CUDA 그대로 유지된다. 모든 inter-stage transition 에 동일한
+$\gamma_{\mathrm{hop}}$ 을 부과해도 max-min 의 argmax 는 변하지
+않기 때문이다. 라이브 측정 결과 $C\!=\!1/4/16$ 에서 $T$+async 는
+$5.17 / 7.5 / 32.8$\,tok/s 로, $C\!=\!16$ 에서 (a) 만 적용한 $T$
+대비 $-5\%$ 의 결과를 보인다.
 두 ablation 모두 cost-model artifact 가설을 반증한다. $C\!\geq\!4$
-에서의 $L\!\succ\!T$ 는 multi-stream system-level 효과 (per-request
-thread-pool contention, KV cache memory bandwidth contention)이며,
-DP cost function 정교화만으로는 환원되지 않는 구조적 발견이다.
-또한 라이브 cluster snapshot 위에서 $(C_\star, \gamma_{\mathrm{stage}})$
-grid 전체에 대한 offline sweep 결과, cost-only DP 는 모든 v2 setting 에
-대해 \texttt{on-1[1..23]$\to$ao-1[24..24]} 의 2-stage 답을 픽한다.
-그럼에도 production 은 4-stage 를 deploy 하는데, 이는 식
-(\ref{eq:mem}) 가 강제한 결과 --- 2-stage 답이 ao-1 의 23-layer
-backup 부담을 단일 Nano peer 에 몰아 다른 devices 의 backup 까지
-동시 흡수가 불가능 --- 으로, paper 의 $\psi$+$R$ coupling 주장
-(\S\ref{sec:intro}) 의 가장 깔끔한 empirical 증거이다.
+에서 관찰되는 $L\!\succ\!T$ 는 multi-stream system-level 효과
+(per-request thread-pool contention, KV cache memory bandwidth
+contention) 에 기인하며, DP cost function 정교화만으로는 환원되지
+않는 구조적 결과이다. 또한 라이브 cluster snapshot 위에서
+$(C_\star, \gamma_{\mathrm{stage}})$ grid 전체에 대해 offline sweep
+을 수행한 결과, cost-only DP 는 모든 v2 setting 에서 동일한 2-stage
+해 \texttt{on-1[1..23]$\to$ao-1[24..24]} 를 선택한다. 그럼에도 production
+이 4-stage 를 deploy 하는 이유는 식 (\ref{eq:mem}) 의 강제이다.
+2-stage 해는 ao-1 의 23-layer 분량 backup 부담을 단일 Nano peer 에
+집중시키므로, 다른 device 들의 backup 까지 동시에 수용하는 것이
+불가능하다. 이는 본 논문의 $\psi$+$R$ coupling 주장
+(\S\ref{sec:intro}) 에 대한 가장 명확한 empirical 증거이다.
 
-\textbf{Recovery 결과.} Star topology 에서 worker SIGKILL 후 \sys{} 는
-5/5 시행 모두 60/60 token 을 일관되게 전달했고, recovery wall-clock
-평균 $617$\,ms, p95 $670$\,ms 였다. Recovery 가 없는 baseline 3 종
-(greedy, uniform, Jupiter-DP) 은 SIGKILL 경계에서 모든 진행 중 token
-손실 후 stream 이 중단되었다. 4-stage chain topology 에서도
-sync/async 모두 60/60 token 을 전달한다.
+\textbf{Recovery 결과.} Star topology 에서 worker SIGKILL 이후
+\sys{} 는 5/5 시행 모두에서 60/60 token 을 일관되게 전달했으며,
+recovery wall-clock 은 평균 $617$\,ms, p95 $670$\,ms 였다. Recovery
+가 없는 baseline 3 종 (greedy, uniform, Jupiter-DP) 은 SIGKILL
+시점에 진행 중이던 모든 token 을 잃고 stream 이 중단된다. 4-stage
+chain topology 에서도 sync/async 모두 60/60 token 을 전달한다.
 
 % Table 1 이 결론보다 뒤로 떠밀리지 않도록 결론 직전에 float barrier.
 \FloatBarrier
@@ -520,28 +542,30 @@ sync/async 모두 60/60 token 을 전달한다.
 % =======================================================================
 
 본 논문은 layer placement 와 recovery routing 을 단일 alternating DP
-로 통합한 \sys{} 시스템을 제안하고, 두 runtime 기법 (asynchronous
-mirror cache, asynchronous chain forwarding) 으로 실 edge fleet 에서
-joint optimization 의 운용 가능성을 확보했다. OPT-350M 24-cell matrix
-는 $\psi$+$R$ joint optimization 에 의한 $L$ 우위가 \emph{구조적}이며
-특정 topology 나 runtime 에 의존하지 않음을 보였고, 3 배 큰
-Llama-3.2-1B sub-matrix 는 동일 pattern 이 model size 에 걸쳐
-$C\!\geq\!4$ 에서 유지됨을 확인했다. $C\!=\!1$ 큰 model 의 cross-over
-는 claim 을 명확히 한정한다. Async chain 은 $C\!=\!16$ 에서
-$17$--$47\%$ throughput 향상을 가져오면서도 $C\!\geq\!4$ 의 placement
-순서를 결코 뒤집지 않아, 두 knob 이 operator 에게 orthogonal 한
-trade-off 를 제공함을 보였다.
+로 통합한 \sys{} 시스템을 제안하였으며, 두 가지 runtime 기법
+(asynchronous mirror cache, asynchronous chain forwarding) 을 통해
+실 edge fleet 위에서 joint optimization 의 운용 가능성을 확보하였다.
+OPT-350M 24-cell matrix 는 $\psi$+$R$ joint optimization 에 의한
+$L$ 우위가 \emph{구조적}이며 특정 topology 나 runtime 에 의존하지
+않음을 보였고, 3 배 큰 Llama-3.2-1B sub-matrix 는 동일 패턴이
+model size 를 가로질러 $C\!\geq\!4$ 영역에서 유지됨을 확인하였다.
+$C\!=\!1$ 의 큰 model 에서 관찰된 cross-over 는 claim 의 적용 범위를
+명확히 한정해 준다. Async chain 은 $C\!=\!16$ 에서 $17$--$47\%$ 의
+throughput 향상을 제공하면서도 $C\!\geq\!4$ 의 placement 순서를
+뒤집지 않으므로, 두 knob 이 operator 에게 orthogonal 한 trade-off
+를 제공함을 보였다.
 
-향후 과제는 (i) $R$ 을 single backup 에서 backup list 로 확장한
-cascading failure 대응, (ii) 7B INT4 의 memory-bound regime 측정
-(본 1B 측정에서 이미 Nano memory pressure 가 운용 한계로 노출됨),
-(iii) 식 (\ref{eq:rank}) 의 $\mu(\psi)$ 및 $\gamma_{\mathrm{stage}}$
-hyper-parameter $(C_\star, P, \gamma_{\mathrm{stage}})$ 에 대한
-라이브 calibration 이다. Subset enumeration, per-hop overhead
-$\gamma_{\mathrm{hop}}$, multi-stream interference multiplier
-$\mu(\psi)$, stage-count 페널티 $\gamma_{\mathrm{stage}}|\psi|$ 는
-본 논문에서 모두 구현되었으며 (\S\ref{sec:eval}), $L\!\succ\!T$
-격차의 wire-cost 항으로의 환원 불가능성이 확인되었다.
+향후 과제는 다음과 같다. (i) $R$ 을 single backup 에서 backup list
+로 확장하여 cascading failure 에 대응, (ii) 7B INT4 의 memory-bound
+regime 측정 (본 1B 측정에서 이미 Nano memory pressure 가 운용 한계
+로 드러난 바 있음), (iii) 식 (\ref{eq:rank}) 의 $\mu(\psi)$ 와
+$\gamma_{\mathrm{stage}}$ 에 대한 hyper-parameter
+$(C_\star, P, \gamma_{\mathrm{stage}})$ 의 라이브 calibration.
+Subset enumeration, per-hop overhead $\gamma_{\mathrm{hop}}$,
+multi-stream interference multiplier $\mu(\psi)$, stage-count
+페널티 $\gamma_{\mathrm{stage}}|\psi|$ 는 본 논문에서 모두
+구현되었으며 (\S\ref{sec:eval}), $L\!\succ\!T$ 격차가 wire-cost
+항만으로 환원되지 않음이 검증되었다.
 
 % =======================================================================
 \bibliographystyle{IEEEtran}
