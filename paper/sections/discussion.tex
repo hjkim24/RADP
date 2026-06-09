@@ -60,13 +60,20 @@ but the cost-model ablation (\S\ref{sec:eval:cost-model}) shows
 that the L $\succ$ T gap at $C \geq 4$ persists after both subset
 enumeration and a tuned $\gamma_{\mathrm{hop}}$ --- meaning the
 remaining gap is a multi-stream system-level effect, not a
-missing wire-cost term. A faithful model would need a
-\emph{concurrency-aware} $T_{\mathrm{stage}}(s, C)$ that captures
-thread-pool queueing and KV memory-bandwidth contention; we
-discuss two candidate forms (stage-count penalty $\gamma \cdot
-|\psi|$ and concurrency-scaled stage time
-$T_{\mathrm{stage}}(s) \cdot (1 + \rho C/\mathrm{pool})$) and
-leave their calibration to future work.
+missing wire-cost term. Both candidate concurrency-aware terms --- the pool-saturation
+multiplier $\mu(\psi)$ and the additive stage-count penalty
+$\gamma_{\mathrm{stage}} |\psi|$ --- are implemented as the
+\texttt{target\_concurrency}, \texttt{thread\_pool\_size}, and
+\texttt{stage\_count\_penalty\_seconds} knobs in
+\texttt{cluster.yaml} (Eq.~\ref{eq:rank}); the multiplier alone
+ties on homogeneous fleets (the per-subset factor cancels
+against per-subset compute density in the max-min argmax), the
+additive term breaks the tie and forces strictly fewer stages
+under saturation. Calibration of $(C_\star, P,
+\gamma_{\mathrm{stage}})$ against measured concurrent throughput
+on the Jetson fleet is the next experimental cell --- we leave a
+sweep with $C_\star\!\in\!\{4, 16\}$ and
+$\gamma_{\mathrm{stage}}\!\in\![0, 30]$\,ms to a follow-up.
 
 \textbf{Conclusion.} \sys{} folds layer placement and recovery
 routing into a single alternating dynamic program whose memory

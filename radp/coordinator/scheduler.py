@@ -337,6 +337,9 @@ class Scheduler:
             # Re-emit spec preserving every field — earlier versions dropped
             # eager_backup / optimization_mode here and quietly fell back to
             # defaults, which masked our A5 prototype until commit f378ddd.
+            # D2.7 / D2.8 added hop_overhead_seconds + target_concurrency +
+            # thread_pool_size + stage_count_penalty_seconds; forward those
+            # too or every subset silently runs with cost-model v1.
             return ClusterSpec(
                 devices=devs,
                 layers=self.spec.layers,
@@ -346,6 +349,10 @@ class Scheduler:
                 eager_backup=self.spec.eager_backup,
                 optimization_mode=self.spec.optimization_mode,
                 blend_alpha=self.spec.blend_alpha,
+                hop_overhead_seconds=self.spec.hop_overhead_seconds,
+                target_concurrency=self.spec.target_concurrency,
+                thread_pool_size=self.spec.thread_pool_size,
+                stage_count_penalty_seconds=self.spec.stage_count_penalty_seconds,
             )
 
         def _install(spec: ClusterSpec) -> None:
@@ -373,7 +380,15 @@ class Scheduler:
                     if math.isinf(result_state[0]) or math.isinf(result_state[1]):
                         continue
                     feasible_count += 1
-                    rank = _rank(result_state, mode, alpha)
+                    # EXP-D2.8: γ_stages · |ψ| penalises larger subsets at
+                    # the outer-search ranking step, where each subset has
+                    # a different stage count |ψ|=len(perm). Inside the
+                    # inner DP the term is constant so it doesn't affect
+                    # the chosen split between layers.
+                    stage_penalty = (
+                        self.spec.stage_count_penalty_seconds * len(perm)
+                    )
+                    rank = _rank(result_state, mode, alpha) + stage_penalty
                     score = tiebreak_score(result)
                     better = (
                         best is None
@@ -478,7 +493,11 @@ class Scheduler:
                 eager_backup=spec.eager_backup,
             ):
                 continue
-            t_stage = self._stage_time(d1.id, 1, y)
+            # |ψ| = self._M is the subset's total stage count, which the
+            # outer search varies across all subsets ≥ 2. Passing self._M
+            # makes the pool-saturation multiplier consistent across the
+            # inner DP's intermediate states.
+            t_stage = self._stage_time_with_interference(d1.id, 1, y, self._M)
             if t_stage > per_stage_slo_cap:
                 continue
             A[y][1] = (t_stage, t_stage)
@@ -504,7 +523,9 @@ class Scheduler:
                         eager_backup=spec.eager_backup,
                     ):
                         continue
-                    t_stage = self._stage_time(d_n.id, split + 1, y)
+                    t_stage = self._stage_time_with_interference(
+                        d_n.id, split + 1, y, self._M
+                    )
                     stage_cost = t_stage + t_comm
                     if stage_cost > per_stage_slo_cap:
                         continue
@@ -548,7 +569,7 @@ class Scheduler:
     # Cost helpers
     # ------------------------------------------------------------------
     def _stage_time(self, device_id: DeviceId, start: int, end: int) -> float:
-        """Σ T_comp(i, device) for i ∈ [start, end]."""
+        """Σ T_comp(i, device) for i ∈ [start, end] — wire-only baseline."""
         total = 0.0
         for i in range(start, end + 1):
             t = self.spec.layers[i - 1].compute_time.get(device_id)
@@ -556,6 +577,31 @@ class Scheduler:
                 return math.inf
             total += t
         return total
+
+    def _stage_time_with_interference(
+        self, device_id: DeviceId, start: int, end: int, num_stages: int
+    ) -> float:
+        """T_stage(s) inflated by the pool-saturation multiplier.
+
+        Multiplier = max(1, target_concurrency · num_stages / thread_pool_size).
+        Models that, when num_stages × target_concurrency exceeds the
+        worker-side gRPC handler pool, each stream queues for its slot,
+        so per-stage wall-clock inflates roughly linearly. EXP-D2.8.
+
+        Pure-function in (target_concurrency, thread_pool_size,
+        num_stages) — with target_concurrency=1 (the default) the
+        multiplier collapses to 1.0 and this matches _stage_time
+        exactly, so single-stream callers stay backward-compatible.
+        """
+        base = self._stage_time(device_id, start, end)
+        if math.isinf(base):
+            return base
+        C = self.spec.target_concurrency
+        pool = self.spec.thread_pool_size
+        if C <= 1 or pool <= 0 or num_stages <= 0:
+            return base
+        multiplier = max(1.0, (C * num_stages) / pool)
+        return base * multiplier
 
     def _comm_time(self, src: DeviceId, dst: DeviceId) -> float:
         """Inter-stage activation transfer: activation_bytes / bw + latency

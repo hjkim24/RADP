@@ -268,6 +268,149 @@ def test_subset_search_off_keeps_all_devices() -> None:
     assert chosen == {DeviceId("fast1"), DeviceId("fast2"), DeviceId("slug")}
 
 
+def test_interference_multiplier_is_pure_function() -> None:
+    """EXP-D2.8: T_stage_with_interference inflates by max(1, C·|ψ|/pool).
+
+    Multiplier is a pure function of (target_concurrency, thread_pool_size,
+    num_stages) — at C=1 or pool=0 it collapses to 1, matching the
+    legacy _stage_time exactly so single-stream callers stay backward-
+    compatible. At C=16, num_stages=4, pool=30 the multiplier is
+    16·4/30 ≈ 2.13."""
+    devices = [
+        DeviceProfile(id=DeviceId("d1"), total_memory_bytes=NODE_BYTES, compute_throughput=1.0),
+    ]
+    layers = [
+        LayerProfile(
+            layer_idx=LayerIdx(i), memory_bytes=LAYER_BYTES,
+            compute_time={DeviceId("d1"): 0.010},
+        )
+        for i in range(1, 5)
+    ]
+    network = NetworkProfile(bandwidth={}, latency={})
+    base_spec_kwargs = dict(
+        devices=devices, layers=layers, network=network,
+        slo=SLO(ttft_seconds=10.0, tbt_seconds=10.0),
+        optimization_mode="throughput",
+    )
+
+    # target_concurrency=1: multiplier = 1, behaves like _stage_time.
+    spec_noop = ClusterSpec(**base_spec_kwargs, target_concurrency=1, thread_pool_size=30)
+    sch = Scheduler(spec_noop)
+    assert sch._stage_time_with_interference(DeviceId("d1"), 1, 4, num_stages=4) \
+        == pytest.approx(4 * 0.010)
+
+    # target_concurrency=16, |ψ|=4, pool=30: multiplier = 16·4/30 ≈ 2.133
+    spec_sat = ClusterSpec(**base_spec_kwargs, target_concurrency=16, thread_pool_size=30)
+    sch_sat = Scheduler(spec_sat)
+    assert sch_sat._stage_time_with_interference(DeviceId("d1"), 1, 4, num_stages=4) \
+        == pytest.approx(4 * 0.010 * (16 * 4 / 30))
+
+    # Below saturation (C·|ψ| ≤ pool): multiplier floors at 1.
+    spec_below = ClusterSpec(**base_spec_kwargs, target_concurrency=2, thread_pool_size=30)
+    sch_below = Scheduler(spec_below)
+    assert sch_below._stage_time_with_interference(DeviceId("d1"), 1, 4, num_stages=4) \
+        == pytest.approx(4 * 0.010)  # 2·4=8 ≤ 30 → floor at 1
+
+
+def test_linear_interference_multiplier_collapses_argmax_to_tie_on_homogeneous_fleet() -> None:
+    """EXP-D2.8: the linear pool-saturation multiplier
+    `max(1, C·|ψ|/pool)` inflates each stage proportionally to |ψ|,
+    but on a homogeneous fleet a |ψ|-stage placement carries a
+    1/|ψ|-fraction of the layer compute per stage. The two factors
+    *cancel* — every subset size produces the same max_T·multiplier
+    product, leaving the outer search in a tie that the first-visited
+    (smallest) subset wins. Without an additive term in the rank
+    (stage_count_penalty, tested next), this is the weakest the
+    multiplier can do on its own."""
+    devices = [
+        DeviceProfile(id=DeviceId(f"d{i}"), total_memory_bytes=NODE_BYTES * 4,
+                      compute_throughput=1.0)
+        for i in range(1, 5)
+    ]
+    layers = [
+        LayerProfile(
+            layer_idx=LayerIdx(i), memory_bytes=LAYER_BYTES,
+            compute_time={d.id: 0.010 for d in devices},
+        )
+        for i in range(1, 9)
+    ]
+    network = NetworkProfile(
+        bandwidth={(d1.id, d2.id): 1e9 for d1 in devices for d2 in devices if d1 is not d2},
+        latency={(d1.id, d2.id): 0.0001 for d1 in devices for d2 in devices if d1 is not d2},
+    )
+    base_kwargs = dict(
+        devices=devices, layers=layers, network=network,
+        slo=SLO(ttft_seconds=10.0, tbt_seconds=10.0),
+        optimization_mode="throughput",
+        hop_overhead_seconds=0.0,
+    )
+
+    # Baseline: target_concurrency=1 ⇒ multiplier no-op. T_comm > 0 on
+    # non-first stages makes 4-stage strictly cheaper (more in-flight
+    # parallelism with smaller per-stage compute).
+    spec_baseline = ClusterSpec(**base_kwargs, target_concurrency=1, thread_pool_size=30)
+    p_baseline = Scheduler(spec_baseline).solve_alternating_best_order().placement
+    assert len({s.device for s in p_baseline}) == 4
+
+    # Under saturation, the multiplier *collapses* the 4-stage advantage
+    # — every subset size ties on max_T·multiplier, and the outer
+    # search keeps the first feasible candidate it sees (subset size 2).
+    spec_sat = ClusterSpec(**base_kwargs, target_concurrency=16, thread_pool_size=8)
+    p_sat = Scheduler(spec_sat).solve_alternating_best_order().placement
+    assert len({s.device for s in p_sat}) <= 2
+
+
+def test_stage_count_penalty_picks_fewer_stages_in_throughput_mode() -> None:
+    """EXP-D2.8: an additive `stage_count_penalty_seconds · |ψ|` term
+    inside the throughput-mode rank breaks the homogeneous-fleet
+    indifference the linear multiplier alone leaves behind. With a
+    8-layer fleet of 4 identical devices and γ_stages=0.030, the
+    natural 4-stage answer (max_T = 0.020) carries a 0.120 penalty
+    while a 2-stage answer (max_T = 0.040) carries 0.060 — the
+    optimiser swings to 2-stage."""
+    devices = [
+        DeviceProfile(id=DeviceId(f"d{i}"), total_memory_bytes=NODE_BYTES * 4,
+                      compute_throughput=1.0)
+        for i in range(1, 5)
+    ]
+    layers = [
+        LayerProfile(
+            layer_idx=LayerIdx(i), memory_bytes=LAYER_BYTES,
+            compute_time={d.id: 0.010 for d in devices},
+        )
+        for i in range(1, 9)
+    ]
+    network = NetworkProfile(
+        bandwidth={(d1.id, d2.id): 1e9 for d1 in devices for d2 in devices if d1 is not d2},
+        latency={(d1.id, d2.id): 0.0001 for d1 in devices for d2 in devices if d1 is not d2},
+    )
+    spec = ClusterSpec(
+        devices=devices, layers=layers, network=network,
+        slo=SLO(ttft_seconds=10.0, tbt_seconds=10.0),
+        optimization_mode="throughput",
+        stage_count_penalty_seconds=0.030,
+    )
+    placement = Scheduler(spec).solve_alternating_best_order().placement
+    assert len({s.device for s in placement}) <= 2, (
+        f"stage_count_penalty did not collapse the stage count: "
+        f"got {len(placement)} stages on a homogeneous 4-device fleet"
+    )
+
+
+def test_stage_count_penalty_default_zero_is_no_op(
+    heterogeneous_spec_3x6: ClusterSpec,
+) -> None:
+    """Default stage_count_penalty_seconds=0 must reproduce the baseline
+    placement byte-for-byte — no silent behaviour shift for existing
+    deployments."""
+    spec_default = heterogeneous_spec_3x6
+    spec_zero = replace(heterogeneous_spec_3x6, stage_count_penalty_seconds=0.0)
+    p_default = Scheduler(spec_default).solve_alternating_best_order().placement
+    p_zero = Scheduler(spec_zero).solve_alternating_best_order().placement
+    assert [(s.start_layer, s.end_layer, s.device) for s in p_default] \
+        == [(s.start_layer, s.end_layer, s.device) for s in p_zero]
+
+
 def test_can_pass_explicit_initial_placement(
     heterogeneous_spec_3x6: ClusterSpec,
 ) -> None:

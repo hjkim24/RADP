@@ -232,15 +232,23 @@ $R: D \to D$ 는 각 device 에 대해 해당 device 의 layer memory 를
 reservation 을 \emph{포함하는} device 별 memory cap 을 만족해야 하며,
 다음 cost function 을 최소화한다.
 \begin{equation}\label{eq:rank}
-  \mathrm{rank}(\psi) = (1{-}\alpha) \sum_{s \in \psi} T(s)
-                       \,+\, \alpha \max_{s \in \psi} T(s)
+  \mathrm{rank}(\psi) = (1{-}\alpha) \sum_{s \in \psi} \mu(\psi) T(s)
+                       + \alpha \max_{s \in \psi} \mu(\psi) T(s)
+                       + \gamma_{\mathrm{stage}} |\psi|
 \end{equation}
-여기서 $T(s)$ 는 device $d_s$ 에서의 stage $s$ 의 compute time
-이다. $\alpha\!=\!0$ 은 EdgeShard 의 latency mode (sum of stage times
-$=$ 단일 stream TBT), $\alpha\!=\!1$ 은 Jupiter 의 throughput mode
-(가장 느린 stage 가 throughput 을 제약) 에 해당한다. Operator 는 이
-knob 을 \texttt{optimization\_mode = \{latency, throughput, blended\}}
-alias 로 조작한다.
+여기서 $T(s)$ 는 device $d_s$ 에서의 stage $s$ 의 compute time,
+$\mu(\psi) = \max(1, C_\star |\psi| / P)$ 는 thread-pool
+saturation multiplier (target concurrency $C_\star$ default $1$, pool
+$P$ default $30$ → no-op), $\gamma_{\mathrm{stage}} |\psi|$ 는
+stage-count 에 대한 가산 페널티 (default $0$). $\alpha\!=\!0$ 은
+EdgeShard 의 latency mode (sum of stage times $=$ 단일 stream TBT),
+$\alpha\!=\!1$ 은 Jupiter 의 throughput mode (가장 느린 stage 가
+throughput 을 제약) 에 해당한다. Operator 는 $\alpha$ 를
+\texttt{optimization\_mode = \{latency, throughput, blended\}} alias 로
+조작하며, 균질 fleet 에서 $\mu(\psi)$ 단독으로는 모든 subset 크기가
+max-min argmax 에서 \emph{tie} 만 만든다 (각 subset 의 per-stage layer
+밀도가 multiplier 와 반비례하여 상쇄). $\gamma_{\mathrm{stage}}\!>\!0$
+설정이 fewer-stage 를 strict 우선하게 한다.
 
 Device 순서 $D = (d_1, \ldots, d_{|D|})$ 를 outer alternation 의
 permutation search 가 고정한다고 가정하자. $A(y, n)$ 을 첫 $y$
@@ -519,14 +527,13 @@ trade-off 를 제공함을 보였다.
 향후 과제는 (i) $R$ 을 single backup 에서 backup list 로 확장한
 cascading failure 대응, (ii) 7B INT4 의 memory-bound regime 측정
 (본 1B 측정에서 이미 Nano memory pressure 가 운용 한계로 노출됨),
-(iii) cost function 에 concurrency-aware $T_{\mathrm{stage}}(s, C)$
-항 (stage-count penalty $\gamma\!\cdot\!|\psi|$ 또는
-$T_{\mathrm{stage}}(s)\!\cdot\!(1\!+\!\rho C/\mathrm{pool})$ 형태)
-도입으로 thread-pool queueing 및 KV memory-bandwidth contention 을
-DP cost 에 노출시키는 작업이 포함된다. Subset enumeration 과 per-hop
-overhead $\gamma_{\mathrm{hop}}$ 은 본 논문에서 이미 구현 및 검증
-되었으며 (\S\ref{sec:eval}), $L\!\succ\!T$ 격차 잔여는 wire-cost
-항이 아닌 multi-stream 효과임이 확인되었다.
+(iii) 식 (\ref{eq:rank}) 의 $\mu(\psi)$ 및 $\gamma_{\mathrm{stage}}$
+hyper-parameter $(C_\star, P, \gamma_{\mathrm{stage}})$ 에 대한
+라이브 calibration 이다. Subset enumeration, per-hop overhead
+$\gamma_{\mathrm{hop}}$, multi-stream interference multiplier
+$\mu(\psi)$, stage-count 페널티 $\gamma_{\mathrm{stage}}|\psi|$ 는
+본 논문에서 모두 구현되었으며 (\S\ref{sec:eval}), $L\!\succ\!T$
+격차의 wire-cost 항으로의 환원 불가능성이 확인되었다.
 
 % =======================================================================
 \bibliographystyle{IEEEtran}

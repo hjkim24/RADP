@@ -17,10 +17,18 @@ knob.
 \textbf{Cost.} Let $t(d,i)$ denote the per-layer decode time of
 layer $i$ on device $d$ (profiled at boot, \S\ref{sec:design:runtime}),
 and let $T(s) = \sum_{i \in s} t(d_s, i)$ be the time of stage $s$
-running on its assigned device $d_s$. The rank function
+running on its assigned device $d_s$. We charge multi-stream
+queueing inline by inflating the stage time with the
+pool-saturation multiplier
+$\mu(\psi) = \max(1, C_\star |\psi| / P)$ where $C_\star$ is the
+target concurrency the operator wants the optimizer to consider
+(default $1$) and $P$ is the worker's gRPC handler-pool size; the
+multiplier collapses to $1$ in the single-stream case so the
+cost function is backward-compatible. The rank function
 \begin{equation}\label{eq:rank}
-  \mathrm{rank}(\psi) = (1{-}\alpha) \sum_{s \in \psi} T(s)
-                       \,+\, \alpha \max_{s \in \psi} T(s)
+  \mathrm{rank}(\psi) = (1{-}\alpha) \sum_{s \in \psi} \mu(\psi) T(s)
+                       + \alpha \max_{s \in \psi} \mu(\psi) T(s)
+                       + \gamma_{\mathrm{stage}} |\psi|
 \end{equation}
 spans EdgeShard's latency mode at $\alpha{=}0$ (sum of stage
 times $=$ single-stream TBT) and Jupiter's throughput mode at
@@ -28,7 +36,15 @@ $\alpha{=}1$ (the slowest stage gates aggregate throughput).
 Intermediate $\alpha$ values trade single-stream responsiveness
 against multi-stream saturation; \texttt{optimization\_mode} maps
 this onto operator-friendly aliases (\texttt{latency},
-\texttt{throughput}, \texttt{blended}).
+\texttt{throughput}, \texttt{blended}). The additive stage-count
+penalty $\gamma_{\mathrm{stage}} |\psi|$ (default $0$) lets the
+operator surface per-stage system overhead the multiplier alone
+cannot reach on a homogeneous fleet, where $\mu(\psi)$ scales
+inversely with the per-stage layer count and the two factors
+cancel in the max-min --- the operator who wants strict
+fewer-stage preference under saturation sets
+$\gamma_{\mathrm{stage}}\!>\!0$
+(\S\ref{sec:eval:cost-model}).
 
 \textbf{Recurrence.} Fix a device ordering $D = (d_1, \ldots, d_{|D|})$
 (chosen by the outer alternation's permutation search,

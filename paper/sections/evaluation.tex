@@ -233,11 +233,23 @@ per-request thread-pool contention, KV cache memory bandwidth
 contention on Nano under concurrent load, and the
 chain-length-amplified gRPC handler occupancy our async path
 already targets (\S\ref{sec:design:async}). A faithful cost model
-would need a concurrency-aware $T_{\mathrm{stage}}(s, C)$ term
-that the DP currently lacks; we defer that to future work and note
-that the operator-facing $\alpha$ knob already lets the optimizer
-choose the right side of this gap without modelling it
-(\S\ref{sec:disc}).
+needs a concurrency-aware $T_{\mathrm{stage}}(s, C)$ term: the
+pool-saturation multiplier $\mu(\psi) = \max(1, C_\star
+|\psi|/P)$ and the additive stage-count penalty
+$\gamma_{\mathrm{stage}} |\psi|$ now live in Eq.~\ref{eq:rank}
+behind the \texttt{target\_concurrency} and
+\texttt{stage\_count\_penalty\_seconds} knobs (\S\ref{sec:disc}).
+The interesting interaction is that on a perfectly homogeneous
+fleet the multiplier alone \emph{ties} every subset size --- a
+$|\psi|$-stage placement carries a $1/|\psi|$-fraction of the
+per-stage layer count, so $\mu(\psi) T(s)$ is invariant in the
+max-min --- and the additive $\gamma_{\mathrm{stage}}$ term is
+what breaks the tie toward fewer stages. The full live
+calibration of $(C_\star, P, \gamma_{\mathrm{stage}})$ against
+measured throughput is the next experimental cell (D2.8 in our
+backlog); for the matrix in this paper, the operator-facing
+$\alpha$ knob already lets the optimizer choose the right side
+of this gap without modelling it explicitly.
 
 \begin{table*}[t]
   \centering

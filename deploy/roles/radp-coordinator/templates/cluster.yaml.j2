@@ -14,6 +14,8 @@ coordinator:
   optimization_mode: {{ optimization_mode | default('throughput') }}
   blend_alpha: {{ blend_alpha | default(0.0) }}
   hop_overhead_seconds: {{ hop_overhead_seconds | default(0.0) }}
+  target_concurrency: {{ target_concurrency | default(1) }}
+  thread_pool_size: {{ thread_pool_size | default(30) }}
   chain_mode: {{ chain_mode | default('sync') }}
   slo:
     ttft_seconds: {{ slo_ttft_seconds | default(0.3) }}

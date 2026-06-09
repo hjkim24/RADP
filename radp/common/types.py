@@ -200,6 +200,34 @@ class ClusterSpec:
     so the optimiser stops loving 4-stage solutions in throughput
     mode when 2-stage with bulk-on-fast-device is the real max-min
     answer. EXP-D2.7 tests this directly. See PHASES.md."""
+    target_concurrency: int = 1
+    """Concurrency level the DP optimises for. With the default 1, the
+    multi-stream interference term is a no-op (multiplier = 1) and the
+    scheduler returns single-stream behaviour identical to pre-D2.8.
+    Set to the expected steady-state concurrency (e.g. 16) to surface
+    multi-stream queueing pressure in the DP cost — see
+    thread_pool_size for the saturation point."""
+    thread_pool_size: int = 30
+    """Number of gRPC handler threads available per worker (matches the
+    runtime ThreadPoolExecutor in WorkerServer). The DP uses
+    target_concurrency * num_stages / thread_pool_size as a pool-
+    saturation multiplier on T_stage: under saturation each in-flight
+    stream waits its turn, so stage time inflates linearly. EXP-D2.8
+    cost-model v2: a *necessary* but *insufficient* term on a
+    homogeneous fleet, where the per-subset multiplier cancels against
+    the per-subset max_T scaling and leaves the argmax untouched —
+    pair it with stage_count_penalty_seconds for an effective swing."""
+    stage_count_penalty_seconds: float = 0.0
+    """EXP-D2.8 cost-model v2: an additive penalty applied to the
+    outer-search rank as γ · |ψ|. Models the per-stage system overhead
+    that doesn't show up in T_comm — task scheduling, coordinator
+    bookkeeping, per-stage GIL+lock contention amortised across the
+    whole pipeline — and unlike a multiplier, it does break the
+    homogeneous-fleet indifference because *additive* penalties are
+    sensitive to absolute stage count, not just ratios. Default 0.0
+    preserves the legacy max-min argmax. Live calibration on the
+    8-worker Jetson fleet (EXP-D2.8) targets the value where 2-stage
+    L mode matches measured throughput dominance over 4-stage T mode."""
     extras: dict[str, str] = field(default_factory=dict)
 
 

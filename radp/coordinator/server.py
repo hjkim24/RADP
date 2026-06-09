@@ -100,6 +100,12 @@ class CoordinatorConfig:
     # ~8–10 ms. Setting it on real fleets lets throughput-mode DP stop
     # over-preferring many-small-stage solutions.
     hop_overhead_seconds: float = 0.0
+    # EXP-D2.8 multi-stream interference modelling. With target_concurrency=1
+    # (default) the DP behaves identically to pre-D2.8. Setting it to a
+    # higher value (e.g. 16) inflates T_stage by max(1, C*|ψ|/pool) so
+    # placements with more stages cost proportionally more under saturation.
+    target_concurrency: int = 1
+    thread_pool_size: int = 30
     # EXP-D3 Phase F chain mode:
     #   sync  — Phase 1a/1b synchronous chain (each in-flight stream
     #            occupies a thread on every chain stage). Default for
@@ -171,6 +177,8 @@ class CoordinatorConfig:
             optimization_mode=str(coord.get("optimization_mode", "throughput")),
             blend_alpha=float(coord.get("blend_alpha", 0.0)),
             hop_overhead_seconds=float(coord.get("hop_overhead_seconds", 0.0)),
+            target_concurrency=int(coord.get("target_concurrency", 1)),
+            thread_pool_size=int(coord.get("thread_pool_size", 30)),
             chain_mode=str(coord.get("chain_mode", "sync")),
             profiling_layer_warmup=int(profiling.get("layer_warmup", 1)),
             profiling_layer_repeats=int(profiling.get("layer_repeats", 3)),
@@ -583,6 +591,8 @@ class CoordinatorServer:
             optimization_mode=self.config.optimization_mode,
             blend_alpha=self.config.blend_alpha,
             hop_overhead_seconds=self.config.hop_overhead_seconds,
+            target_concurrency=self.config.target_concurrency,
+            thread_pool_size=self.config.thread_pool_size,
         )
 
         log.info("auto-scheduling: solving DP (devices=%d, layers=%d)",
