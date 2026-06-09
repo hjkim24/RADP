@@ -32,6 +32,9 @@
 % via acmart too.
 \usepackage{xcolor}      % for \todo color
 \usepackage{xspace}
+% Figure scripts emit PDF under paper/figures/. acmart already loads
+% graphicx via its bundled hyperref, so we only need the search path.
+\graphicspath{{figures/}}
 
 % --- Typesetting tweaks ------------------------------------------------
 % acmart loads microtype by default in final mode; we just give it more

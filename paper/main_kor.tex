@@ -52,6 +52,8 @@
 \usepackage{array}
 \usepackage{algorithm}
 \usepackage{algpseudocode}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
 \usepackage{xcolor}
 \usepackage{caption}
 \usepackage{xurl}
@@ -401,7 +403,18 @@ AGX Orin MAXN 1 대, AGX Xavier 1 대) 과 Mac coordinator 가 동일 LAN
 상에 위치한다. 세 가지 compute tier 를 decode step (seq=64) 에서
 측정한 결과는 다음과 같다: Nano CPU ($\sim$$42$\,ms/layer),
 AGX CPU ($\sim$$17.6$\,ms/layer), Nano CUDA ($\sim$$1.5$\,ms/layer).
-AGX Orin MAXN 은 동일 decode 조건에서 Nano CUDA 대비 약 16 배 빠르다.
+AGX Orin MAXN 은 동일 decode 조건에서 Nano CUDA 대비 약 16 배 빠르다
+(그림~\ref{fig:tiers}).
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{fig_tiers.pdf}
+  \caption{Tier 별 per-layer decode time (seq$=$64, log scale).
+  CPU tier 와 CUDA tier 가 두 자릿수 ms 차이로 분리되며, AGX
+  MAXN 은 Nano CUDA 대비 다시 한 자릿수 빠르다 --- placement 가
+  다뤄야 할 이종성의 시각적 anchor.}
+  \label{fig:tiers}
+\end{figure}
 
 \textbf{Model.} OPT-350M (24 layer, hidden 1024, fp16) 을 주 model 로
 사용하고, model-size generalisation 검증을 위해 Llama-3.2-1B (16 layer,
@@ -533,6 +546,21 @@ recovery wall-clock 은 평균 $617$\,ms, p95 $670$\,ms 였다. Recovery
 가 없는 baseline 3 종 (greedy, uniform, Jupiter-DP) 은 SIGKILL
 시점에 진행 중이던 모든 token 을 잃고 stream 이 중단된다. 4-stage
 chain topology 에서도 sync/async 모두 60/60 token 을 전달한다.
+그림~\ref{fig:recovery} 는 두 topology 의 recovery wall-clock 분포와
+recovery 없는 baseline 의 abort 위치를 비교한다.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{fig_recovery.pdf}
+  \caption{Recovery wall-clock CDF. Star topology 의 \sys{}
+  ($n{=}5$, 파란 step) 는 580--920\,ms 영역에 집중되어 있고
+  (평균 617, p95 670), 4-stage chain trial (점선) 은 lazy weight
+  transfer 가 in-flight token 의 pipeline hop 과 겹치며 한 자릿수
+  더 큰 영역에 위치한다. Recovery 가 없는 baseline (greedy,
+  uniform, Jupiter-DP) 은 SIGKILL 경계에서 abort 되며 17--20 token
+  을 잃는다.}
+  \label{fig:recovery}
+\end{figure}
 
 % Table 1 이 결론보다 뒤로 떠밀리지 않도록 결론 직전에 float barrier.
 \FloatBarrier

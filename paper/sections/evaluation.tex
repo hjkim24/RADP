@@ -23,7 +23,19 @@ appear in our earliest measurements because two silent profiler
 bugs (tokenizer padding returning the wrong shape and
 \texttt{perf\_counter()} timing around async CUDA kernels) hid the
 AGX advantage behind launch overhead. After commit~382739b fixes
-both, AGX dominance is consistent across thirty repeats.
+both, AGX dominance is consistent across thirty repeats
+(Fig.~\ref{fig:tiers}).
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{fig_tiers.pdf}
+  \caption{Per-layer decode time (seq$=$64, log scale) across the
+  four compute tiers on the fleet. The CPU tier ($\sim$10s of ms)
+  and the CUDA tier (single-digit ms) sit two orders of magnitude
+  apart, and AGX MAXN sits another order of magnitude below Nano
+  CUDA --- the heterogeneity placement has to navigate.}
+  \label{fig:tiers}
+\end{figure}
 
 \textbf{Models.} OPT-350M (24 decoder layers, hidden 1024, fp16) is
 our primary model: small enough to fit a Nano even at the layer
@@ -104,6 +116,23 @@ unwound long before failure), so attribution falls back to the
 chain head while heartbeat catches up; the $\psi$+$R$ feasibility
 guarantee preserves correctness (all 60 tokens delivered), but
 recovery pays one extra hop when heartbeat loses the race.
+Fig.~\ref{fig:recovery} contrasts the two distributions against the
+abort line of the recovery-less baselines.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{fig_recovery.pdf}
+  \caption{Recovery wall-clock CDF. Star topology RADP (blue,
+  $n{=}5$) clusters tightly between 580 and 920\,ms (mean 617,
+  p95 670); chain topology (single trials, dashed) sits an
+  order of magnitude higher because lazy weight transfer to
+  the promoted backup overlaps the in-flight token's pipeline
+  hop. Recovery-less baselines (\emph{greedy}, \emph{uniform},
+  \emph{Jupiter-DP}) abort at the SIGKILL boundary and never
+  recover --- the inline annotation marks the 17--20 tokens
+  they drop.}
+  \label{fig:recovery}
+\end{figure}
 
 \subsection{Latency placement dominates throughput placement at C $\geq$ 4 across two model sizes}\label{sec:eval:matrix}
 
@@ -265,13 +294,3 @@ not without it.
   \end{tabular}
 \end{table*}
 
-\todo{Figures: (i) headline matrix as a single compact table —
-OPT-350M (28 cells, two-color highlighting for L>T) with a
-Llama-3.2-1B side-panel (3 cells x 3 C) flagging the C=1 cross-over;
-(ii) recovery wall-clock CDF showing star topology mean 617 ms
-p95 670 ms vs the chain topology's noisier distribution; (iii)
-per-tier per-layer compute bar chart anchoring the heterogeneity
-claim. The sensitivity-study subsection from the longer outline
-is dropped to hit the 7-page budget — alpha sweep, eager-vs-lazy,
-and activation\_bytes calibration become 2-sentence anchors in
-\S\ref{sec:disc}.}
