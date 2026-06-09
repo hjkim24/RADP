@@ -1837,6 +1837,92 @@ replay 22 positions through chain head on-2[1..9]      ← 새 chain head (헤�
 
 ---
 
+## Phase EXP-D2.6 — Subset enumeration in best-order search (paper §3.1/§11 의 "future work" 실현)
+
+**목표**: paper §3.1 끝과 §11 limitations 에 *"automatic top-$k$ device prune remains future work"* 라 적혀 있던 항목을 실제 구현. EdgeShard 의 throughput Algo 2 가 $O(N^2 \cdot 2^M \cdot M^2)$ 인 이유 — 모든 device subset 까지 enumerate. 우리 plan.md 는 *every-device-participates* 가정으로 단순화 → 4-stage 가 layer-floor 에 묶임. (a) subset enumeration 이 *slow CPU worker 가 fleet 에 있을 때* throughput-mode DP 가 자동으로 그들을 prune 하는지 검증. 동시에 사용자 가설 — "subset 도입 시 throughput-mode 가 다중 요청 (C≥4) 에서 latency-mode 를 추월" — 의 직접 라이브 테스트.
+
+**구현 (commit `055354c`)**:
+- [radp/coordinator/scheduler.py](radp/coordinator/scheduler.py) `solve_alternating_best_order(..., enable_subset_search=True)` — `itertools.combinations(devices, k) × permutations(subset)` 로 모든 subset (k=2..|D|) × 순서 enumerate
+- `_install(spec)` helper: 각 subset 에 대해 `with_devices(...)` 로 ClusterSpec 을 swap 하면서 `self.spec`, `self._L`, `self._M` 을 atomic 갱신 (이게 없으면 inner DP 의 `devices[n-1]` 가 stale `_M` 으로 OOB)
+- 비용: `total = Σ_k P(M, k)` permutation; |D|=6 fleet 에서 1956 candidates, 측정상 ~80 ms (boot time 에 1회)
+
+**검증** ([tests/test_scheduler_alternating.py](tests/test_scheduler_alternating.py)):
+- `test_subset_search_drops_pathologically_slow_device_in_throughput_mode`: 3-device fleet (2 fast + 1 *100× slower*) → subset_on → DP 가 slow device 자동 prune (placement length 2)
+- `test_subset_search_off_keeps_all_devices`: flag 토글 anchor
+
+**Live 측정** (6-worker fleet: ao-1 AGX MAXN, on-1/2/6 Nano CUDA, on-3/4 Nano CPU; OPT-350M, async, subset_on, hop=0):
+- **L+async (subset_on, hop=0)** placement: `ao-1: 1..23, on-1: 24..24` — 2-device subset (AGX 23 layer + Nano CUDA 1 layer at layer-floor). 다른 CUDA Nano + CPU 모두 prune.
+  - C=1: 9.71 tok/s · TBT 78 ms
+  - C=4: 33.71 tok/s · TBT 107 ms
+  - C=16: 40.27 tok/s · TBT 386 ms
+- **T+async (subset_on, hop=0)** placement: `on-1: 1..6, on-2: 7..12, on-6: 13..18, ao-1: 19..24` — 4-stage 4-CUDA (CPU workers prune, AGX 1개 + Nano CUDA 3개). Subset enum 이 *prune* 은 하지만 *2-device throughput-mode 로 줄어들지 않음*.
+  - C=1: 4.4 tok/s
+  - C=4: 21.4 tok/s
+  - C=16: 35.1 tok/s
+- 파일: `experiments/results/concurrent_subset_OPT350M_{L,T}_async.json` (gitignored)
+
+**Paper-critical findings**:
+
+1. **(a) 단독으론 L > T 가 *오히려 강화됨***. 사용자 가설 (subset → T 우위) *반증*:
+   - C=1: L 9.71 vs T 4.4 (**+121%**)
+   - C=4: L 33.71 vs T 21.4 (**+57%**)
+   - C=16: L 40.27 vs T 35.1 (**+15%**)
+2. **CPU workers 는 자동 prune 됨** — paper §11 의 "operators curate slow workers ... future work" 가 *implemented* 로 갱신 가능. 단 *Nano CUDA vs AGX MAXN 1.4×* 정도의 *완만한* gap 에선 prune 발동 안 함 — 4-stage 가 throughput-mode 의 max-min 답.
+3. **T placement 가 *4-stage* 인 이유는 cost-model 관점에서 *옳다***: AGX 가 Nano CUDA 보다 ~1.4× 빠른 fleet (D2.2 측정) 에서 max-min 의 답은 *모든 fast device 사용 + 균등 분할*. 그래서 subset enum 이 *fast device subset* 까지 탐색해도 5-stage 또는 2-stage 가 max-min 으로 4-stage 를 못 이김.
+4. **실측-예측 gap 은 cost-model 의 *system-level overhead* 미인식**: 4-stage T 가 *예측상* 빠르지만 *실측상* L 보다 2-4× 느림 → 다음 phase D2.7 에서 hop overhead term 추가 테스트.
+
+**Memory 갱신**: [project_subset_selection_status.md](.claude/memory/project_subset_selection_status.md) — "future work" → "구현 완료 (commit 055354c) + EXP-D2.6 live-측정 완료. L+async 가 2-device subset 자동 선택; T 는 4-stage 4-CUDA 고정 — cost-model 한계 (D2.7 참조)".
+
+**커밋**: code 055354c (scheduler + tests) + 이 docs 커밋.
+
+---
+
+## Phase EXP-D2.7 — Per-hop overhead in T_comm + cost-model limitation 증거 확보
+
+**목표**: D2.6 결과로 *T mode 가 system overhead 미인식* 가설 직접 검증. 사용자가 plan.md / paper §11 에서 적은 *"marginal-layer / hop-overhead cost term"* 을 구현 — `hop_overhead_seconds: 0.008` (gRPC framing + Python/GIL contention 측정값 ~8-10 ms) 을 `T_comm` 에 추가해 *stage 수 = hop 수* 페널티 부과. T placement 가 fewer-stage 로 줄어드는지 관찰.
+
+**구현 (commit `24685ef`)**:
+- [radp/common/types.py](radp/common/types.py) `ClusterSpec.hop_overhead_seconds: float = 0.0`
+- [radp/coordinator/scheduler.py](radp/coordinator/scheduler.py) `_comm_time(src, dst) = wire + self.spec.hop_overhead_seconds` — 모든 inter-stage transition 에 부과
+- [radp/coordinator/server.py](radp/coordinator/server.py) `CoordinatorConfig.hop_overhead_seconds` 추가, cluster.yaml 에서 read
+- [deploy/group_vars/all.yml](deploy/group_vars/all.yml) `hop_overhead_seconds: 0.008` (8 ms baseline)
+- [deploy/roles/radp-coordinator/templates/cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2) 의 coordinator block 에 field 추가
+
+**Live 측정** (T+async, subset_on, hop=8ms, OPT-350M, 6-worker fleet):
+- Placement: `on-1: 1..7 (7L), on-6: 8..12 (5L), on-2: 13..16 (4L), ao-1: 17..24 (8L)` — **여전히 4-stage 4-CUDA**
+- 결과: C=1 5.17, C=4 7.5, C=16 32.8 tok/s (`concurrent_subset_OPT350M_T_async_hop8ms.json`)
+- T+async hop=0 (D2.6) 대비: C=1 +19%, C=4 -65%, C=16 -7% — C=4 에서 *오히려 악화* (small stage 수가 4 그대로지만 hop_overhead 가 stage time 에 추가됨)
+- L+async (hop=0, D2.6) 대비: C=1 -47%, C=4 -78%, C=16 -19% — **L 이 모든 C 에서 더 큰 격차로 압승**
+
+**Paper-critical findings**:
+
+1. **Hop overhead 만으론 T placement 를 *바꾸지 않음***. 8 ms hop_overhead 가 *모든 inter-stage transition* 에 균등 부과되면 max-min 의 *상대 순위* 가 바뀌지 않음 — 4-stage 가 여전히 답. 사용자 가설 (b) 단독으론 부족.
+2. **L 우위가 *(a)+(b) 후 더 강화***. 24-cell matrix 의 §10.4 finding 이 cost-function artifact 가 아니라 *cost-model 의 system-level overhead 미인식* 에서 비롯되는 *진짜* 구조적 발견임이 확인. 실측 4-stage T 가 2-stage L 보다 *2-4× 느린* 이유는:
+   - **Multi-stream thread-pool queueing**: C=16 streams × 4 stages = 64 in-flight tasks, async chain pool 한계 부딪힘
+   - **Per-stage gRPC + GIL contention** 이 *큰* (8 ms): hop_overhead 가 8 ms 인데 stage compute 가 1-5 ms 이므로 transition 비용이 stage 비용과 같은 자릿수
+   - **KV cache memory bandwidth contention** on Nano (7.4 GB) under concurrent load — DP 가 model 안 함
+3. **paper §11 "marginal-layer term would close the gap" claim 은 *measured: insufficient alone*** 으로 업데이트 필요. 진짜 fix 는 *stage-count penalty* (`γ · |ψ|`) 또는 *concurrency-aware interference* (`T_eff(s, C) = T(s) · (1 + ρ · C/pool)`) 같은 cost-model v2 — 다음 phase D2.8 에서 시도 예정.
+
+**Cost-model v2 후보** (D2.8 에서 구현/실험):
+
+| 옵션 | 식 | 효과 | 한계 |
+|---|---|---|---|
+| Stage-count penalty | `rank += γ_stage · |ψ|` | throughput-mode 에서 fewer-stage 선호. subset enum 과 결합 시 2-device 답 가능 | γ_stage 캘리브레이션 필요 |
+| Concurrency-aware T_eff | `T_eff(s, C) = T(s)·(1 + ρ·C)` | C-scaling — `target_concurrency` config 추가 필요 | DP-time 에 C 미정 — 어떤 C 가 optimization target 인가? |
+| Pool-saturation cap | `T_eff(s, C) = T(s) · max(1, C·|ψ|/pool_size)` | thread-pool 한계 모델 | pool_size 도 도메인 지식 (현재 30) |
+
+**권장 v1**: stage-count penalty (`marginal_stage_overhead_seconds`) — 단순, throughput-mode 에서만 active, hop_overhead 와 직교, paper-claim 으로 깔끔.
+
+**Paper 갱신**:
+- §3.1: "automatic top-$k$ prune remains future work" → "implemented as subset enumeration over `combinations(devices, k) × permutations(subset)` (\S\ref{sec:design:runtime})"
+- §3.1 Eq.(2): `T_comm` 정의에 `+ \gamma_{hop}` 항 추가 (per-hop fixed overhead, default 0 if disabled)
+- §10.4 cross-mode discussion: D2.6 + D2.7 이 *cost-model artifact 가설* 을 직접 반증 — L > T 는 system-level finding
+- §11 marginal-layer 문장: "would close the gap" → "measured: insufficient alone; further work in concurrency-aware interference modeling"
+
+**커밋**: code 24685ef (scheduler/types/server + deploy) + 이 docs 커밋.
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
