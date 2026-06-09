@@ -37,54 +37,28 @@ flag is an explicit operator-facing knob, not an internal
 implementation choice.
 
 \textbf{Limitations and future work.} \sys{} treats $R$ as a
-single-backup table; cascade failures (two workers in $T_R$ apart)
-fall back to a degraded chain. The natural extension is
-$R: D \to \mathrm{List}[D]$ with cascading promotion; the
-DP recurrence extends cleanly but the memory feasibility
-constraint (Eq.~\ref{eq:mem}) sums over more backed-up peers and
-pushes more cells infeasible. The
-\emph{every-device-participates} assumption that the inner
-recurrence relies on is no longer load-bearing once the outer
-search enumerates ordered subsets $S \subseteq D$
-(\S\ref{sec:design:dp}); we validate on a mixed-tier fleet that
-CPU Nano workers are auto-pruned without operator intervention
-(\S\ref{sec:eval:cost-model}). The sharded-safetensors loader
-already in production handles Llama-3.2-1B; pushing into the 7B
-INT4 regime is bounded by Nano memory rather than software (the
-1B-on-Nano run in \S\ref{sec:eval:matrix} already exposes real
-swap-thrash pressure). The cost function under-counts
-pipeline-transition overhead by 2--4\% in the joint-mode benchmark
-(\S\ref{sec:eval:a3b}); the per-hop term
-$\gamma_{\mathrm{hop}}$ (Eq.~\ref{eq:dp}) closes part of this gap
-but the cost-model ablation (\S\ref{sec:eval:cost-model}) shows
-that the L $\succ$ T gap at $C \geq 4$ persists after both subset
-enumeration and a tuned $\gamma_{\mathrm{hop}}$ --- meaning the
-remaining gap is a multi-stream system-level effect, not a
-missing wire-cost term. Both candidate concurrency-aware terms --- the pool-saturation
-multiplier $\mu(\psi)$ and the additive stage-count penalty
-$\gamma_{\mathrm{stage}} |\psi|$ --- are implemented as the
-\texttt{target\_concurrency}, \texttt{thread\_pool\_size}, and
-\texttt{stage\_count\_penalty\_seconds} knobs in
-\texttt{cluster.yaml} (Eq.~\ref{eq:rank}); the multiplier alone
-ties on homogeneous fleets (the per-subset factor cancels
-against per-subset compute density in the max-min argmax), the
-additive term breaks the tie and forces strictly fewer stages
-under saturation. Calibration of $(C_\star, P,
-\gamma_{\mathrm{stage}})$ against measured concurrent throughput
-on the Jetson fleet is the next experimental cell --- we leave a
-sweep with $C_\star\!\in\!\{4, 16\}$ and
-$\gamma_{\mathrm{stage}}\!\in\![0, 30]$\,ms to a follow-up.
+single-backup table; cascade failures (two workers
+$\leq T_R$ apart) fall back to a degraded chain. The natural
+extension $R{:}\,D{\to}\,\mathrm{List}[D]$ extends
+Eq.~\ref{eq:dp} cleanly but tightens Eq.~\ref{eq:mem}. The
+sharded-safetensors loader already handles Llama-3.2-1B;
+pushing into 7B INT4 is bounded by Nano memory rather than
+software. The cost-model ablation (\S\ref{sec:eval:cost-model})
+shows the L $\succ$ T gap at $C\!\geq\!4$ persists after subset
+enumeration and a tuned $\gamma_{\mathrm{hop}}$. The multiplier
+$\mu(\psi)$ and additive $\gamma_{\mathrm{stage}}|\psi|$ in
+Eq.~\ref{eq:rank} expose multi-stream interference as the
+\texttt{target\_concurrency} and
+\texttt{stage\_count\_penalty\_seconds} knobs; live calibration
+of $(C_\star, P, \gamma_{\mathrm{stage}})$ on the Jetson fleet is
+the next experimental cell.
 
 \textbf{Conclusion.} \sys{} folds layer placement and recovery
-routing into a single alternating dynamic program whose memory
-feasibility check sees both decisions at once, with two runtime
-mechanisms --- asynchronous mirror cache and asynchronous chain
-forwarding --- that make that joint optimisation viable on a real
-edge fleet. The 24-point OPT-350M matrix shows L $\succ$ T
-dominance is structural to $\psi$+$R$, not architectural; a
-3$\times$-larger Llama-3.2-1B sub-matrix shows the same dominance
-holds at $C\geq 4$ across a model-size gap, with a measured
-$C{=}1$ cross-over that bounds the claim cleanly. Async chain
-adds 17--47\% throughput at $C{=}16$ without ever reversing the
-placement ordering at $C\geq 4$, confirming that placement and
-chain mode are orthogonal knobs for the operator to navigate.
+routing into a single alternating DP and pairs it with an
+asynchronous mirror cache and asynchronous chain forwarding to
+make that joint optimisation viable on a real edge fleet. The
+24-cell OPT-350M matrix and 9-cell Llama-3.2-1B sub-matrix show
+L $\succ$ T at every $C\!\geq\!4$ cell across a 3$\times$
+model-size gap, with a bounded $C{=}1$ cross-over; async chain
+adds 17--47\% throughput at $C{=}16$ without reversing the
+placement ordering.

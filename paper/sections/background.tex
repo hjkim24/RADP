@@ -53,24 +53,17 @@ displaces the primary.
 
 A second attempt --- Jupiter's throughput-optimal DP plus a
 supervisor that restarts crashed workers --- also fails, but
-differently. Jupiter's LLM-partition DP (Eq.~1 in
-~\cite{ye2025jupiter}) is in fact the algorithmic starting point
-of our $\psi$-recurrence: it is the same
-$A(1\!\to\!y, D_n) = \min_l \max\{A(1\!\to\!l, D_{n-1}),
-T(l{+}1\!\to\!y, d_n)\}$ form, evaluated only at $\alpha{=}1$
-without a recovery table or a per-hop overhead term. The
-composition Jupiter does not enable is the recovery side:
-$\psi$ is computed assuming all workers stay alive, backup memory
-is never reserved at placement time, and when a Nano dies the
-supervisor has nowhere to load the dead worker's layers without
-OOM-ing a survivor. The system degrades to a non-redundant chain
-that aborts the next failure. The contribution of \sys{} is
-adding the missing pieces in one DP --- recovery routing
-($R$ via Eq.~\ref{eq:mem}), an $\alpha$ knob that lets the same
-DP also produce EdgeShard's $\alpha{=}0$ regime, outer subset
-selection over $S \subseteq D$, and a per-hop term
-$\gamma_{\mathrm{hop}}$ --- rather than composing Jupiter with a
-bolted-on recovery supervisor.
+differently. Jupiter's LLM-partition DP (Eq.~1
+in~\cite{ye2025jupiter}) is in fact the algorithmic starting
+point of our $\psi$-recurrence, evaluated only at $\alpha{=}1$
+without recovery or a per-hop overhead term. $\psi$ is computed
+assuming all workers stay alive; backup memory is never
+reserved, so when a Nano dies the supervisor has nowhere to load
+its layers without OOM-ing a survivor. \sys{} adds the missing
+pieces in one DP --- recovery routing ($R$ via
+Eq.~\ref{eq:mem}), an $\alpha$ knob spanning Jupiter
+($\alpha{=}1$) and EdgeShard ($\alpha{=}0$), outer subset
+selection, and per-hop $\gamma_{\mathrm{hop}}$.
 
 These compositions miss the same systemic point: on
 memory-tight edge, $\psi$ and $R$ have \emph{coupled} feasibility

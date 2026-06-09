@@ -191,65 +191,28 @@ that operators steer the system into the right regime by
 curating the fleet first, and the DP optimises placement and
 recovery on top of that choice.
 
-\subsection{Subset selection and hop overhead do not reverse the L $\succ$ T ordering}\label{sec:eval:cost-model}
+\subsection{Subset selection and hop overhead do not reverse L $\succ$ T}\label{sec:eval:cost-model}
 
-The matrix (\S\ref{sec:eval:matrix}) shows L placement dominates T
-at every $C \geq 4$ cell. A natural cost-model hypothesis is that
-T loses because the DP forces every worker into the pipeline,
-including those that should be pruned, and because the wire-only
-$T_{\mathrm{comm}}$ understates per-hop overhead --- so we test
-both fixes head-on. We extend the 6-worker fleet (1 AGX MAXN, 3
-Nano CUDA, 2 Nano CPU) and run two ablations on
-OPT-350M~async:
-
-\textbf{(a) Subset enumeration.} The outer DP now searches every
-ordered $S \subseteq D$ with $|S| \geq 2$, so the optimizer is
-free to drop the two CPU Nano workers if their stage time would
-gate max-stage. It does: in L mode the optimizer auto-picks a
-2-device subset (AGX + 1 Nano CUDA), and in T mode it picks the
-4-stage all-CUDA subset (the 2 CPU workers are pruned automatically
-in both modes). The L $\succ$ T gap \emph{widens}: L+async/T+async
-ratio is $1.21\times$ at $C{=}1$, $1.57\times$ at $C{=}4$, $1.15\times$
-at $C{=}16$, all larger than the same ratios in the headline
-matrix. T's max-min cost function still picks the 4-stage all-CUDA
-arrangement because, with the measured 1.4$\times$ MAXN-to-Nano-CUDA
-gap, splitting layers across four fast devices is the legitimate
-max-stage-minimum --- subset enumeration prunes the \emph{slow}
-floor without changing the throughput-optimal topology.
-
-\textbf{(b) Per-hop overhead $\gamma_{\mathrm{hop}}\!=\!8$\,ms.}
-With $T_{\mathrm{comm}}$ now charging the gRPC-framing-plus-GIL
-overhead surfaced in \S\ref{sec:eval:a3b}, T placement is unchanged
-at 4-stage 4-CUDA --- adding the same $\gamma_{\mathrm{hop}}$ to
-every inter-stage transition does not reorder the max-min argmax.
-Live measurement on T+async with subset+hop both enabled gives
-5.17 / 7.5 / 32.8\,tok/s at $C\!=\!1/4/16$, $5\%$ worse at $C{=}16$
-than (a)-only T despite the new cost-model fidelity.
-
-Both ablations refute the cost-model-artifact hypothesis: L $\succ$
-T at $C \geq 4$ is not an under-modelled-overhead problem the DP
-can fix internally. It is a multi-stream system-level effect ---
-per-request thread-pool contention, KV cache memory bandwidth
-contention on Nano under concurrent load, and the
-chain-length-amplified gRPC handler occupancy our async path
-already targets (\S\ref{sec:design:async}). A faithful cost model
-needs a concurrency-aware $T_{\mathrm{stage}}(s, C)$ term: the
-pool-saturation multiplier $\mu(\psi) = \max(1, C_\star
-|\psi|/P)$ and the additive stage-count penalty
-$\gamma_{\mathrm{stage}} |\psi|$ now live in Eq.~\ref{eq:rank}
-behind the \texttt{target\_concurrency} and
-\texttt{stage\_count\_penalty\_seconds} knobs (\S\ref{sec:disc}).
-The interesting interaction is that on a perfectly homogeneous
-fleet the multiplier alone \emph{ties} every subset size --- a
-$|\psi|$-stage placement carries a $1/|\psi|$-fraction of the
-per-stage layer count, so $\mu(\psi) T(s)$ is invariant in the
-max-min --- and the additive $\gamma_{\mathrm{stage}}$ term is
-what breaks the tie toward fewer stages. The full live
-calibration of $(C_\star, P, \gamma_{\mathrm{stage}})$ against
-measured throughput is the next experimental cell (D2.8 in our
-backlog); for the matrix in this paper, the operator-facing
-$\alpha$ knob already lets the optimizer choose the right side
-of this gap without modelling it explicitly.
+We test the natural cost-model hypothesis for the matrix's
+L $\succ$ T gap --- T loses because the DP forces every worker
+in and because wire-only $T_{\mathrm{comm}}$ understates per-hop
+overhead --- by toggling both fixes on a 6-worker fleet
+(1 AGX MAXN, 3 Nano CUDA, 2 Nano CPU), OPT-350M~async. Subset
+enumeration (Eq.~\ref{eq:dp}) drops both CPU workers; L picks a
+2-device subset (AGX$+$Nano) and T picks the 4-stage all-CUDA
+subset, and the L/T throughput ratio \emph{widens} to
+$1.21\times$/$1.57\times$/$1.15\times$ at $C\!=\!1/4/16$. Adding
+$\gamma_{\mathrm{hop}}\!=\!8$\,ms leaves T at 4-stage 4-CUDA ---
+a uniform $\gamma_{\mathrm{hop}}$ does not reorder the max-min
+argmax --- and yields $5.17/7.5/32.8$\,tok/s, $5\%$ worse at
+$C\!=\!16$ than (a)-only T. The residual gap is a multi-stream
+system-level effect (thread-pool contention, Nano KV bandwidth,
+gRPC handler occupancy) no wire-cost term reaches; the
+Eq.~\ref{eq:rank} multiplier $\mu(\psi)$ and additive
+$\gamma_{\mathrm{stage}}|\psi|$ expose these factors, with
+$\gamma_{\mathrm{stage}}\!>\!0$ required to break $\mu$'s
+homogeneous-fleet tie. Live calibration of
+$(C_\star, P, \gamma_{\mathrm{stage}})$ remains future work.
 
 \begin{table*}[t]
   \centering

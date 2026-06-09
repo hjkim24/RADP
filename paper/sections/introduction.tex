@@ -83,13 +83,10 @@ We make the following contributions:
         coherently while the placement-only baselines abort
         after the 17--20 tokens already in flight
         (\S\ref{sec:eval:recovery}).
-  \item An ablation that turns on (i) outer-subset enumeration so
-        the DP can auto-prune pathologically-slow workers and
-        (ii) a per-hop overhead term $\gamma_{\mathrm{hop}}$ in
-        $T_{\mathrm{comm}}$, showing the L $\succ$ T gap at $C \geq
-        4$ \emph{widens} rather than closes
-        (\S\ref{sec:eval:cost-model}). The remaining gap is a
-        multi-stream system-level effect, not a missing
-        wire-cost term, bounding what cost-model refinements
-        alone can buy back for throughput placement.
+  \item A cost-model ablation that turns on outer subset
+        enumeration and a per-hop $\gamma_{\mathrm{hop}}$ term,
+        showing the L $\succ$ T gap \emph{widens} rather than
+        closes (\S\ref{sec:eval:cost-model}) --- evidence that
+        the residual gap is multi-stream system-level, not a
+        wire-cost miss.
 \end{itemize}
