@@ -21,7 +21,7 @@ Two entry points:
 from __future__ import annotations
 
 import math
-from itertools import permutations
+from itertools import combinations, permutations
 
 from radp.common.logging_utils import get_logger
 from radp.common.types import (
@@ -264,38 +264,56 @@ class Scheduler:
         self,
         *,
         max_search_devices: int = 8,
+        enable_subset_search: bool = True,
         **alt_kwargs: object,
     ) -> AlternatingResult:
-        """Try every permutation of device order; return the best one.
+        """Try every (subset, permutation) of devices; return the best one.
 
-        Heartbeat-arrival ordering of ``spec.devices`` is arbitrary, but the
-        DP treats that order as the fixed pipeline sequence — so a bad order
-        can leave a 30%+ gap on the table (2026-06-06 brute-force on the
-        live 7-worker fleet: best 85.7 ms vs worst 95.8 ms with calibrated
-        activation_bytes; range widens further with overestimated
-        activation_bytes since stage count starts to dominate).
+        Two orthogonal search dimensions:
 
-        For M ≤ max_search_devices, run solve_alternating() over all M!
-        permutations and pick the one with the smallest max_stage_time. For
-        M > max_search_devices, fall back to the spec's existing order.
+        1. **Permutation**. Heartbeat-arrival ordering of ``spec.devices`` is
+           arbitrary, but the DP treats it as the fixed pipeline sequence —
+           bad order leaves 30%+ on the table (2026-06-06 brute-force on the
+           live 7-worker fleet: best 85.7 ms vs worst 95.8 ms with calibrated
+           activation_bytes).
+
+        2. **Subset** (enable_subset_search=True). Every device participates
+           in the DP by default, which on heterogeneous edge fleets pulls
+           slow devices into the pipeline at the layer floor (1-2 layers)
+           where their compute is dwarfed by hop overhead. EXP-D2.3 measured
+           a 7-worker (CPU + CUDA) fleet's max_stage at 87 ms; the same fleet
+           reduced to a 4-CUDA subset drops to 8.35 ms (-90%). Enumerating
+           subsets lets the DP discover that smaller fleets can win
+           — particularly in throughput mode (alpha=1) at high concurrency.
+
+        Complexity:
+          - permutation-only:  M!
+          - subset+perm:       Σ_{k=2}^M C(M,k) · k!  ≈  2.7 × M! for M ≤ 8
+
+        For M > max_search_devices, fall back to the spec's existing order
+        with no search.
 
         ``alt_kwargs`` is forwarded to solve_alternating() unchanged.
         """
         M = self._M
-        if M > max_search_devices:
+        if max_search_devices < M:
             log.info(
                 "solve_alternating_best_order: M=%d > %d, "
-                "skipping permutation search and using spec order",
+                "skipping search and using spec order",
                 M, max_search_devices,
             )
             return self.solve_alternating(**alt_kwargs)  # type: ignore[arg-type]
 
         original_devices = list(self.spec.devices)
-        total = math.factorial(M)
+        # Subset sizes: 2..M when enabled, else only the full set.
+        subset_sizes = range(2, M + 1) if enable_subset_search else (M,)
+        total = sum(
+            math.factorial(M) // math.factorial(M - k) for k in subset_sizes
+        )
         log.info(
-            "solve_alternating_best_order: searching %d device-order "
-            "permutations (M=%d)",
-            total, M,
+            "solve_alternating_best_order: searching %d (subset, permutation) "
+            "candidates (M=%d, subset_search=%s)",
+            total, M, enable_subset_search,
         )
 
         # When one device (typically the slowest tier) sets the max_stage_time
@@ -330,47 +348,58 @@ class Scheduler:
                 blend_alpha=self.spec.blend_alpha,
             )
 
+        def _install(spec: ClusterSpec) -> None:
+            # Subset enumeration shrinks |D| mid-search, so the cached _M /
+            # _L on Scheduler must move with each swap or solve_alternating's
+            # inner DP indexes off the end of the (now-smaller) device list.
+            self.spec = spec
+            self._L = len(spec.layers)
+            self._M = len(spec.devices)
+
         best: AlternatingResult | None = None
         best_rank: float = math.inf
         best_order: tuple[DeviceProfile, ...] | None = None
         best_score: float = -1.0
         feasible_count = 0
-        for perm in permutations(original_devices):
-            self.spec = with_devices(list(perm))
-            try:
-                result = self.solve_alternating(**alt_kwargs)  # type: ignore[arg-type]
-            except NoFeasibleSolutionError:
-                continue
-            result_state = (result.sum_stage_time, result.max_stage_time)
-            if math.isinf(result_state[0]) or math.isinf(result_state[1]):
-                continue
-            feasible_count += 1
-            rank = _rank(result_state, mode, alpha)
-            score = tiebreak_score(result)
-            better = (
-                best is None
-                or rank < best_rank - 1e-9
-                or (abs(rank - best_rank) < 1e-9 and score > best_score)
-            )
-            if better:
-                best = result
-                best_rank = rank
-                best_order = perm
-                best_score = score
+        for k in subset_sizes:
+            for subset in combinations(original_devices, k):
+                for perm in permutations(subset):
+                    _install(with_devices(list(perm)))
+                    try:
+                        result = self.solve_alternating(**alt_kwargs)  # type: ignore[arg-type]
+                    except NoFeasibleSolutionError:
+                        continue
+                    result_state = (result.sum_stage_time, result.max_stage_time)
+                    if math.isinf(result_state[0]) or math.isinf(result_state[1]):
+                        continue
+                    feasible_count += 1
+                    rank = _rank(result_state, mode, alpha)
+                    score = tiebreak_score(result)
+                    better = (
+                        best is None
+                        or rank < best_rank - 1e-9
+                        or (abs(rank - best_rank) < 1e-9 and score > best_score)
+                    )
+                    if better:
+                        best = result
+                        best_rank = rank
+                        best_order = perm
+                        best_score = score
 
         # Restore original device order in spec
-        self.spec = with_devices(original_devices)
+        _install(with_devices(original_devices))
 
         if best is None or best_order is None:
             raise NoFeasibleSolutionError(
-                f"No feasible placement found across {total} device orderings"
+                f"No feasible placement found across {total} (subset, permutation) candidates"
             )
         log.info(
-            "solve_alternating_best_order: %d/%d permutations feasible, "
-            "mode=%s best sum=%.4fs max=%.4fs (rank=%.4f) order=%s",
+            "solve_alternating_best_order: %d/%d candidates feasible, "
+            "mode=%s best sum=%.4fs max=%.4fs (rank=%.4f) "
+            "subset_size=%d order=%s",
             feasible_count, total, mode,
             best.sum_stage_time, best.max_stage_time, best_rank,
-            [d.id for d in best_order],
+            len(best_order), [d.id for d in best_order],
         )
         # Post-hoc SLO feasibility check. Throughput mode already enforced the
         # per-stage cap inline; latency / blended modes only flag here.

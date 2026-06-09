@@ -48,3 +48,6 @@ deploy/group_vars/all.yml
 
 # Generated artifacts
 experiments/REPORT.html
+
+# PPT Slides
+ppt/

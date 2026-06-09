@@ -28,6 +28,11 @@ from radp.common.types import (
 from radp.coordinator.recovery_table import determine_recovery_table
 from radp.coordinator.scheduler import Scheduler, uniform_placement
 
+# Match the conftest values so subset-search tests use the same per-device
+# memory cap as the shared fixtures.
+LAYER_BYTES = 500_000_000
+NODE_BYTES  = 4_000_000_000
+
 
 def test_homogeneous_converges_in_one_iteration(
     homogeneous_spec_2x4: ClusterSpec,
@@ -175,6 +180,92 @@ def test_no_recovery_propagates_when_no_best_yet() -> None:
     from radp.common.types import NoRecoveryError as _NRE
     with pytest.raises((_NRE, NoFeasibleSolutionError)):
         Scheduler(spec).solve_alternating()
+
+
+def test_subset_search_drops_pathologically_slow_device_in_throughput_mode() -> None:
+    """A fleet with two fast devices and one *100×-slower* device should
+    self-prune the slow device in throughput mode — the slow device's
+    layer-floor stage would set the max_stage time and gate throughput.
+
+    Regression for EXP-D2.3's finding: every-device-participates is the
+    right default for balanced edge fleets, but on heterogeneous fleets
+    the slow tier's hop-vs-compute ratio inverts and the DP wants to drop
+    them. Subset enumeration in solve_alternating_best_order surfaces
+    that choice automatically.
+    """
+    devices = [
+        DeviceProfile(id=DeviceId("fast1"), total_memory_bytes=NODE_BYTES * 4,
+                      compute_throughput=10.0),
+        DeviceProfile(id=DeviceId("fast2"), total_memory_bytes=NODE_BYTES * 4,
+                      compute_throughput=10.0),
+        DeviceProfile(id=DeviceId("slug"), total_memory_bytes=NODE_BYTES,
+                      compute_throughput=0.1),
+    ]
+    layers = [
+        LayerProfile(
+            layer_idx=LayerIdx(i),
+            memory_bytes=LAYER_BYTES,
+            compute_time={
+                DeviceId("fast1"): 0.001,
+                DeviceId("fast2"): 0.001,
+                DeviceId("slug"): 0.100,    # 100× slower
+            },
+        )
+        for i in range(1, 7)
+    ]
+    network = NetworkProfile(
+        bandwidth={(d1.id, d2.id): 1e9 for d1 in devices for d2 in devices if d1 is not d2},
+        latency={(d1.id, d2.id): 0.0005 for d1 in devices for d2 in devices if d1 is not d2},
+    )
+    spec = ClusterSpec(
+        devices=devices, layers=layers, network=network,
+        slo=SLO(ttft_seconds=1.0, tbt_seconds=0.5),
+        optimization_mode="throughput",
+    )
+    # With subset search enabled (default), the DP should pick {fast1, fast2}
+    # only — leaving the slug out entirely.
+    result = Scheduler(spec).solve_alternating_best_order()
+    chosen = {s.device for s in result.placement}
+    assert DeviceId("slug") not in chosen
+    assert chosen == {DeviceId("fast1"), DeviceId("fast2")}
+
+
+def test_subset_search_off_keeps_all_devices() -> None:
+    """With enable_subset_search=False the DP must include every device,
+    even when one of them is pathologically slow. Anchors that the new
+    flag actually toggles behaviour."""
+    devices = [
+        DeviceProfile(id=DeviceId("fast1"), total_memory_bytes=NODE_BYTES * 4,
+                      compute_throughput=10.0),
+        DeviceProfile(id=DeviceId("fast2"), total_memory_bytes=NODE_BYTES * 4,
+                      compute_throughput=10.0),
+        DeviceProfile(id=DeviceId("slug"), total_memory_bytes=NODE_BYTES,
+                      compute_throughput=0.1),
+    ]
+    layers = [
+        LayerProfile(
+            layer_idx=LayerIdx(i),
+            memory_bytes=LAYER_BYTES,
+            compute_time={
+                DeviceId("fast1"): 0.001,
+                DeviceId("fast2"): 0.001,
+                DeviceId("slug"): 0.100,
+            },
+        )
+        for i in range(1, 7)
+    ]
+    network = NetworkProfile(
+        bandwidth={(d1.id, d2.id): 1e9 for d1 in devices for d2 in devices if d1 is not d2},
+        latency={(d1.id, d2.id): 0.0005 for d1 in devices for d2 in devices if d1 is not d2},
+    )
+    spec = ClusterSpec(
+        devices=devices, layers=layers, network=network,
+        slo=SLO(ttft_seconds=10.0, tbt_seconds=10.0),
+        optimization_mode="throughput",
+    )
+    result = Scheduler(spec).solve_alternating_best_order(enable_subset_search=False)
+    chosen = {s.device for s in result.placement}
+    assert chosen == {DeviceId("fast1"), DeviceId("fast2"), DeviceId("slug")}
 
 
 def test_can_pass_explicit_initial_placement(
