@@ -7,7 +7,7 @@
 \subsection{Pipeline-parallel inference on heterogeneous edge}
 
 Pipeline-parallel LLM inference partitions a transformer model
-along its decoder-block axis: each device hosts a contiguous range
+along its decoder-block axis: each worker hosts a contiguous range
 of layers (a \emph{stage}), and an inference request flows from
 stage to stage as a stream of activation tensors. Each request
 carries per-stage KV cache state that the stage owner updates
@@ -28,7 +28,7 @@ seq$=$64 CUDA decode (\S\ref{sec:eval:setup}). In a homogeneous
 data-center pipeline-parallel setup, placement is a rounding
 question --- whether stage 7 gets four or five layers barely
 matters. On a 16$\times$-different fleet, placement is the only
-thing that matters: assign two more layers to the wrong device and
+thing that matters: assign two more layers to the wrong worker and
 the slowest stage doubles, gating the entire chain.
 
 Edge \emph{reliability} is also categorically worse than the data
@@ -53,7 +53,7 @@ displaces the primary.
 
 A second attempt --- Jupiter's throughput-optimal DP plus a
 supervisor that restarts crashed workers --- also fails, but
-differently. Jupiter computes $\psi$ assuming all devices stay
+differently. Jupiter computes $\psi$ assuming all workers stay
 alive; backup memory was never reserved at placement time, so when
 a Nano dies the supervisor has nowhere to load the dead worker's
 layers without OOM-ing a survivor. The system degrades to a
