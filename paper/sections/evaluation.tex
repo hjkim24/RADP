@@ -180,10 +180,16 @@ operator can flip without re-deploying.
 $C{=}4$ delivers 33.71\,tok/s while the same cell on 4-stage drops
 to 23.91 ($-29\%$). The 4-stage chain forces one Nano to host a
 single layer (the layer floor), paying a full network hop to do
-$\sim$1.5\,ms of compute; \sys{}'s DP picks stage count
-cost-aware, but here we fixed the chain length per topology to
-expose the matrix structure. The takeaway is that pipeline depth
-is itself a placement parameter, not a deployment constant.
+$\sim$1.5\,ms of compute. Recall that \sys{}'s DP assumes every
+device in the fleet participates (\S\ref{sec:design:dp}), so the
+stage count is fixed by the fleet size $|D|$ at boot, not chosen
+by the DP. The two chain-length topologies in this matrix were
+produced by curating the fleet inventory --- removing two workers
+to go from 4-stage to 3-stage --- so the same DP, run twice over
+two different fleets, produced the rows above. The takeaway is
+that operators steer the system into the right regime by
+curating the fleet first, and the DP optimises placement and
+recovery on top of that choice.
 
 \begin{table*}[t]
   \centering

@@ -42,7 +42,16 @@ fall back to a degraded chain. The natural extension is
 $R: D \to \mathrm{List}[D]$ with cascading promotion; the
 DP recurrence extends cleanly but the memory feasibility
 constraint (Eq.~\ref{eq:mem}) sums over more backed-up peers and
-pushes more cells infeasible. The sharded-safetensors loader
+pushes more cells infeasible. The \emph{every-device-participates}
+assumption (\S\ref{sec:design:dp}) is the other obvious limit:
+when a fleet contains workers an order of magnitude slower than the
+median, forcing them into the pipeline trades single-stream TBT
+for negligible compute. In practice today operators handle this
+by curating slow workers out of the fleet and relying on the
+latency mode ($\alpha\!=\!0$) to give the remaining fast workers
+more layers; a proper fix is automatic top-$k$ device prune
+inside the outer permutation search, which our complexity
+analysis above already costs out. The sharded-safetensors loader
 already in production handles Llama-3.2-1B; pushing into the 7B
 INT4 regime is bounded by Nano memory rather than software
 (the 1B-on-Nano run in \S\ref{sec:eval:matrix} already exposes

@@ -30,20 +30,37 @@ against multi-stream saturation; \texttt{optimization\_mode} maps
 this onto operator-friendly aliases (\texttt{latency},
 \texttt{throughput}, \texttt{blended}).
 
-\textbf{Recurrence.} Let $f(j, d)$ be the minimum rank of placing
-the first $j$ layers ending with a stage on device $d$. For each
-$(j, d)$ we try every prefix split $i < j$ and every previous
-device $d' \neq d$ that has not been used:
+\textbf{Recurrence.} Fix a device ordering $D = (d_1, \ldots, d_{|D|})$
+(chosen by the outer alternation's permutation search,
+\S\ref{sec:design:dp} end). Let $A(y, n)$ be the minimum rank of
+placing the first $y$ layers across a prefix of the first $n$
+devices, with device $d_n$ owning the last stage. We assume every
+device participates --- each gets at least one stage --- and read
+the final solution from $A(L, |D|)$. The layer-floor regime on the
+edge (any unused device's layers would overflow its peers) makes
+this the natural simplification, identical to the assumption that
+lets us avoid EdgeShard's $O(2^{|D|})$ subset enumeration. We
+acknowledge in \S\ref{sec:disc} that this assumption stops being
+attractive once \emph{slow} devices enter the fleet, and discuss
+how the latency mode ($\alpha\!=\!0$) and manual fleet curation
+together handle that regime today. For each $(y, n)$
+we try every split $l < y$ where layers $[l{+}1, y]$ go to $d_n$:
 \begin{equation}\label{eq:dp}
-  f(j, d) = \min_{0 \leq i < j} \min_{d' \neq d}
-  \Bigl\{ f(i, d') + \mathrm{rank\_inc}(i{+}1, j, d) \Bigr\}
+  A(y, n) = \min_{n-1 \leq l < y}
+  \Bigl\{ A(l, n{-}1) + \mathrm{rank\_inc}(l{+}1, y, d_n) \Bigr\}
 \end{equation}
-subject to the memory feasibility constraint
+where $\mathrm{rank\_inc}(l{+}1, y, d_n) = T_{\text{stage}}(l{+}1, y, d_n)
++ T_{\text{comm}}(d_{n-1}, d_n)$ adds the new stage's compute time and
+inter-stage activation transfer cost. The recurrence is subject to
+the memory feasibility constraint
 \begin{equation}\label{eq:mem}
   \underbrace{\mathrm{mem}_\psi(d)}_{\text{stage layers on } d}
   + \sum_{p\,:\,R(p){=}d} \underbrace{\mathrm{mem}_\psi(p)}_{\text{peers backed up on } d}
-  \;\leq\; \mathrm{cap}(d).
+  \;\leq\; \mathrm{cap}(d),
 \end{equation}
+where $\mathrm{mem}_\psi(d) = \sum_{i\,:\,\psi(i)=d} \mathrm{mem}(i)$
+sums the per-layer weight memory across layers assigned to $d$ under
+the candidate placement.
 Equation~(\ref{eq:mem}) is the systemic point: $R$ enters the
 $\psi$-DP through the device cap, so changing $R$ changes which
 $\psi$ are feasible, and vice versa. A decoupled solver that
@@ -52,7 +69,8 @@ feasible $R$ on memory-tight edge.
 
 \textbf{Alternation.} Algorithm~\ref{alg:alt} solves the
 joint problem by alternation. The inner $\psi$-DP runs in
-$O(L^2 |D|^2)$ for a fixed $R$; the greedy $R$ pass runs in
+$O(L^2 |D|)$ per device-ordering (the recurrence is
+$O(L^2)$ in $y, l$ and $O(|D|)$ in $n$); the greedy $R$ pass runs in
 $O(|D|^2)$ for a fixed $\psi$ (each device picks the unused peer
 that minimises backup-memory overflow). Cost is monotonically
 non-increasing across iterations, so the loop terminates in
@@ -78,13 +96,18 @@ $\leq 3$ iterations on every fleet we tested.
   \end{algorithmic}
 \end{algorithm}
 
-\textbf{Complexity and scope.} The inner DP is $O(L^2 |D|^2)$; the
-outer alternation adds a constant factor. For the 3--8 device edge
-fleets we target this finishes in tens of milliseconds at boot.
-Beyond $|D| \gtrsim 16$ the device-ordering search becomes the
-bottleneck and a heuristic prune (rank devices by per-layer speed,
-restrict the inner loop to the top-$k$) trades optimality for
-$O(L^2 k |D|)$ runtime --- not exercised in the experiments below.
+\textbf{Complexity and scope.} The inner DP is $O(L^2 |D|)$ per
+fixed device ordering. The outer alternation adds a constant factor
+($\leq 3$ iterations in practice), and the outer device-ordering
+search adds $O(|D|!)$ for a full permutation sweep. For the 3--8
+device edge fleets we target this finishes in tens of milliseconds at
+boot. Beyond $|D| \gtrsim 16$ the permutation search dominates;
+folding an automatic top-$k$ device prune into the search (rank
+devices by per-layer speed, restrict the outer search to the
+$k$ fastest) would trade optimality for $O(L^2 k |D|)$ runtime
+but remains future work --- the current implementation always
+searches the full permutation set, and operators handle very-slow
+devices by curating them out of the fleet (\S\ref{sec:disc}).
 
 \subsection{Mirror cache and chain-aware recovery}\label{sec:design:mirror}
 

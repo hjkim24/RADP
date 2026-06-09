@@ -231,13 +231,29 @@ $=$ 단일 stream TBT), $\alpha\!=\!1$ 은 Jupiter 의 throughput mode
 knob 을 \texttt{optimization\_mode = \{latency, throughput, blended\}}
 alias 로 조작한다.
 
+Device 순서 $D = (d_1, \ldots, d_{|D|})$ 를 outer alternation 의
+permutation search 가 고정한다고 가정하자. $A(y, n)$ 을 첫 $y$
+layer 를 첫 $n$ device 의 prefix 에 배치하되 device $d_n$ 이
+마지막 stage 를 소유할 때의 minimum rank 라 정의한다. 모든 device
+가 참여한다고 가정하며 (각 device 가 최소 1 stage 를 가짐) 최종
+해는 $A(L, |D|)$ 에서 읽는다. Edge 환경의 layer-floor 제약
+(사용되지 않은 device 의 layer 가 다른 device 로 넘어가면 그
+device 의 capacity 초과) 이 이 가정의 자연스러운 동기이며, EdgeShard
+의 $O(2^{|D|})$ subset enumeration 을 회피하게 한다.
+
 DP recurrence 와 memory feasibility constraint 는 다음과 같다.
 \begin{equation}\label{eq:dp}
-  f(j, d) = \min_{i,d'} \Bigl\{ f(i, d') + \mathrm{rank\_inc}(i{+}1, j, d) \Bigr\}
+  A(y, n) = \min_{n-1 \leq l < y}
+  \Bigl\{ A(l, n{-}1) + \mathrm{rank\_inc}(l{+}1, y, d_n) \Bigr\}
 \end{equation}
+여기서 $\mathrm{rank\_inc}(l{+}1, y, d_n) = T_{\text{stage}}(l{+}1, y, d_n)
++ T_{\text{comm}}(d_{n-1}, d_n)$ 은 새 stage 의 compute time 과
+inter-stage activation 전송 비용의 합이다. Memory 제약은
 \begin{equation}\label{eq:mem}
   \mathrm{mem}_\psi(d) + \sum_{p\,:\,R(p)=d} \mathrm{mem}_\psi(p) \leq \mathrm{cap}(d)
 \end{equation}
+이며, $\mathrm{mem}_\psi(d) = \sum_{i\,:\,\psi(i)=d} \mathrm{mem}(i)$
+는 device $d$ 에 할당된 layer 들의 per-layer weight memory 의 합이다.
 식 (\ref{eq:mem}) 이 systemic 핵심이다. $R$ 이 $\psi$-DP 에 device
 cap 을 통해 들어가므로, $R$ 의 변화가 feasible 한 $\psi$ 의 집합을
 변화시키고 그 역도 성립한다. $\psi$ 를 먼저 정한 후 $R$ 을 결정하는
@@ -245,10 +261,13 @@ decoupled solver 는 memory-tight edge 에서 feasible 한 $R$ 이 없는
 $\psi$ 를 선택할 수 있다.
 
 알고리즘~\ref{alg:alt} 은 두 문제를 alternating 으로 풀어 joint
-solution 을 얻는다. Inner $\psi$-DP 는 고정된 $R$ 에서 $O(L^2 |D|^2)$,
-greedy $R$ pass 는 고정된 $\psi$ 에서 $O(|D|^2)$ 이다. Cost 가
-monotonically 비증가이므로 유한 반복 후 종료가 보장되며, 본 연구의
-모든 fleet 에서 3 회 이내에 수렴했다.
+solution 을 얻는다. Inner $\psi$-DP 는 고정된 device 순서에 대해
+$O(L^2 |D|)$, outer permutation search 는 $O(|D|!)$, greedy $R$
+pass 는 $O(|D|^2)$ 이다. Cost 가 monotonically 비증가이므로 유한
+반복 후 종료가 보장되며, 본 연구의 모든 fleet 에서 3 회 이내에
+수렴했다. $|D| \gtrsim 16$ regime 에서는 permutation search 가
+bottleneck 이 되며, 자동 top-$k$ device prune 의 통합은 future work
+로 둔다 (현재는 매우 느린 device 를 fleet 에서 수동으로 제외).
 
 \begin{algorithm}[t]
   \caption{Alternating $\psi$+$R$ optimization}
