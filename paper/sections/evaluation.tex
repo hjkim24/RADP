@@ -58,29 +58,45 @@ reproducibility.
 
 \subsection{$\psi$+$R$ joint optimization beats decoupled baselines in normal mode}\label{sec:eval:a3b}
 
-On a 7-worker 3-tier fleet (3 CPU-Nano, 3 CPU-AGX, 1 CUDA-Nano)
-we compare \sys{}'s joint $(\psi,R)$ DP against three placement-
-only baselines that share an identical recovery substrate
-($R{=}\emptyset$, abort on first failure): \emph{greedy}
-(layers handed out fastest-device-first), \emph{uniform} (equal
-layer count per stage), and \emph{Jupiter-DP} ($\alpha{=}1$
-throughput-optimal). Each cell is 30 TBT samples per stream
-$\times$ 10 streams ($n{=}300$).
+On a 6-worker fleet (1 AGX Orin MAXN, 3 Jetson Orin Nano CUDA,
+2 Nano CPU) we compare \sys{}'s joint $(\psi, R)$ DP against three
+placement-only baselines that share an identical recovery substrate
+($R{=}\emptyset$, abort on first failure): \emph{greedy} (layers
+handed out fastest-device-first), \emph{uniform} (equal layer count
+per stage), and \emph{Jupiter-DP} (Eq.~1 in~\cite{ye2025jupiter},
+$\alpha{=}1$ throughput-optimal max-min). \sys{} runs in
+$\alpha{=}0$ latency mode for a clean comparison against
+Jupiter-DP's $\alpha{=}1$. Each cell is one fresh deploy and 30
+streams $\times$ 30 tokens ($n{=}900$ TBT samples). Workers are
+restarted between cells so every baseline starts from the same
+clean-memory state.
 
-\sys{} ($\alpha{=}0$, latency-optimal) beats greedy by 6.5\% on TBT
-p50, 3.8\% on TBT p95, and 8.3\% on aggregate tokens-per-second.
-The interesting part is where the gap comes from. The cost model
-predicts greedy and \sys{} should tie at a 45.3\,ms max-stage
-budget; the live gap exists because the cost function does not
-charge pipeline-transition overhead (gRPC framing plus
-Python/GIL contention on consecutive small stages), and \sys{}'s
-fewer-bigger-stage solutions exploit that overhead asymmetry while
-greedy's many-small-stage solutions absorb it. This
-predicted-vs-measured discrepancy bounds the claim:
-$\psi$+$R$ optimization captures everything the cost model
-captures, but extracts an additional 2--4\% from runtime mechanics
-the cost model under-counts. We revisit the asymmetry in
-\S\ref{sec:disc}.
+All three placement-only baselines spread layers across all six
+devices (uniform: 4 each; Jupiter-DP: 1--7 incl. the CPU workers;
+greedy: similar fan-out). \sys{} collapses the placement onto two
+devices --- \texttt{on-1[1..1]} $\to$ \texttt{ao-1[2..24]}, AGX
+hosting 23 of 24 layers --- because backup-memory feasibility
+(Eq.~\ref{eq:mem}) admits exactly that subset when \texttt{on-1}
+is the only peer with headroom for a 23-layer backup. The result
+(Fig.~\ref{fig:baselines}): $3.5\times$ throughput over greedy
+($17.4$ vs $5.0$\,tok/s), $3.6\times$ lower TBT p50
+($53.5$ vs $190.1$\,ms), $2.2\times$ lower TBT p95
+($117.9$ vs $259.9$\,ms). Uniform and Jupiter-DP fare worse than
+greedy because they keep the two Nano CPU workers in the chain,
+whose $\sim$42\,ms/layer stage time dominates max-stage. The gap
+is a topology change forced by recovery-feasibility coupling, not
+a cost-model tweak: a placement-first solver cannot reach the
+bulk-on-AGX configuration because checking $R$ afterwards is what
+selects it.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig_baselines.pdf}
+  \caption{Normal-mode metrics on the 6-worker fleet, 30 streams
+  $\times$ 30 tokens per cell. RADP (blue) wins by 2--3.6$\times$
+  across all three metrics.}
+  \label{fig:baselines}
+\end{figure}
 
 \subsection{Failure recovery survives where baselines abort}\label{sec:eval:recovery}
 
@@ -116,23 +132,6 @@ unwound long before failure), so attribution falls back to the
 chain head while heartbeat catches up; the $\psi$+$R$ feasibility
 guarantee preserves correctness (all 60 tokens delivered), but
 recovery pays one extra hop when heartbeat loses the race.
-Fig.~\ref{fig:recovery} contrasts the two distributions against the
-abort line of the recovery-less baselines.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.95\linewidth]{fig_recovery.pdf}
-  \caption{Recovery wall-clock CDF. Star topology RADP (blue,
-  $n{=}5$) clusters tightly between 580 and 920\,ms (mean 617,
-  p95 670); chain topology (single trials, dashed) sits an
-  order of magnitude higher because lazy weight transfer to
-  the promoted backup overlaps the in-flight token's pipeline
-  hop. Recovery-less baselines (\emph{greedy}, \emph{uniform},
-  \emph{Jupiter-DP}) abort at the SIGKILL boundary and never
-  recover --- the inline annotation marks the 17--20 tokens
-  they drop.}
-  \label{fig:recovery}
-\end{figure}
 
 \subsection{Latency placement dominates throughput placement at C $\geq$ 4 across two model sizes}\label{sec:eval:matrix}
 

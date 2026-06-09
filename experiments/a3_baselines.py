@@ -243,9 +243,16 @@ def compute_all_baselines(spec: ClusterSpec) -> dict[str, dict[str, Any]]:
         **_compute_predicted_metrics(spec, pl, {}),
     }
 
-    # --- 3. jupiter_dp (same DP as ours but R={}) ---
+    # --- 3. jupiter_dp (Jupiter Eq. 1 throughput-optimal, R={}) ---
+    # Jupiter's algorithm is defined at α=1 in the paper, so force
+    # throughput mode here regardless of what the surrounding spec is
+    # configured for (the caller may be running --optimization-mode latency
+    # for ours, but jupiter_dp must stay throughput to match the paper
+    # baseline definition).
+    from dataclasses import replace as _dc_replace
+    spec_jupiter = _dc_replace(spec, optimization_mode="throughput", blend_alpha=0.0)
     try:
-        jupiter_result = Scheduler(spec).solve(recovery={})
+        jupiter_result = Scheduler(spec_jupiter).solve(recovery={})
         pl = jupiter_result.placement
         results["jupiter_dp"] = {
             "placement": _placement_to_dicts(pl),
