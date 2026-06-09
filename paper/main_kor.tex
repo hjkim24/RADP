@@ -181,11 +181,15 @@ measurement campaign 중 다수의 board 에서 위 세 종류의 장애를 모�
 를 감당할 수 없다. Petals 의 greedy placement 는 heterogeneous fleet
 에서 2.38 배의 throughput 손실을 초래하며~\cite{mei2025helix},
 swarm-redundancy recovery 모델은 edge 에 존재하지 않는 여유 메모리를
-전제한다. Jupiter 의 throughput-optimal DP 에는 recovery 메커니즘
-자체가 없다. 본 논문의 systemic insight 는 \textbf{memory-tight edge
-에서 $R$ 과 $\psi$ 가 coupled feasibility region 을 갖는다는 점}이다.
-두 결정을 분리하면 feasibility 또는 performance 중 하나를 반드시
-양보해야 한다.
+전제한다. Jupiter 의 LLM-partition DP (Eq.~1 in~\cite{ye2025jupiter})
+는 본 논문 $\psi$-recurrence 의 \emph{알고리즘적 출발점} 이지만 ---
+같은 $A(1\!\to\!y, D_n) = \min_l \max\{A(1\!\to\!l, D_{n-1}),
+T(l{+}1\!\to\!y, d_n)\}$ 형태를 $\alpha\!=\!1$ 에서만, recovery 와
+per-hop overhead 항 없이 평가하므로 --- recovery 가 없는 placement
+DP 라는 한계는 동일하다. 본 논문의 systemic insight 는
+\textbf{memory-tight edge 에서 $R$ 과 $\psi$ 가 coupled feasibility
+region 을 갖는다는 점}이다. 두 결정을 분리하면 feasibility 또는
+performance 중 하나를 반드시 양보해야 한다.
 
 본 논문 \sys{} (Recovery-Aware DP) 의 기여는 다음과 같다.
 \begin{itemize}
@@ -205,6 +209,13 @@ swarm-redundancy recovery 모델은 edge 에 존재하지 않는 여유 메모�
         size 에 걸쳐 $C\!\geq\!4$ 에서 유지됨. Worker SIGKILL 시
         \sys{}는 60/60 token 전달, recovery 없는 baseline 은 17--20
         token 에서 중단.
+  \item (i) outer-subset enumeration 으로 자동 device prune 을 켜고
+        (ii) $T_{\mathrm{comm}}$ 에 per-hop overhead 항
+        $\gamma_{\mathrm{hop}}$ 을 도입한 ablation 결과,
+        $C\!\geq\!4$ 에서 $L\!\succ\!T$ 격차가 \emph{좁혀지지 않고
+        오히려 벌어진다}. 잔여 격차는 wire-cost 항이 아니라
+        multi-stream system-level 효과로, cost-model 정교화만으로는
+        throughput placement 가 회복할 수 없는 한계를 한정한다.
 \end{itemize}
 
 % =======================================================================
@@ -234,12 +245,16 @@ alias 로 조작한다.
 Device 순서 $D = (d_1, \ldots, d_{|D|})$ 를 outer alternation 의
 permutation search 가 고정한다고 가정하자. $A(y, n)$ 을 첫 $y$
 layer 를 첫 $n$ device 의 prefix 에 배치하되 device $d_n$ 이
-마지막 stage 를 소유할 때의 minimum rank 라 정의한다. 모든 device
-가 참여한다고 가정하며 (각 device 가 최소 1 stage 를 가짐) 최종
-해는 $A(L, |D|)$ 에서 읽는다. Edge 환경의 layer-floor 제약
-(사용되지 않은 device 의 layer 가 다른 device 로 넘어가면 그
-device 의 capacity 초과) 이 이 가정의 자연스러운 동기이며, EdgeShard
-의 $O(2^{|D|})$ subset enumeration 을 회피하게 한다.
+마지막 stage 를 소유할 때의 minimum rank 라 정의한다. Inner DP 는
+ordering 안의 모든 device 가 참여한다는 가정 (각 device 가 최소
+1 stage) 하에서 $A(L, |D|)$ 를 읽지만, outer search 가 모든 ordered
+subset $S \subseteq D$ ($|S| \geq 2$) 에 대해 inner DP 를 재실행하여
+subset selection 을 복원한다 --- 즉 pathologically-slow worker 는
+inner recurrence 의 단순함을 유지한 채 outer search 가 자동으로
+prune 한다. 이는 Jupiter~\cite{ye2025jupiter} 의 LLM partition DP
+가 사용한 문제 분해와 동일하며, 우리 recurrence 는 $\alpha\!=\!1$,
+recovery 없음, $\gamma_{\mathrm{hop}}\!=\!0$ 조건에서 Jupiter Eq.~1
+로 정확히 환원된다.
 
 DP recurrence 와 memory feasibility constraint 는 다음과 같다.
 \begin{equation}\label{eq:dp}
@@ -248,7 +263,15 @@ DP recurrence 와 memory feasibility constraint 는 다음과 같다.
 \end{equation}
 여기서 $\mathrm{rank\_inc}(l{+}1, y, d_n) = T_{\text{stage}}(l{+}1, y, d_n)
 + T_{\text{comm}}(d_{n-1}, d_n)$ 은 새 stage 의 compute time 과
-inter-stage activation 전송 비용의 합이다. Memory 제약은
+inter-stage activation 전송 비용의 합이다. 전송 항은
+$T_{\text{comm}}(u, v) = \mathrm{act\_bytes}/\mathrm{bw}(u, v) +
+\mathrm{lat}(u, v) + \gamma_{\mathrm{hop}}$ 로 분해되며, wire-only
+$\mathrm{bw} + \mathrm{lat}$ 쌍은 \texttt{MeasurePeer} mesh 에서
+얻고, per-hop 상수 $\gamma_{\mathrm{hop}}$ (default $0$, 본 fleet
+에서 $8$\,ms) 는 wire profiling 이 잡지 못하는 gRPC framing + Python
+GIL contention 을 DP 의 cost function 으로 노출시킨다.
+$\gamma_{\mathrm{hop}}\!>\!0$ 설정은 짧은 stage 가 많은 chain 에
+페널티를 부여하나 recurrence 형태는 보존한다. Memory 제약은
 \begin{equation}\label{eq:mem}
   \mathrm{mem}_\psi(d) + \sum_{p\,:\,R(p)=d} \mathrm{mem}_\psi(p) \leq \mathrm{cap}(d)
 \end{equation}
@@ -262,12 +285,16 @@ $\psi$ 를 선택할 수 있다.
 
 알고리즘~\ref{alg:alt} 은 두 문제를 alternating 으로 풀어 joint
 solution 을 얻는다. Inner $\psi$-DP 는 고정된 device 순서에 대해
-$O(L^2 |D|)$, outer permutation search 는 $O(|D|!)$, greedy $R$
-pass 는 $O(|D|^2)$ 이다. Cost 가 monotonically 비증가이므로 유한
-반복 후 종료가 보장되며, 본 연구의 모든 fleet 에서 3 회 이내에
-수렴했다. $|D| \gtrsim 16$ regime 에서는 permutation search 가
-bottleneck 이 되며, 자동 top-$k$ device prune 의 통합은 future work
-로 둔다 (현재는 매우 느린 device 를 fleet 에서 수동으로 제외).
+$O(L^2 |D|)$, outer subset+permutation search 는
+$O(2^{|D|} \cdot |D|!)$, greedy $R$ pass 는 $O(|D|^2)$ 이다. Cost
+가 monotonically 비증가이므로 유한 반복 후 종료가 보장되며, 본
+연구의 모든 fleet 에서 3 회 이내에 수렴했다. $|D| \leq 8$ 인 본
+edge fleet 에서는 boot time 1 초 미만 ($|D|\!=\!6$ 의 경우
+$\sim$80\,ms, 1956 candidates) 으로 실용적이며, CPU Nano 와 같이
+극단적으로 느린 worker 는 outer search 가 자동으로 drop 한다
+(\S\ref{sec:eval}). $|D| \gtrsim 12$ regime 에서는 자동 top-$k$
+heuristic (per-layer speed 로 device 를 정렬해 outer search 를
+$k$ 개로 제한) 통합이 future work 로 남는다.
 
 \begin{algorithm}[t]
   \caption{Alternating $\psi$+$R$ optimization}
@@ -438,6 +465,30 @@ $-33\%$) --- operator 관점의 responsiveness 에서는 $L$ 이 이긴다.
 throughput-bottlenecking critical path 로 만든다. Multi-stream 은
 hop cost 를 amortise 하여 $L$ 의 pipeline-saturation 우위가 복귀한다.
 
+\textbf{발견 5: Subset enumeration 과 hop overhead 는 $L \succ T$
+순서를 뒤집지 않는다.} 자연스러운 cost-model 가설은 (a) DP 가 모든
+worker 를 강제 참여시켜 느린 device 가 max-stage 를 막고, (b)
+wire-only $T_{\mathrm{comm}}$ 이 per-hop overhead 를 과소평가해서
+$T$ 가 진다는 것이다. 두 fix 를 직접 활성화하여 (1 AGX MAXN + 3
+Nano CUDA + 2 Nano CPU, 6-worker fleet, OPT-350M async)
+재측정한다.
+\textbf{(a) Subset enumeration.} CPU Nano 2 대가 자동 prune 된다.
+$L$ mode 는 2-device subset (AGX + 1 Nano CUDA), $T$ mode 는 4-stage
+all-CUDA 를 선택한다. 그러나 $L\!\succ\!T$ 격차는 \emph{확대}된다
+($C\!=\!1$: $1.21\times$, $C\!=\!4$: $1.57\times$, $C\!=\!16$:
+$1.15\times$). 1.4 배 MAXN-vs-Nano-CUDA gap 환경에서 4-stage all-CUDA
+가 max-stage-minimum 의 정당한 답이며, subset enumeration 은 \emph{느린}
+floor 만 잘라낸다.
+\textbf{(b) $\gamma_{\mathrm{hop}}\!=\!8$\,ms.} T placement 는 4-stage
+4-CUDA 그대로이다. 모든 inter-stage transition 에 동일한
+$\gamma_{\mathrm{hop}}$ 을 부과해도 max-min 의 argmax 가 바뀌지
+않는다. 라이브 결과 $C\!=\!1/4/16$: $5.17 / 7.5 / 32.8$\,tok/s
+($T$+async). $C\!=\!16$ 에서 (a) 만 적용한 $T$ 대비 $-5\%$.
+두 ablation 모두 cost-model artifact 가설을 반증한다. $C\!\geq\!4$
+에서의 $L\!\succ\!T$ 는 multi-stream system-level 효과 (per-request
+thread-pool contention, KV cache memory bandwidth contention)이며,
+DP cost function 정교화만으로는 환원되지 않는 구조적 발견이다.
+
 \textbf{Recovery 결과.} Star topology 에서 worker SIGKILL 후 \sys{} 는
 5/5 시행 모두 60/60 token 을 일관되게 전달했고, recovery wall-clock
 평균 $617$\,ms, p95 $670$\,ms 였다. Recovery 가 없는 baseline 3 종
@@ -468,8 +519,14 @@ trade-off 를 제공함을 보였다.
 향후 과제는 (i) $R$ 을 single backup 에서 backup list 로 확장한
 cascading failure 대응, (ii) 7B INT4 의 memory-bound regime 측정
 (본 1B 측정에서 이미 Nano memory pressure 가 운용 한계로 노출됨),
-(iii) cost function 의 marginal-layer term 으로 현재 $2$--$4\%$ 의
-predicted-vs-measured 격차 축소가 포함된다.
+(iii) cost function 에 concurrency-aware $T_{\mathrm{stage}}(s, C)$
+항 (stage-count penalty $\gamma\!\cdot\!|\psi|$ 또는
+$T_{\mathrm{stage}}(s)\!\cdot\!(1\!+\!\rho C/\mathrm{pool})$ 형태)
+도입으로 thread-pool queueing 및 KV memory-bandwidth contention 을
+DP cost 에 노출시키는 작업이 포함된다. Subset enumeration 과 per-hop
+overhead $\gamma_{\mathrm{hop}}$ 은 본 논문에서 이미 구현 및 검증
+되었으며 (\S\ref{sec:eval}), $L\!\succ\!T$ 격차 잔여는 wire-cost
+항이 아닌 multi-stream 효과임이 확인되었다.
 
 % =======================================================================
 \bibliographystyle{IEEEtran}

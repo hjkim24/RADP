@@ -4,19 +4,29 @@ Petals~\cite{borzunov2023petals,borzunov2023distributed}
 demonstrated collaborative LLM inference on consumer hardware with
 greedy placement and swarm-redundancy-based recovery, but its
 16+\,GB peer assumption excludes the 4\,GB Nano regime \sys{}
-targets. EdgeShard~\cite{zhang2024edgeshard} introduces a DP-based
-latency-optimal placement --- recoverable as our $\alpha{=}0$
-boundary (Eq.~\ref{eq:rank}) --- but assumes a redundant copy of
-each shard exists somewhere on the cluster; its recovery model
-is implicit and pays no memory cost at placement time.
-Jupiter~\cite{ye2025jupiter} pushes the throughput-optimal end
-($\alpha{=}1$) with explicit TBT-SLO constraints, but offers no
-recovery mechanism and no chain forwarding for high $C$.
+targets. EdgeShard~\cite{zhang2024edgeshard} splits the
+placement problem into two algorithms --- $O(N \cdot M^2)$ latency
+mode (Algorithm~1) and $O(N^2 \cdot 2^M \cdot M^2)$ throughput
+mode (Algorithm~2) --- but each algorithm is reported only against
+its own objective, so the relative behaviour of latency-optimal
+vs throughput-optimal placement under concurrent load is not
+measured. Jupiter~\cite{ye2025jupiter} pushes the
+throughput-optimal end with a single max-min DP (Eq.~1) plus
+explicit TBT-SLO constraints, achieved on top of intra-sequence
+pipeline parallelism; the placement DP itself is the algorithmic
+ancestor of our recurrence (Eq.~\ref{eq:dp} at $\alpha{=}1$
+without recovery or $\gamma_{\mathrm{hop}}$). Neither system
+provides a recovery story, neither models per-hop framing/GIL
+overhead in the DP, and neither cross-evaluates latency vs
+throughput placement on the same metric --- the gap the 24-cell
+matrix in \S\ref{sec:eval:matrix} fills.
 Helix~\cite{mei2025helix} measures greedy placement's
 2.38$\times$ throughput tax on heterogeneous GPU fleets via a
 max-flow formulation, motivating DP-based approaches more
 generally. \sys{} unifies these threads: the same DP yields
-EdgeShard's or Jupiter's placement via the $\alpha$ knob, and the
-asynchronous mirror cache plus chain-aware recovery add fault
-tolerance neither prior system provides at the 4\,GB-per-peer
-edge frontier.
+EdgeShard's latency-mode and Jupiter's throughput-mode placement
+via the $\alpha$ knob, recovery is co-optimised through
+Eq.~\ref{eq:mem} rather than bolted on, and the asynchronous
+mirror cache plus chain-aware recovery add fault tolerance at the
+4\,GB-per-peer edge frontier where prior swarm-redundancy
+recipes overflow.
