@@ -64,10 +64,11 @@ handed out fastest-device-first), \emph{uniform} (equal layer count
 per stage), and \emph{Jupiter-DP} (Eq.~1 in~\cite{ye2025jupiter},
 $\alpha{=}1$ throughput-optimal max-min). \sys{} runs in
 $\alpha{=}0$ latency mode for a clean comparison against
-Jupiter-DP's $\alpha{=}1$. Each cell is one fresh deploy and 30
-streams $\times$ 30 tokens ($n{=}900$ TBT samples). Workers are
-restarted between cells so every baseline starts from the same
-clean-memory state.
+Jupiter-DP's $\alpha{=}1$. Each baseline is measured over $N{=}3$
+independent fresh-deploy trials of 30 streams $\times$ 30 tokens
+($n{=}2700$ TBT samples per baseline). Workers are restarted between
+trials for a clean-memory state; the coefficient of variation
+across trials is $<3\%$ for every baseline.
 
 All three placement-only baselines spread layers across all six
 devices (uniform: 4 each; Jupiter-DP: 1--7 incl. the CPU workers;
@@ -77,22 +78,24 @@ hosting 23 of 24 layers --- because backup-memory feasibility
 (Eq.~\ref{eq:mem}) admits exactly that subset when \texttt{on-1}
 is the only peer with headroom for a 23-layer backup. The result
 (Fig.~\ref{fig:baselines}): $3.5\times$ throughput over greedy
-($17.4$ vs $5.0$\,tok/s), $3.6\times$ lower TBT p50
-($53.5$ vs $190.1$\,ms), $2.2\times$ lower TBT p95
-($117.9$ vs $259.9$\,ms). Uniform and Jupiter-DP fare worse than
-greedy because they keep the two Nano CPU workers in the chain,
-whose $\sim$42\,ms/layer stage time dominates max-stage. The gap
-is a topology change forced by recovery-feasibility coupling, not
-a cost-model tweak: a placement-first solver cannot reach the
-bulk-on-AGX configuration because checking $R$ afterwards is what
-selects it.
+($17.2{\pm}0.5$ vs $5.0{\pm}0.04$\,tok/s), $3.5\times$ lower TBT p50
+($54.2{\pm}1.6$ vs $189.9{\pm}1.6$\,ms), $2.3\times$ lower TBT p95
+($115.6{\pm}2.9$ vs $261.2{\pm}2.7$\,ms). Two effects compose: outer
+subset enumeration auto-prunes the two Nano CPU workers --- which
+the placement-only baselines keep in the chain at
+$\sim$85\,ms/layer --- and the bulk-on-AGX shape itself is
+reachable only because checking $R$ inside the DP
+(Eq.~\ref{eq:mem}) admits it. The within-CUDA-tier algorithmic gain
+alone is smaller, comparable to the 17--45\% $L \succ T$ difference
+on the all-CUDA 4-stage chain in \S\ref{sec:eval:matrix}.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{fig_baselines.pdf}
-  \caption{Normal-mode metrics on the 6-worker fleet, 30 streams
-  $\times$ 30 tokens per cell. RADP (blue) wins by 2--3.6$\times$
-  across all three metrics.}
+  \caption{Normal-mode metrics on the 6-worker fleet, $N{=}3$ fresh
+  deploys $\times$ 30 streams $\times$ 30 tokens each. Error bars
+  are $\pm 1$ std across the 3 trials. RADP (blue) wins by
+  $2.3$--$3.5\times$ across all three metrics.}
   \label{fig:baselines}
 \end{figure}
 

@@ -481,21 +481,30 @@ sub-matrix 에 대한 throughput (tok/s, 클수록 우수) 과 TBT p50 (ms,
 (1 AGX MAXN + 3 Nano CUDA + 2 Nano CPU) 에서 \sys{} ($\alpha\!=\!0$
 latency-mode) 와 세 placement-only baseline (greedy, uniform,
 Jupiter-DP at $\alpha\!=\!1$) 을 동일 deploy harness 로 비교한다.
-각 cell 은 fresh deploy + 30 stream $\times$ 30 token. \sys{} 는
-\texttt{on-1[1..1]$\to$ao-1[2..24]} 의 2-device placement 를
-선택하여 AGX 에 23 layer 를 집중시키며 (식 \ref{eq:mem} 가 다른
-device 의 backup 부담을 흡수할 수 있는 유일한 subset 이라 강제),
-$3.5\times$ throughput, $3.6\times$ 낮은 TBT p50, $2.2\times$ 낮은
-TBT p95 를 달성한다. Uniform 과 Jupiter-DP 가 greedy 보다 부진한
-이유는 Nano CPU 2 대를 chain 에 포함시켜 $\sim$42\,ms/layer 의
-CPU stage time 이 max-stage 를 결정짓기 때문이다.
+각 baseline 은 $N\!=\!3$ 회 독립 fresh-deploy 시행 (각 30 stream
+$\times$ 30 token, baseline 당 $n\!=\!2700$ TBT sample) 으로
+측정되며, trial 간 coefficient of variation 은 모든 baseline 에서
+$3\%$ 미만이다. \sys{} 는 \texttt{on-1[1..1]$\to$ao-1[2..24]} 의
+2-device placement 를 선택하여 AGX 에 23 layer 를 집중시키며 (식
+\ref{eq:mem} 가 다른 device 의 backup 부담을 흡수할 수 있는 유일한
+subset 이라 강제), $3.5\times$ throughput ($17.2$ vs $5.0$\,tok/s),
+$3.5\times$ 낮은 TBT p50 ($54.2$ vs $189.9$\,ms), $2.3\times$ 낮은
+TBT p95 ($115.6$ vs $261.2$\,ms) 를 달성한다. 이 격차는 두 효과의
+합성이다. 첫째, outer subset enumeration 이 Nano CPU 2 대를 자동
+prune 하는 반면 (placement-only baseline 들은 $\sim$85\,ms/layer 의
+CPU 를 chain 에 포함), CUDA-tier 내부의 algorithmic 차이만 따지면
+\S\ref{sec:eval} 의 4-stage all-CUDA 행의 $L\!\succ\!T$ 격차
+($17$--$45\%$) 수준이다. 둘째, $R$ 이 DP 안에서 식 (\ref{eq:mem})
+을 통해 검사되므로 bulk-on-AGX 형태 자체가 도달 가능하다 ---
+placement-first solver 는 이 답을 제안조차 할 수 없다.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{fig_baselines.pdf}
-  \caption{6-worker fleet 의 normal-mode 비교. Cell 당 30 stream
-  $\times$ 30 token. RADP (파랑) 가 세 metric 전체에서
-  $2$--$3.6\times$ 우위.}
+  \caption{6-worker fleet 의 normal-mode 비교. $N\!=\!3$ fresh deploy
+  $\times$ 30 stream $\times$ 30 token. Error bar 는 3 시행에 대한
+  $\pm 1$ std. RADP (파랑) 가 세 metric 전체에서
+  $2.3$--$3.5\times$ 우위.}
   \label{fig:baselines}
 \end{figure}
 
