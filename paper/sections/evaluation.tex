@@ -12,28 +12,26 @@
 \subsection{Setup}\label{sec:eval:setup}
 
 \textbf{Fleet.} Eight Jetson workers (six Orin Nano 8\,GB, one AGX
-Orin in MAXN power mode, one AGX Xavier) plus a Mac-hosted
-coordinator on the same LAN. Workers span three compute tiers we
-calibrate per-layer at seq$=$64 (the decode-step regime, not
-prefill): CPU on Nano ($\sim$42\,ms/layer), CPU on AGX
-($\sim$17.6\,ms/layer), and CUDA on Nano ($\sim$1.5\,ms/layer). AGX
-Orin MAXN at the same seq$=$64 decode point is roughly
-16$\times$ faster per layer than Nano CUDA --- a gap that did not
-appear in our earliest measurements because two silent profiler
-bugs (tokenizer padding returning the wrong shape and
-\texttt{perf\_counter()} timing around async CUDA kernels) hid the
-AGX advantage behind launch overhead. After commit~382739b fixes
-both, AGX dominance is consistent across thirty repeats
-(Fig.~\ref{fig:tiers}).
+Orin MAXN + \texttt{jetson\_clocks}, one AGX Xavier) plus a
+Mac-hosted coordinator on the same LAN. Live \texttt{ProfileLayers}
+on OPT-350M (seq$=$64, fp16, no KV): Nano CPU $\sim$84.7\,ms,
+AGX CPU $\sim$17.6\,ms (legacy), Nano CUDA $\sim$1.11\,ms,
+AGX MAXN $\sim$0.82\,ms. AGX MAXN is only $1.36\times$ faster than
+Nano CUDA --- not the order-of-magnitude AGX FLOPS would predict ---
+because OPT-350M's $\sim$750\,M FLOPS/block leaves both CUDA devices
+launch-bound. The real heterogeneity is the $\sim$76$\times$
+CUDA-vs-CPU gulf; AGX enters compute-bound regime only at 3B+
+models, beyond Nano memory.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.95\linewidth]{fig_tiers.pdf}
-  \caption{Per-layer decode time (seq$=$64, log scale) across the
-  four compute tiers on the fleet. The CPU tier ($\sim$10s of ms)
-  and the CUDA tier (single-digit ms) sit two orders of magnitude
-  apart, and AGX MAXN sits another order of magnitude below Nano
-  CUDA --- the heterogeneity placement has to navigate.}
+  \caption{Per-layer forward time (OPT-350M seq$=$64, log scale)
+  from live ProfileLayers data. The CUDA-vs-CPU gulf is $\sim$76$\times$;
+  the within-CUDA AGX-vs-Nano gap is only $1.36\times$ at this
+  model size --- launch overhead dominates compute. AGX CPU
+  ($17.6$\,ms) is the legacy paper measurement; no AGX board in
+  the current fleet runs in CPU mode.}
   \label{fig:tiers}
 \end{figure}
 

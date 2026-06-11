@@ -9,10 +9,11 @@ Jupiter~\cite{ye2025jupiter} pushed throughput-optimal placement with
 explicit Token-Between-Time (TBT) constraints.  Yet these systems
 were built around two assumptions inherited from the data center
 that the edge regime breaks.  First, \emph{homogeneity}: on our
-8-worker Jetson fleet a Jetson AGX Orin in MAXN power mode is
-16$\times$ faster per layer than a Jetson Orin Nano at decode-time
-sequence lengths --- a finding that itself only emerged after we
-fixed two silent profiler bugs (\S\ref{sec:eval:setup}).  Second,
+8-worker Jetson fleet, Nano CPU is $\sim$76$\times$ slower per
+layer than Nano CUDA, and AGX Orin MAXN is $1.36\times$ faster than
+Nano CUDA at OPT-350M seq=64 forward --- the CUDA-vs-CPU gap
+dominates and is what makes placement decisions structurally
+sensitive (\S\ref{sec:eval:setup}).  Second,
 \emph{reliability}: boards crash, SD cards fill up, networks
 partition.  During the measurement campaign behind this paper we
 encountered all three on multiple boards, and placement that

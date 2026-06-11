@@ -43,9 +43,12 @@ extension $R{:}\,D{\to}\,\mathrm{List}[D]$ extends
 Eq.~\ref{eq:dp} cleanly but tightens Eq.~\ref{eq:mem}. The
 sharded-safetensors loader already handles Llama-3.2-1B;
 pushing into 7B INT4 is bounded by Nano memory rather than
-software. The cost-model ablation (\S\ref{sec:eval:cost-model})
-shows the L $\succ$ T gap at $C\!\geq\!4$ persists after subset
-enumeration and a tuned $\gamma_{\mathrm{hop}}$. The multiplier
+software. At OPT-350M scale both CUDA devices are launch-bound,
+so the L $\succ$ T finding is driven by chain-hop and multi-stream
+system overhead, not raw AGX FLOPS --- the cost-model ablation
+(\S\ref{sec:eval:cost-model}) shows the L $\succ$ T gap at
+$C\!\geq\!4$ persists after subset enumeration and a tuned
+$\gamma_{\mathrm{hop}}$. The multiplier
 $\mu(\psi)$ and additive $\gamma_{\mathrm{stage}}|\psi|$ in
 Eq.~\ref{eq:rank} expose multi-stream interference as the
 \texttt{target\_concurrency} and

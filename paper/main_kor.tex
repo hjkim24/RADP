@@ -179,11 +179,12 @@ EdgeShard~\cite{zhang2024edgeshard} 는 DP 기반 latency-optimal layer
 placement 를, Jupiter~\cite{ye2025jupiter} 는 명시적 TBT-SLO 제약
 하의 throughput-optimal placement 를 추가했다. 그러나 이들 시스템은
 data center 에서 통용되던 두 가지 가정에 의존한다.
-첫째, \textbf{균질성}: 본 연구의 8-worker Jetson fleet 에서 AGX Orin
-(MAXN power mode) 은 Orin Nano CUDA 대비 decode 단계 (seq=64) per-layer
-시간이 약 16 배 빠르다. 균질한 fleet 에서 layer placement 는 단순한
-반올림 문제이지만, 16 배 이종 환경에서는 placement 가 시스템 전체
-throughput 을 좌우한다. 둘째, \textbf{신뢰성}: edge board 는 빈번히
+첫째, \textbf{균질성}: 본 연구의 8-worker Jetson fleet 에서 Nano CPU
+는 Nano CUDA 대비 per-layer 시간이 약 $76\times$ 느리고, AGX Orin
+MAXN 은 Nano CUDA 대비 약 $1.36\times$ 빠르다 (OPT-350M seq=64
+forward). 균질한 fleet 에서 layer placement 는 단순한 반올림
+문제이지만, CUDA tier 와 CPU tier 사이 두 자릿수 격차가 존재하는
+환경에서는 placement 가 시스템 전체 throughput 을 좌우한다. 둘째, \textbf{신뢰성}: edge board 는 빈번히
 crash 하며 SD card 가 가득 차거나 network 가 끊긴다. 본 연구의
 measurement campaign 동안 다수의 board 에서 위 세 가지 장애가 모두
 관측되었다. 장애를 예외 경로로 처리하는 placement 는 첫 worker crash
@@ -399,17 +400,22 @@ correctness 는 유지되지만 (모든 token 이 일관되게 전달됨), heart
 % =======================================================================
 
 \textbf{환경.} 8-worker Jetson fleet (Orin Nano 8\,GB 6 대,
-AGX Orin MAXN 1 대, AGX Xavier 1 대) 과 Mac coordinator 가 동일 LAN
-상에 위치한다. 세 가지 compute tier 를 decode step (seq=64) 에서
-측정한 결과는 다음과 같다: Nano CPU ($\sim$$42$\,ms/layer),
-AGX CPU ($\sim$$17.6$\,ms/layer), Nano CUDA ($\sim$$1.5$\,ms/layer).
-AGX Orin MAXN 은 동일 decode 조건에서 Nano CUDA 대비 약 16 배 빠르다
-(그림~\ref{fig:tiers}).
+AGX Orin MAXN 1 대 + \texttt{jetson\_clocks} 적용, AGX Xavier 1 대)
+과 Mac coordinator 가 동일 LAN 상에 위치한다. OPT-350M (seq=64,
+fp16, no KV cache) 의 per-layer forward 시간을 라이브
+\texttt{ProfileLayers} 로 측정한 결과: Nano CPU $\sim$$84.7$\,ms,
+AGX CPU $\sim$$17.6$\,ms (legacy), Nano CUDA $\sim$$1.11$\,ms,
+AGX MAXN $\sim$$0.82$\,ms (그림~\ref{fig:tiers}). AGX MAXN 의 우위가
+Nano CUDA 대비 $1.36\times$ 에 그치는 이유는 OPT-350M 의 per-block
+연산량 ($\sim$750\,M FLOPS) 이 작아 CUDA launch + Python/PyTorch
+overhead 가 dominate 하는 launch-bound regime 에 있기 때문이며,
+진짜 이종성은 CUDA tier 와 CPU tier 사이의 $\sim$76$\times$ 격차에서
+나타난다.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.95\linewidth]{fig_tiers.pdf}
-  \caption{Tier 별 per-layer decode time (seq$=$64, log scale).
+  \caption{Tier 별 per-layer forward time (OPT-350M seq$=$64, log scale).
   CPU tier 와 CUDA tier 가 두 자릿수 ms 차이로 분리되며, AGX
   MAXN 은 Nano CUDA 대비 다시 한 자릿수 빠르다 --- placement 가
   다뤄야 할 이종성의 시각적 anchor.}
@@ -593,9 +599,11 @@ throughput 향상을 제공하면서도 $C\!\geq\!4$ 의 placement 순서를
 향후 과제는 다음과 같다. (i) $R$ 을 single backup 에서 backup list
 로 확장하여 cascading failure 에 대응, (ii) 7B INT4 의 memory-bound
 regime 측정 (본 1B 측정에서 이미 Nano memory pressure 가 운용 한계
-로 드러난 바 있음), (iii) 식 (\ref{eq:rank}) 의 $\mu(\psi)$ 와
-$\gamma_{\mathrm{stage}}$ 에 대한 hyper-parameter
-$(C_\star, P, \gamma_{\mathrm{stage}})$ 의 라이브 calibration.
+로 드러난 바 있음, 동시에 AGX MAXN 의 raw FLOPS 우위가 onset 되는
+compute-bound regime 진입 점도 그 자리에서 측정 가능), (iii) 식
+(\ref{eq:rank}) 의 $\mu(\psi)$ 와 $\gamma_{\mathrm{stage}}$ 에 대한
+hyper-parameter $(C_\star, P, \gamma_{\mathrm{stage}})$ 의 라이브
+calibration.
 Subset enumeration, per-hop overhead $\gamma_{\mathrm{hop}}$,
 multi-stream interference multiplier $\mu(\psi)$, stage-count
 페널티 $\gamma_{\mathrm{stage}}|\psi|$ 는 본 논문에서 모두
