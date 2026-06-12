@@ -181,13 +181,14 @@ EdgeShard~\cite{zhang2024edgeshard} 는 DP 기반 latency-optimal layer
 placement 를, Jupiter~\cite{ye2025jupiter} 는 명시적 TBT-SLO 제약
 하의 throughput-optimal placement 를 추가했다. 그러나 이들 시스템은
 data center 에서 통용되던 두 가지 가정에 의존한다.
-첫째, \textbf{균질성}: 본 연구의 6-worker Jetson fleet (AGX Xavier
-coordinator 포함) 에서 Nano CPU
-는 Nano CUDA 대비 per-layer 시간이 약 $76\times$ 느리고, AGX Orin
-MAXN 은 Nano CUDA 대비 약 $1.36\times$ 빠르다 (OPT-350M seq=64
-forward). 균질한 fleet 에서 layer placement 는 단순한 반올림
-문제이지만, CUDA tier 와 CPU tier 사이 두 자릿수 격차가 존재하는
-환경에서는 placement 가 시스템 전체 throughput 을 좌우한다. 둘째, \textbf{신뢰성}: edge board 는 빈번히
+첫째, \textbf{균질성}: edge fleet 은 AGX Orin 과 Orin Nano 같이
+성능 등급이 다른 GPU 보드가 혼재하며 CPU-only 보드까지 포함될 수
+있다. 본 연구의 6-worker Jetson fleet 에서 AGX MAXN 은 Nano CUDA
+대비 $1.36\times$ 빠르고 (OPT-350M seq=64 forward 의 launch-bound
+regime 에선 일부만 노출), Nano CPU 보드를 포함하면 fleet 내 격차가
+$\sim$$76\times$ 까지 확장된다. 균질한 fleet 에서 placement 는
+단순한 반올림 문제이지만, 두 자릿수 격차 환경에서는 placement 가
+시스템 전체 throughput 을 좌우한다. 둘째, \textbf{신뢰성}: edge board 는 빈번히
 crash 하며 SD card 가 가득 차거나 network 가 끊긴다. 본 연구의
 measurement campaign 동안 다수의 board 에서 위 세 가지 장애가 모두
 관측되었다. 장애를 예외 경로로 처리하는 placement 는 첫 worker crash
@@ -410,12 +411,13 @@ deployment 가 Jetson-only 로 구성된다 — Mac 등 x86 외부 호스트
 불필요. OPT-350M (seq=64, fp16, no KV cache) 의 per-layer forward
 시간을 라이브 \texttt{ProfileLayers} 로 측정한 결과: Nano CPU
 $\sim$$84.7$\,ms, AGX CPU $\sim$$17.6$\,ms (legacy), Nano CUDA
-$\sim$$1.11$\,ms, AGX MAXN $\sim$$0.82$\,ms (그림~\ref{fig:tiers}). AGX MAXN 의 우위가
-Nano CUDA 대비 $1.36\times$ 에 그치는 이유는 OPT-350M 의 per-block
-연산량 ($\sim$750\,M FLOPS) 이 작아 CUDA launch + Python/PyTorch
-overhead 가 dominate 하는 launch-bound regime 에 있기 때문이며,
-진짜 이종성은 CUDA tier 와 CPU tier 사이의 $\sim$76$\times$ 격차에서
-나타난다.
+$\sim$$1.11$\,ms, AGX MAXN $\sim$$0.82$\,ms (그림~\ref{fig:tiers}). 본 fleet 은
+두 GPU tier (AGX Orin, Orin Nano) 와 CPU tier 를 모두 포함한다.
+AGX MAXN 의 Nano CUDA 대비 $1.36\times$ 우위는 OPT-350M 의
+per-block 연산량 ($\sim$750\,M FLOPS) 이 작아 두 CUDA device 모두
+launch-bound regime 에 있기 때문이며, 3B 이상 모델에서 AGX FLOPS
+우위가 expose 된다 (Nano memory 한계 밖). Nano CPU 보드를 포함하면
+fleet 내 격차가 $\sim$76$\times$ 까지 확장된다.
 
 \begin{figure}[t]
   \centering

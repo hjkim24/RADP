@@ -8,13 +8,14 @@ latency-optimal layer placement via dynamic programming, and
 Jupiter~\cite{ye2025jupiter} pushed throughput-optimal placement with
 explicit Token-Between-Time (TBT) constraints.  Yet these systems
 were built around two assumptions inherited from the data center
-that the edge regime breaks.  First, \emph{homogeneity}: on our
-6-worker Jetson fleet (plus an AGX Xavier coordinator), Nano CPU
-is $\sim$76$\times$ slower per
-layer than Nano CUDA, and AGX Orin MAXN is $1.36\times$ faster than
-Nano CUDA at OPT-350M seq=64 forward --- the CUDA-vs-CPU gap
-dominates and is what makes placement decisions structurally
-sensitive (\S\ref{sec:eval:setup}).  Second,
+that the edge regime breaks.  First, \emph{homogeneity}: edge
+fleets routinely mix GPU tiers (AGX Orin and Orin Nano) and
+sometimes CPU-only boards.  On our 6-worker Jetson fleet (plus
+AGX Xavier coordinator), AGX MAXN is $1.36\times$ faster than
+Nano CUDA at OPT-350M seq=64 (launch-bound regime; larger models
+would expose more), and including Nano CPU boards extends the
+within-fleet gap to $\sim$76$\times$
+(\S\ref{sec:eval:setup}).  Second,
 \emph{reliability}: boards crash, SD cards fill up, networks
 partition.  During the measurement campaign behind this paper we
 encountered all three on multiple boards, and placement that

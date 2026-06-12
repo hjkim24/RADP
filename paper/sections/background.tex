@@ -22,14 +22,15 @@ prefill time, so the chain hop is bandwidth-cheap but
 latency-binding: every token pays the round trip.
 
 Edge heterogeneity dominates data-center heterogeneity by an order
-of magnitude. On our fleet, Nano CPU is $\sim$76$\times$ slower
-per layer than Nano CUDA, and AGX Orin MAXN is $1.36\times$ faster
-than Nano CUDA at OPT-350M seq$=$64 forward (\S\ref{sec:eval:setup}).
-The CUDA-vs-CPU gulf, not the modest AGX speedup, is what drives
-placement: in a homogeneous data-center setup, placement is a
-rounding question; on a fleet where a single slow stage can be
-two orders of magnitude slower than the rest, placement is the
-only thing that matters.
+of magnitude. Edge fleets mix GPU tiers (AGX Orin and Orin Nano)
+and sometimes CPU-only boards. On our fleet, AGX MAXN is
+$1.36\times$ faster than Nano CUDA at OPT-350M seq$=$64
+(launch-bound regime; larger models would expose more,
+\S\ref{sec:eval:setup}), and the two Nano CPU boards extend the
+within-fleet gap to $\sim$76$\times$. In a homogeneous data-center
+setup, placement is a rounding question; on a fleet where a single
+slow stage can be two orders of magnitude slower than the rest,
+placement is the only thing that matters.
 
 Edge \emph{reliability} is also categorically worse than the data
 center. During the measurement campaign behind this paper we
