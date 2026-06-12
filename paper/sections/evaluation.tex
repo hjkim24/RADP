@@ -11,12 +11,13 @@
 
 \subsection{Setup}\label{sec:eval:setup}
 
-\textbf{Fleet.} Eight Jetson workers (six Orin Nano 8\,GB, one AGX
-Orin MAXN + \texttt{jetson\_clocks}, one AGX Xavier) plus a
-Mac-hosted coordinator on the same LAN. Live \texttt{ProfileLayers}
-on OPT-350M (seq$=$64, fp16, no KV): Nano CPU $\sim$84.7\,ms,
-AGX CPU $\sim$17.6\,ms (legacy), Nano CUDA $\sim$1.11\,ms,
-AGX MAXN $\sim$0.82\,ms. AGX MAXN is only $1.36\times$ faster than
+\textbf{Fleet.} Six Jetson workers (five Orin Nano 8\,GB, one AGX
+Orin MAXN + \texttt{jetson\_clocks}) plus one AGX Xavier acting as
+coordinator (CPU mode, Python 3.9) on the same LAN --- the entire
+deployment is Jetson-only, no x86 host required. Live
+\texttt{ProfileLayers} on OPT-350M (seq$=$64, fp16, no KV):
+Nano CPU $\sim$84.7\,ms, AGX CPU $\sim$17.6\,ms (legacy),
+Nano CUDA $\sim$1.11\,ms, AGX MAXN $\sim$0.82\,ms. AGX MAXN is only $1.36\times$ faster than
 Nano CUDA --- not the order-of-magnitude AGX FLOPS would predict ---
 because OPT-350M's $\sim$750\,M FLOPS/block leaves both CUDA devices
 launch-bound. The real heterogeneity is the $\sim$76$\times$

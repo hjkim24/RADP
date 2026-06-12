@@ -95,14 +95,19 @@ ax.set_yticklabels(row_labels)
 ax.set_xticks(range(len(COLS)))
 ax.set_xticklabels([f"C={c}" for c in COLS])
 
-# Group annotations on the right
+# Group annotations placed BETWEEN matrix and colorbar so they don't
+# collide with either. We use ax.annotate with xycoords='data' for the
+# x position (just past the last column) and let pad on the colorbar
+# leave space for them.
 groups = ["OPT-350M, 3-stage", "OPT-350M, 4-stage", "Llama-3.2-1B, 4-stage"]
 group_rows = [(0, 3), (4, 7), (8, 11)]
+group_x = len(COLS) - 0.5 + 0.45  # just past the right edge of the heatmap
 for grp, (top, bot) in zip(groups, group_rows):
     mid = (top + bot) / 2
     ax.text(
-        len(COLS) - 0.4 + 0.7, mid, grp,
-        ha="left", va="center", fontsize=7.5, rotation=-90,
+        group_x, mid, grp,
+        ha="center", va="center", fontsize=7.5, rotation=-90,
+        clip_on=False,
     )
 
 ax.set_xlim(-0.5, len(COLS) - 0.5)
@@ -111,8 +116,9 @@ ax.tick_params(axis="both", which="both", length=0)
 for spine in ax.spines.values():
     spine.set_visible(False)
 
-# Colorbar
-cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.18, shrink=0.6)
+# Colorbar — extra pad to leave room for the group annotations between
+# the heatmap and the colorbar.
+cbar = fig.colorbar(im, ax=ax, fraction=0.04, pad=0.28, shrink=0.6)
 cbar.set_label("Aggregate throughput (tok/s)", fontsize=7)
 cbar.ax.tick_params(labelsize=6)
 

@@ -9,7 +9,8 @@ Jupiter~\cite{ye2025jupiter} pushed throughput-optimal placement with
 explicit Token-Between-Time (TBT) constraints.  Yet these systems
 were built around two assumptions inherited from the data center
 that the edge regime breaks.  First, \emph{homogeneity}: on our
-8-worker Jetson fleet, Nano CPU is $\sim$76$\times$ slower per
+6-worker Jetson fleet (plus an AGX Xavier coordinator), Nano CPU
+is $\sim$76$\times$ slower per
 layer than Nano CUDA, and AGX Orin MAXN is $1.36\times$ faster than
 Nano CUDA at OPT-350M seq=64 forward --- the CUDA-vs-CPU gap
 dominates and is what makes placement decisions structurally
@@ -69,7 +70,8 @@ We make the following contributions:
         channel, yielding a chain-length-independent
         17--47\% throughput gain at $C{=}16$ over synchronous
         chains (\S\ref{sec:design:async}).
-  \item Live measurement on an 8-worker Jetson fleet across
+  \item Live measurement on a 6-worker Jetson fleet (with an AGX
+        Xavier coordinator) across
         \emph{24} operating points on OPT-350M (two chain lengths
         $\times$ four architecture variants $\times$ three
         concurrency levels) plus a nine-cell 4-stage sub-matrix

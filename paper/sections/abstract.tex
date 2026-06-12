@@ -13,7 +13,8 @@ state, and \emph{asynchronous chain forwarding} with a
 nested-response unwind we found silently serializes nominally
 pipelined chains.
 
-Live measurement on an eight-worker Jetson fleet covers \emph{24}
+Live measurement on a six-worker Jetson fleet (with an AGX Xavier
+coordinator, Jetson-only deployment) covers \emph{24}
 operating points on OPT-350M (two chain lengths $\times$ four
 architecture variants $\times$ three concurrency levels) plus a
 nine-cell 4-stage sub-matrix on a 3$\times$-larger Llama-3.2-1B. Latency-optimized placement dominates throughput-

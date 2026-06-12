@@ -131,7 +131,8 @@
       infeasible region 이 제거된다. 두 가지 runtime 기법 ---
       asynchronous mirror cache 와 asynchronous chain forwarding ---
       이 결합 최적화를 실 edge fleet 위에서 운용 가능하게 만든다.
-      8-worker Jetson fleet 에서 OPT-350M 24 cell 과 Llama-3.2-1B
+      Worker 6 대와 AGX Xavier coordinator 로 구성된 Jetson-only
+      fleet 에서 OPT-350M 24 cell 과 Llama-3.2-1B
       9 cell 을 측정한 결과, latency-optimal placement 가
       concurrency $C\!\geq\!4$ 의 모든 점에서 throughput-optimal
       placement 를 압도하였고, async chain 은 sync chain 대비
@@ -150,8 +151,9 @@
       back into the placement constraint. Two runtime mechanisms ---
       an asynchronous mirror cache and asynchronous chain forwarding
       with a \texttt{ResultReady} reverse channel --- make the joint
-      optimization viable on a real edge fleet. On an eight-worker
-      Jetson fleet covering 24 OPT-350M cells and a 9-cell
+      optimization viable on a real edge fleet. On a six-worker
+      Jetson fleet (with an AGX Xavier coordinator, Jetson-only
+      deployment) covering 24 OPT-350M cells and a 9-cell
       Llama-3.2-1B sub-matrix, latency-optimized placement dominates
       throughput-optimized placement at every point with $C\!\geq\!4$,
       and asynchronous chain adds $17$--$47\%$ throughput at $C\!=\!16$.
@@ -179,7 +181,8 @@ EdgeShard~\cite{zhang2024edgeshard} 는 DP 기반 latency-optimal layer
 placement 를, Jupiter~\cite{ye2025jupiter} 는 명시적 TBT-SLO 제약
 하의 throughput-optimal placement 를 추가했다. 그러나 이들 시스템은
 data center 에서 통용되던 두 가지 가정에 의존한다.
-첫째, \textbf{균질성}: 본 연구의 8-worker Jetson fleet 에서 Nano CPU
+첫째, \textbf{균질성}: 본 연구의 6-worker Jetson fleet (AGX Xavier
+coordinator 포함) 에서 Nano CPU
 는 Nano CUDA 대비 per-layer 시간이 약 $76\times$ 느리고, AGX Orin
 MAXN 은 Nano CUDA 대비 약 $1.36\times$ 빠르다 (OPT-350M seq=64
 forward). 균질한 fleet 에서 layer placement 는 단순한 반올림
@@ -219,7 +222,8 @@ performance 중 하나를 반드시 양보해야 한다.
   \item \texttt{ResultReady} reverse channel 을 갖춘 asynchronous
         chain forwarding. Chain length 와 무관하게 $C\!=\!16$ 에서
         $17$--$47\%$ 의 throughput 향상.
-  \item 8-worker Jetson fleet 라이브 측정. OPT-350M 24 cell +
+  \item 6-worker Jetson fleet (AGX Xavier coordinator 로 구성된
+        Jetson-only deployment) 라이브 측정. OPT-350M 24 cell +
         Llama-3.2-1B 9 cell --- $L\!\succ\!T$ dominance 가 두 model
         size 에 걸쳐 $C\!\geq\!4$ 에서 유지됨. Worker SIGKILL 시
         \sys{} 는 60/60 token 을 전달하는 반면 recovery 가 없는
@@ -399,13 +403,14 @@ correctness 는 유지되지만 (모든 token 이 일관되게 전달됨), heart
 \section{실  험}
 % =======================================================================
 
-\textbf{환경.} 8-worker Jetson fleet (Orin Nano 8\,GB 6 대,
-AGX Orin MAXN 1 대 + \texttt{jetson\_clocks} 적용, AGX Xavier 1 대)
-과 Mac coordinator 가 동일 LAN 상에 위치한다. OPT-350M (seq=64,
-fp16, no KV cache) 의 per-layer forward 시간을 라이브
-\texttt{ProfileLayers} 로 측정한 결과: Nano CPU $\sim$$84.7$\,ms,
-AGX CPU $\sim$$17.6$\,ms (legacy), Nano CUDA $\sim$$1.11$\,ms,
-AGX MAXN $\sim$$0.82$\,ms (그림~\ref{fig:tiers}). AGX MAXN 의 우위가
+\textbf{환경.} Worker 6 대 (Orin Nano 8\,GB 5 대 + AGX Orin MAXN
+1 대 + \texttt{jetson\_clocks} 적용) 와 coordinator 1 대 (AGX
+Xavier, CPU mode, Python 3.9) 가 동일 LAN 상에 위치하며 전체
+deployment 가 Jetson-only 로 구성된다 — Mac 등 x86 외부 호스트
+불필요. OPT-350M (seq=64, fp16, no KV cache) 의 per-layer forward
+시간을 라이브 \texttt{ProfileLayers} 로 측정한 결과: Nano CPU
+$\sim$$84.7$\,ms, AGX CPU $\sim$$17.6$\,ms (legacy), Nano CUDA
+$\sim$$1.11$\,ms, AGX MAXN $\sim$$0.82$\,ms (그림~\ref{fig:tiers}). AGX MAXN 의 우위가
 Nano CUDA 대비 $1.36\times$ 에 그치는 이유는 OPT-350M 의 per-block
 연산량 ($\sim$750\,M FLOPS) 이 작아 CUDA launch + Python/PyTorch
 overhead 가 dominate 하는 launch-bound regime 에 있기 때문이며,
