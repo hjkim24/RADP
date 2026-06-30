@@ -2005,6 +2005,26 @@ replay 22 positions through chain head on-2[1..9]      ← 새 chain head (헤�
 
 ---
 
+## Phase OPS-2 — Auto-schedule placement 캐싱 + 백그라운드 solve + search-space config 노출 (2026-07-01)
+
+**목표**: Phase OPS에서 발견한 7-device auto solve ~9분 문제 대응. 알고리즘 결과(brute-force 최적)는 그대로 두고 운영 통증(재시작마다 9분 + solve 중 SIGTERM crash-loop)을 제거.
+
+**구현**:
+- [radp/coordinator/placement_cache.py](radp/coordinator/placement_cache.py) — solved (placement, recovery)를 fleet **구조 지문**(device id+class, model, layer 수, cost-model/search knob)으로 캐시. 측정 프로파일(run-to-run drift)은 키에서 제외 → 동일 함대 재시작 시 적중. atomic write, `RADP_PLACEMENT_CACHE=""`로 비활성화.
+- [radp/coordinator/server.py](radp/coordinator/server.py) — `auto_schedule()`이 solve 전 캐시 조회, 후 저장 (적중 시 DP 스킵). `serve()`가 auto 경로(profile→solve→deploy)를 **daemon 스레드**로 실행 → 메인 스레드가 `wait_for_termination()` 점유 → SIGTERM 즉시 처리(crash-loop 제거). `enable_subset_search`/`max_search_devices`를 CoordinatorConfig + from_yaml로 노출.
+- [deploy/roles/radp-coordinator/templates/cluster.yaml.j2](deploy/roles/radp-coordinator/templates/cluster.yaml.j2) + group_vars — 두 knob 배선 (escape hatch: `enable_subset_search: false` → M! 후보, `max_search_devices: <M` → 서치 스킵 즉시).
+- [tests/test_placement_cache.py](tests/test_placement_cache.py) — 지문 불변성/민감도, save/load 라운드트립, miss/corrupt/disable 케이스.
+
+**검증 결과 (로컬 + 라이브 ax-1, 2026-07-01)**:
+- 단위: placement_cache 7개 + 전체 non-slow 105개 통과.
+- 라이브 ax-1 (브랜치 배포 후): coordinator가 **listening 중 백그라운드 solve** (startup 블록 제거), 9분 solve 내내 **NRestarts=0** (crash-loop 제거).
+- placement: `ao-2[1-15] → on-1[16-17] → on-6[18-19] → ao-1[20-23] → on-2[24]` (ao-2 head 유지), cache MISS→write 확인.
+- **재시작 → cache HIT**: placement 준비 ~9분 → **25초**, sidecar `dp=0.0ms`. e2e 추론 정상 (TTFT 0.21s, TBT 0.16s, converged).
+
+**의도된 한계**: 첫 solve(또는 함대 구성 변경 후)는 여전히 ~9분(1회). 캐시 키가 coarse라 *within-class* 큰 성능 변화(예: AGX power mode 강등)는 감지 못 함 — 그땐 캐시 삭제 또는 `RADP_PLACEMENT_CACHE=""`. 알고리즘 가속(접근 C: k! 순열 휴리스틱 대체)은 미착수 — brute-force 최적 재현성 보존 위해 별도 offline 검증 과제로 남김.
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
