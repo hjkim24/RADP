@@ -1973,6 +1973,38 @@ replay 22 positions through chain head on-2[1..9]      ← 새 chain head (헤�
 
 ---
 
+## Phase OPS — ao-2 JetPack 6.1 업그레이드 + cuSPARSELt 플레이북 보강 (2026-06-30)
+
+**목표**: JP5에 묶여 CPU 워커로만 쓰던 ao-2(AGX Orin 32GB)를 JetPack 6.1로 재플래시해 ao-1과 동일한 CUDA 워커로 함대 복귀시키고, 그 과정에서 드러난 torch wheel 의존성 누락을 플레이북에 반영.
+
+**구현**:
+- ao-2 물리 재플래시: NVIDIA SDK Manager(x86 Ubuntu 22.04 호스트) → JetPack **6.1 Rev1** (L4T R36.4.0 / Ubuntu 22.04 / Python 3.10 / CUDA 12.6 + cuDNN 9.3). recovery 진입은 `sudo reboot forced-recovery` (구 JP5 OS에서) + USB-C 포트 교체로 성공. OEM Pre-config로 `isp`/`isp` 계정 주입.
+- [deploy/inventory.ini](deploy/inventory.ini) — ao-2 활성화, JP5 오버라이드(python3.9 / 빈 wheel url / cpu device) 전부 제거 → group_vars 기본값(python3 + jp/v61 CUDA wheel) 사용. `ansible_become_password=isp`.
+- [deploy/roles/common/tasks/main.yml](deploy/roles/common/tasks/main.yml) — **cuSPARSELt 설치 태스크 추가** (stat 체크로 멱등, CUDA-wheel 호스트 한정).
+- [deploy/group_vars/all.yml](deploy/group_vars/all.yml) — `jetson_cusparselt_version: "0.6.3"` 추가.
+
+**찾아낸 버그**: NVIDIA Jetson torch wheel(2.5 nv24.08)이 `libcusparseLt.so.0`(cuSPARSELt)에 동적 링크하는데, 이 lib은 base CUDA 툴킷/cuDNN이 아니라 **TensorRT(SDK Components)에만 딸려옴**. ao-2를 TensorRT 없이 플래시해서 `import torch`가 ImportError로 죽었고, common 역할의 torch 검증 태스크가 실패 → 플레이북이 거기서 멈춰 radp deps(numpy) + worker 서비스 play 미실행. cuSPARSELt 0.6.3(torch가 빌드된 버전)을 NVIDIA tegra local repo로 설치해 해결. ao-1이 멀쩡했던 건 TensorRT까지 깔려 cuSPARSELt가 이미 있었기 때문으로 추정.
+
+**검증 결과**:
+- `torch 2.5.0a0+...nv24.08`, `cuda.is_available()=True`, device=Orin
+- numpy 1.26.4 (numpy<2 충족), `import radp` OK
+- radp-worker systemd: active + enabled, `listening on 0.0.0.0:50051`, heartbeat→ax-1(50050) 1s 간격
+- 재실행 PLAY RECAP: ok=17 changed=5 failed=0, cuSPARSELt 태스크 skip(멱등 확인)
+
+**실 함대 placement 검증 (2026-06-30, auto 모드 재배포 후)**:
+- ao-1도 32GB 모듈 확인(`free -h` 29Gi, Developer Kit, R36.4.3). 두 AGX 모두 32GB.
+- ax-1 coordinator를 auto 모드로 재배포·재시작 → auto_schedule이 7-worker(ao-1/ao-2/on-1/on-2/on-3/on-4/on-6) 재프로파일링.
+- **DP가 선택한 5-stage placement (subset search가 느린 CPU Nano on-3/on-4 제외)**:
+  `ao-2[1-14] → ao-1[15-17] → on-6[18-19] → on-1[20-21] → on-2[22-24]`, max_stage=12.8ms, converged=True.
+  → **ao-2가 head로 24개 중 14개 layer 담당** (DP가 신규 AGX를 최속 device로 인식). recovery R(ao-2)=ao-1.
+- e2e 추론(run_e2e_remote, 3 req): TTFT mean 0.259s, TBT p50 0.171s, 정상 디코딩. coordinator chain-link 로그로 5-stage 실행 확인.
+
+**찾아낸 운영 문제 (auto 모드 7-device 스케일)**: auto_schedule의 `solve_alternating_best_order`가 M=7 + subset_search로 **13692 후보**를 enumerate → Xavier(ax-1) CPU에서 DP solve가 **~543s(9분)** 소요. 그 사이 배포 핸들러의 restart(SIGTERM)가 solve를 끊으면 TimeoutStopSec(90s) 후 SIGKILL → 재프로파일·재solve crash-loop. 1회 완주 후엔 안정. `enable_subset_search`/`max_search_devices`가 config로 노출 안 됨(scheduler.py 하드코딩 기본값) — 향후 group_vars 노출 + solve 타임박스/캐싱 필요.
+
+**의도된 한계**: ao-2 hostname이 `ubuntu`로 남음(기능 무관, device_id는 inventory에서). IP 115.145.158.252는 고정(사용자 확인). 웹 `/api/generate` SSE의 per-token `stages`는 mirror 표시라 단일 device로 보일 수 있음(실 chain은 coordinator 로그 기준).
+
+---
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).

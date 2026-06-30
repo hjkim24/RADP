@@ -120,6 +120,37 @@
   when: jetson_torch_wheel_url | length == 0
   tags: [install]
 
+# NVIDIA's Jetson torch wheels (torch 2.5 nv24.08) link against cuSPARSELt,
+# which is NOT part of the base CUDA toolkit / cuDNN — it only ships with
+# TensorRT in the SDK Components. Hosts flashed without TensorRT (e.g. ao-2,
+# 2026-06-30) lack libcusparseLt.so.0, so `import torch` fails. Install the
+# standalone NVIDIA tegra local repo on any CUDA-wheel host that's missing it.
+- name: Check for cuSPARSELt (required by Jetson torch wheel)
+  ansible.builtin.stat:
+    path: /usr/lib/aarch64-linux-gnu/libcusparseLt.so.0
+  register: _cusparselt
+  when: jetson_torch_wheel_url | length > 0
+  tags: [install]
+
+- name: Install cuSPARSELt (NVIDIA tegra local repo)
+  ansible.builtin.shell: |
+    set -e
+    cd /tmp
+    V={{ jetson_cusparselt_version | default('0.6.3') }}
+    DEB=cusparselt-local-tegra-repo-ubuntu2204-${V}_1.0-1_arm64.deb
+    wget -q "https://developer.download.nvidia.com/compute/cusparselt/${V}/local_installers/${DEB}" -O "$DEB"
+    dpkg -i "$DEB"
+    cp /var/cusparselt-local-tegra-repo-ubuntu2204-${V}/cusparselt-*-keyring.gpg /usr/share/keyrings/
+    apt-get update -o Dir::Etc::sourcelist="sources.list.d/cusparselt-local-tegra-ubuntu2204-${V}.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+    apt-get -y install libcusparselt0 libcusparselt-dev
+  args:
+    executable: /bin/bash
+  become: true
+  when:
+    - jetson_torch_wheel_url | length > 0
+    - not _cusparselt.stat.exists
+  tags: [install]
+
 - name: Verify torch is available (any source)
   ansible.builtin.command: "{{ radp_install_dir }}/.venv/bin/python -c \"import torch; print(torch.__version__, torch.cuda.is_available())\""
   register: torch_check

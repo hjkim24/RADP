@@ -20,6 +20,14 @@ radp_python_executable: "python3"
 # NVIDIA NGC container). The play will detect+warn.
 jetson_torch_wheel_url: ""
 
+# NVIDIA's Jetson torch wheel (2.5 nv24.08) dynamically links cuSPARSELt, which
+# is NOT in the base CUDA toolkit / cuDNN — it ships only with TensorRT in the
+# SDK Components. Hosts flashed without TensorRT miss libcusparseLt.so.0, so
+# `import torch` dies with an ImportError. The common role installs this
+# standalone NVIDIA tegra repo on any CUDA-wheel host that lacks it. Match the
+# version your torch wheel was built against (0.6.3 for jp/v61 nv24.08).
+jetson_cusparselt_version: "0.6.3"
+
 # ---- Model + device ---------------------------------------------------------
 model_id: "facebook/opt-125m"
 model_dtype: "float16"           # float32 / float16 / bfloat16
