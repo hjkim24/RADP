@@ -16,6 +16,8 @@ coordinator:
   hop_overhead_seconds: {{ hop_overhead_seconds | default(0.0) }}
   target_concurrency: {{ target_concurrency | default(1) }}
   thread_pool_size: {{ thread_pool_size | default(30) }}
+  enable_subset_search: {{ enable_subset_search | default(true) | string | lower }}
+  max_search_devices: {{ max_search_devices | default(8) }}
   chain_mode: {{ chain_mode | default('sync') }}
   slo:
     ttft_seconds: {{ slo_ttft_seconds | default(0.3) }}

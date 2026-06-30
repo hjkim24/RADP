@@ -63,6 +63,17 @@ slo_ttft_seconds: 0.3
 slo_tbt_seconds: 0.1
 activation_bytes: 1048576    # rough per-stage activation size in bytes
 
+# Auto-scheduler search space (auto mode only). The DP enumerates
+# Σ_{k=2}^M P(M,k) (subset, permutation) candidates — ~13.7k / ~9 min on a
+# Xavier coordinator at M=7 devices. The coordinator caches each solve keyed on
+# the fleet composition (see radp/coordinator/placement_cache.py), so the full
+# search is a one-time cost per fleet; set RADP_PLACEMENT_CACHE="" to disable.
+# These knobs are escape hatches to cut first-solve latency by hand:
+#   enable_subset_search: false  → only full-set permutations (M! candidates)
+#   max_search_devices:   <M     → skip the search, use heartbeat order (instant)
+enable_subset_search: true
+max_search_devices: 8
+
 # Profiling knobs (auto mode only). Defaults are sensible for OPT-style
 # models on edge hardware; tune up if you want tighter measurement.
 profiling_layer_warmup: 1

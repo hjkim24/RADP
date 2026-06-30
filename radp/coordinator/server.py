@@ -41,6 +41,7 @@ from radp.common.types import (
 )
 from radp.coordinator.failure_detector import FailureDetector, HeartbeatRecord
 from radp.coordinator.gateway import RequestGateway
+from radp.coordinator import placement_cache
 from radp.coordinator.profile_orchestrator import ProfileOrchestrator
 from radp.coordinator.recovery_plan import inverse_recovery
 from radp.coordinator.scheduler import Scheduler
@@ -106,6 +107,19 @@ class CoordinatorConfig:
     # placements with more stages cost proportionally more under saturation.
     target_concurrency: int = 1
     thread_pool_size: int = 30
+    # ---- Auto-scheduler search-space knobs ------------------------------
+    # Forwarded to Scheduler.solve_alternating_best_order. Both default to the
+    # scheduler's own defaults (full subset+permutation search). The DP cost
+    # grows as Σ_{k=2}^M P(M,k) ≈ 2.7·M! — ~13.7k candidates / ~9 min on the
+    # Xavier coordinator at M=7. Operators can trade placement optimality for
+    # solve speed without a code change:
+    #   enable_subset_search=false → only full-set permutations (M! candidates)
+    #   max_search_devices=<M      → skip the search entirely, use spec order
+    # The persistent placement cache (see placement_cache.py) makes the full
+    # search a one-time cost per fleet composition, so these are escape hatches
+    # for first-solve latency, not the primary fix.
+    enable_subset_search: bool = True
+    max_search_devices: int = 8
     # EXP-D3 Phase F chain mode:
     #   sync  — Phase 1a/1b synchronous chain (each in-flight stream
     #            occupies a thread on every chain stage). Default for
@@ -179,6 +193,8 @@ class CoordinatorConfig:
             hop_overhead_seconds=float(coord.get("hop_overhead_seconds", 0.0)),
             target_concurrency=int(coord.get("target_concurrency", 1)),
             thread_pool_size=int(coord.get("thread_pool_size", 30)),
+            enable_subset_search=bool(coord.get("enable_subset_search", True)),
+            max_search_devices=int(coord.get("max_search_devices", 8)),
             chain_mode=str(coord.get("chain_mode", "sync")),
             profiling_layer_warmup=int(profiling.get("layer_warmup", 1)),
             profiling_layer_repeats=int(profiling.get("layer_repeats", 3)),
@@ -312,6 +328,9 @@ class CoordinatorServer:
         self._server: grpc.Server | None = None
         self._gateway_lock = threading.Lock()
         self._web_thread: threading.Thread | None = None
+        # Auto mode runs profile+solve+deploy here so the main thread can own
+        # wait_for_termination() and respond to SIGTERM during a long solve.
+        self._schedule_thread: threading.Thread | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -329,13 +348,41 @@ class CoordinatorServer:
         """
         if self.config.schedule_mode == "auto":
             self.start()
-            self.auto_schedule()
-            self.deploy()
+            # Run profile → DP solve → deploy off the main thread. The solve can
+            # take minutes (Σ P(M,k) candidates); on the main thread the process
+            # couldn't act on SIGTERM until it finished, so a deploy-time restart
+            # hit systemd's TimeoutStopSec → SIGKILL → re-solve crash-loop. A
+            # daemon thread lets wait_for_termination() own the main thread and
+            # shut down promptly on signal. Generate RPCs reply UNAVAILABLE until
+            # the gateway is installed, exactly as during a synchronous solve.
+            self._schedule_thread = threading.Thread(
+                target=self._auto_schedule_and_deploy,
+                name="radp-auto-schedule",
+                daemon=True,
+            )
+            self._schedule_thread.start()
         else:
             self.deploy()
             self.start()
-        # Gateway is only created at the end of deploy(); guarantee it here.
-        self._ensure_gateway()
+            # Gateway is only created at the end of deploy(); guarantee it here.
+            self._ensure_gateway()
+
+    def _auto_schedule_and_deploy(self) -> None:
+        """Background worker for auto mode: profile → solve → deploy → gateway.
+
+        Runs off the main thread (see serve()). On failure the coordinator stays
+        up serving heartbeats — a recovered worker can rejoin and a later restart
+        retries — rather than taking the process down.
+        """
+        try:
+            self.auto_schedule()
+            self.deploy()
+            self._ensure_gateway()
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "auto-schedule/deploy failed; coordinator is up but has no "
+                "placement (Generate will reply UNAVAILABLE until a restart)"
+            )
 
     def deploy(self) -> None:
         """Push primary stages, then backup stages, to their target workers.
@@ -595,11 +642,51 @@ class CoordinatorServer:
             thread_pool_size=self.config.thread_pool_size,
         )
 
-        log.info("auto-scheduling: solving DP (devices=%d, layers=%d)",
-                 len(devices), len(layer_profiles))
-        t_dp_start = time.perf_counter()
-        result = Scheduler(spec).solve_alternating_best_order()
-        dp_ms = (time.perf_counter() - t_dp_start) * 1000
+        # Placement is deterministic in the fleet's structural inputs, so a
+        # restart with an unchanged fleet can reuse the (~9 min) solve result
+        # instead of recomputing it. See placement_cache.py for the trade-off
+        # (keyed on device identity+class, not the drifting measured profiles).
+        fingerprint = placement_cache.compute_fingerprint(
+            device_ids=[str(d.id) for d in devices],
+            device_classes={str(d): records[d].device_class for d in records},
+            model_id=self.config.model_id,
+            num_layers=len(layer_profiles),
+            params={
+                "optimization_mode": self.config.optimization_mode,
+                "blend_alpha": self.config.blend_alpha,
+                "eager_backup": self.config.eager_backup,
+                "activation_bytes": activation_bytes,
+                "hop_overhead_seconds": self.config.hop_overhead_seconds,
+                "target_concurrency": self.config.target_concurrency,
+                "thread_pool_size": self.config.thread_pool_size,
+                "slo_ttft_seconds": self.config.slo_ttft_seconds,
+                "slo_tbt_seconds": self.config.slo_tbt_seconds,
+                "enable_subset_search": self.config.enable_subset_search,
+                "max_search_devices": self.config.max_search_devices,
+            },
+        )
+        cache_path = placement_cache.default_cache_path()
+        cached = placement_cache.load(cache_path, fingerprint)
+        if cached is not None:
+            log.info(
+                "auto-scheduling: placement cache HIT (fingerprint=%s) — "
+                "reusing cached solve, skipping DP",
+                fingerprint[:12],
+            )
+            result = cached
+            dp_ms = 0.0
+        else:
+            log.info(
+                "auto-scheduling: cache MISS — solving DP (devices=%d, layers=%d)",
+                len(devices), len(layer_profiles),
+            )
+            t_dp_start = time.perf_counter()
+            result = Scheduler(spec).solve_alternating_best_order(
+                enable_subset_search=self.config.enable_subset_search,
+                max_search_devices=self.config.max_search_devices,
+            )
+            dp_ms = (time.perf_counter() - t_dp_start) * 1000
+            placement_cache.save(cache_path, fingerprint, result)
         log.info(
             "auto-scheduling: solution max_stage_time=%.4fs converged=%s iterations=%d",
             result.max_stage_time, result.converged, result.iterations,
