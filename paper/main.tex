@@ -15,7 +15,13 @@
 % IEEEtran (unlike acmart) auto-loads almost nothing, so every package the
 % body relies on is listed explicitly here.
 \usepackage{cite}                 % IEEE-style citation compression [1]-[3]
+\usepackage[T1]{fontenc}          % 8-bit T1 output encoding, required by newtx
 \usepackage{amsmath,amssymb,amsfonts}
+% Times-family fonts: IEEEtran defaults to Computer Modern (light/"plain"
+% looking); published IEEE Transactions use Times. newtx gives Times text +
+% matching Times math and MUST load after amsmath/amssymb.
+\usepackage{newtxtext}            % Times text
+\usepackage{newtxmath}            % matching Times math
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \usepackage{graphicx}
@@ -82,11 +88,11 @@ parallelism, fault tolerance, dynamic programming, heterogeneous devices.
 \IEEEpeerreviewmaketitle
 
 \input{sections/introduction}
+\input{sections/related}
 \input{sections/background}
 \input{sections/design}
 \input{sections/evaluation}
 \input{sections/discussion}
-\input{sections/related}
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
