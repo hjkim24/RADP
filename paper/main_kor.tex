@@ -184,7 +184,13 @@ Petals~\cite{borzunov2023petals,borzunov2023distributed}는 consumer
 GPU swarm에서의 collaborative inference를 시연했고,
 EdgeShard~\cite{zhang2024edgeshard}는 DP 기반 L-placement를,
 Jupiter~\cite{ye2025jupiter}는 명시적 TBT-SLO 제약 하의
-T-placement를 추가했다. 그러나 이들 시스템은
+T-placement를 추가했다. 동일 저널에서 Dai 등~\cite{dai2025joint}은
+이기종 edge의 cooperative DNN inference를 위해 device placement와
+model partitioning을 결합 최적화하여 pipeline throughput을 높이지만,
+one-shot DNN을 대상으로 하여 autoregressive decode의 per-token TBT
+제약, KV cache, recovery는 다루지 않는다. EdgeLLM~\cite{xu2025edgellm}은
+speculative decoding으로 LLM 추론을 가속하지만 단일 device에 국한되어
+multi-device placement와는 직교한다. 그러나 이들 시스템은
 데이터센터에서 통용되던 두 가지 가정에 의존한다.
 첫째, \textbf{균질성}: edge cluster는 AGX Orin과 Orin Nano 같이
 성능이 다른 GPU 보드가 혼재하며 CPU-only 보드까지 포함될 수
@@ -198,6 +204,12 @@ crash 하며 내부 스토리지가 가득 차거나 네트워크 장애가 발�
 측정 과정에서 다수의 보드에서 위 세 가지 장애가 모두
 관측되었다. 장애를 예외 경로로 처리하는 placement는 첫 worker crash
 시점에 진행 중이던 모든 stream을 잃는다.
+학습 영역에서는 FTPipeHD~\cite{chen2024ftpipehd}가 이기종 edge 상의
+pipeline-parallel training을 weight의 주기적 복제(이웃 노드 + central
+node)와 장애 시 생존 노드로의 재분할 및 weight 재fetch로 복구하지만,
+복구 단위가 model weight이고 예산이 training batch(초 단위)라 ---
+per-token TBT 예산 안에서 in-flight KV cache까지 복원해야 하는
+decode에는 그대로 적용되지 않는다.
 
 기존 시스템은 레이어 배치 ($\psi$)와 복구 라우팅 ($R$)을
 별개 문제로 다룬다. EdgeShard의 DP는 어딘가에 모든 layer의

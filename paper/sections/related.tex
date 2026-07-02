@@ -19,6 +19,26 @@ placement modes --- the gap the 24-cell matrix in
 \S\ref{sec:eval:matrix} fills. Helix~\cite{mei2025helix}
 measures greedy placement's 2.38$\times$ tax on heterogeneous
 GPU fleets via max-flow, motivating DP-based approaches.
+Dai et al.~\cite{dai2025joint} jointly optimise device placement
+and model partitioning for cooperative DNN inference on
+heterogeneous edge, maximising throughput through a device
+pipeline --- but for one-shot DNNs, without the per-token TBT
+constraint, KV-cache state, or recovery that autoregressive
+decode demands. EdgeLLM~\cite{xu2025edgellm} instead accelerates
+LLM inference through speculative decoding on a \emph{single}
+device, orthogonal to multi-device placement.
+Fault tolerance itself has been addressed on the \emph{training}
+side: FTPipeHD~\cite{chen2024ftpipehd} sustains pipeline-parallel
+training across heterogeneous edge devices by periodically
+replicating weights (to a neighbour and to the central node)
+and, on a failure, re-partitioning the model over the survivors
+and re-fetching the missing weights before resuming. Its recovery
+unit is model weights and its budget is a training batch
+(seconds) --- neither transfers to decode, where recovery must
+fit within a per-token TBT bound and also restore the in-flight
+KV cache.
 \sys{} yields EdgeShard's and Jupiter's modes from the same DP
 via $\alpha$, co-optimises recovery through Eq.~\ref{eq:mem},
-and adds fault tolerance at the 4\,GB-per-peer frontier.
+and adds fault tolerance at the 4\,GB-per-peer frontier by
+rerouting a failed stage onto a pre-staged single backup within
+a per-token budget rather than re-partitioning.
