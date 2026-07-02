@@ -1,52 +1,44 @@
 % RADP: Recovery-Aware DP for Distributed LLM Inference on Edge Clusters
-% Target: OSDI/NSDI/EuroSys (systems venue, two-column, ~12 pages)
+% Target: IEEE Transactions on Mobile Computing (IEEEtran journal, two-column)
 %
 % Build:    pdflatex main && bibtex main && pdflatex main && pdflatex main
 % Or:       latexmk -pdf main.tex
 %
 % Sections are included from sections/*.tex so multiple authors can work
-% in parallel without main.tex merge conflicts.
+% in parallel without main.tex merge conflicts. The section bodies use only
+% standard LaTeX (\section, \cite, \ref, figure/table/algorithm), so they are
+% class-agnostic and needed no changes in the acmart -> IEEEtran port.
 
-\documentclass[10pt, sigconf, anonymous=false]{acmart}
+\documentclass[journal]{IEEEtran}
 
-% --- ACM metadata ------------------------------------------------------
-% Capstone submission: not a real ACM venue, so we suppress the ACM
-% reference block, CCS concepts list, and copyright stamp. acmart's
-% sigconf layout is reused only for the two-column formatting.
-\setcopyright{none}
-\acmConference[SKKU Capstone]{Sungkyunkwan University Capstone Design}{2026}{Suwon, Republic of Korea}
-\acmYear{2026}
-\acmISBN{}
-\acmDOI{}
-\settopmatter{printacmref=false, printccs=false, printfolios=true}
-
-% --- Common packages ---------------------------------------------------
+% --- Packages ----------------------------------------------------------
+% IEEEtran (unlike acmart) auto-loads almost nothing, so every package the
+% body relies on is listed explicitly here.
+\usepackage{cite}                 % IEEE-style citation compression [1]-[3]
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{multirow}
 \usepackage{subcaption}
 \usepackage{listings}
-\usepackage{algorithm}
-\usepackage{algpseudocode}
-% acmart already loads amsmath + amssymb; double-loading amssymb
-% triggers a "\Bbbk already defined" clash. amsmath we keep implicit
-% via acmart too.
-\usepackage{xcolor}      % for \todo color
+\usepackage{xcolor}               % for \todo color
 \usepackage{xspace}
-% Figure scripts emit PDF under paper/figures/. acmart already loads
-% graphicx via its bundled hyperref, so we only need the search path.
+\usepackage{textcomp}
+% hyperref last; hidelinks keeps clickable refs without coloured boxes,
+% which is the convention for IEEE camera-ready.
+\usepackage[hidelinks]{hyperref}
+
 \graphicspath{{figures/}}
 
 % --- Typesetting tweaks ------------------------------------------------
-% acmart loads microtype by default in final mode; we just give it more
-% room. emergencystretch lets TeX widen interword spacing as a last
-% resort to absorb the dozens of sub-20pt overfull boxes that
-% \texttt{} identifiers create in two-column layout. We do NOT use
-% \sloppy globally — it makes the body widen by ~1 page over the
-% 7-page budget. Per-paragraph \sloppy via \sloppypar{} would also
-% work but emergencystretch alone handles everything we have.
+% emergencystretch lets TeX widen interword spacing as a last resort to
+% absorb the sub-20pt overfull boxes that \texttt{} identifiers create in
+% two-column layout, without the whole-paper spread that global \sloppy
+% causes. Float separations are trimmed so a wide table + algorithm don't
+% cost an extra page.
 \setlength{\emergencystretch}{2em}
-% Slightly compress floats so a wide table + algorithm don't eat
-% an extra page of body text.
 \setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
 \setlength{\dbltextfloatsep}{8pt plus 2pt minus 2pt}
 \setlength{\intextsep}{6pt plus 2pt minus 2pt}
@@ -56,56 +48,39 @@
 \newcommand{\psiR}{$\psi$-R\xspace}
 \newcommand{\todo}[1]{{\color{red}\textbf{[TODO: #1]}}}
 
-% --- Title -------------------------------------------------------------
-% The [short] form sets the running head on odd pages; without it,
-% acmart shoves the full title up there and it overlaps the
-% authors line in the right-hand corner.
-%
-% "Recovery-Aware Layer Placement" already names both core ideas:
-% the "Recovery-Aware" adjective folds in fault-tolerance, and "DP"
-% inside the RADP acronym names the dynamic-programming approach.
-% Asynchronous chain forwarding stays a §3 contribution but does not
-% deserve the title slot.
-\title[\sys{}: Recovery-Aware Layer Placement for Edge LLM Inference]{\sys{}: Recovery-Aware Layer Placement for Distributed LLM Inference on Edge Clusters}
-
-% --- Authors -----------------------------------------------------------
-\author{Hakjae Kim}
-\email{hjkim24@g.skku.edu}
-\affiliation{%
-  \institution{Sungkyunkwan University}
-  \department{Department of Electronic and Electrical Engineering}
-  \city{Suwon}
-  \country{Republic of Korea}
-}
-
-\author{Wansu Lim}
-\authornote{Corresponding author.}
-\email{wansu.lim@skku.edu}
-\affiliation{%
-  \institution{Sungkyunkwan University}
-  \department{Department of Electronic and Electrical Engineering}
-  \city{Suwon}
-  \country{Republic of Korea}
-}
-
-% Short form for the running head on even pages — without this,
-% acmart auto-derives "Kim and Lim" but the spacing collides with
-% the running title on the same line.
-\renewcommand{\shortauthors}{Kim and Lim}
-
 \begin{document}
 
-% acmart requires the abstract environment to be defined BEFORE
-% \maketitle; otherwise it complains "Abstract must be defined before
-% maketitle command." Counter-intuitive but documented.
-\input{sections/abstract}
+% --- Title -------------------------------------------------------------
+\title{\sys{}: Recovery-Aware Layer Placement for Distributed LLM Inference on Edge Clusters}
+
+% --- Authors -----------------------------------------------------------
+% IEEEtran packs affiliations/emails/funding into \thanks blocks rather
+% than acmart's \affiliation/\email. IEEE membership grade is omitted
+% pending confirmation.
+\author{Hakjae~Kim,~\IEEEmembership{Member,~IEEE,}
+  and~Wansu~Lim,~\IEEEmembership{Senior~Member,~IEEE}
+  \thanks{H. Kim and W. Lim are with the Department of Electronic and
+  Electrical Engineering, Sungkyunkwan University, Suwon 16419, Republic of
+  Korea (e-mail: hjkim24@g.skku.edu; wansu.lim@skku.edu).}%
+  \thanks{Corresponding author: Wansu Lim.}}
+
+% Running heads: left = journal, right = author + short title.
+\markboth{IEEE Transactions on Mobile Computing,~Vol.~XX, No.~X, Month~2026}%
+{Kim \MakeLowercase{\textit{et al.}}: \sys{}: Recovery-Aware Layer Placement for Distributed LLM Inference}
 
 \maketitle
 
-% 7-page target. Implementation is folded into design (one short
-% subsection covers the runtime), discussion + conclusion live in
-% one section together, and related work is a single dense
-% paragraph at the back of the discussion.
+\input{sections/abstract}
+
+\begin{IEEEkeywords}
+Distributed inference, edge computing, large language models, pipeline
+parallelism, fault tolerance, dynamic programming, heterogeneous devices.
+\end{IEEEkeywords}
+
+% No-op in journal mode; in peer-review (single-column) mode it re-emits the
+% title after the abstract. Recommended by the IEEEtran template.
+\IEEEpeerreviewmaketitle
+
 \input{sections/introduction}
 \input{sections/background}
 \input{sections/design}
@@ -113,7 +88,7 @@
 \input{sections/discussion}
 \input{sections/related}
 
-\bibliographystyle{ACM-Reference-Format}
+\bibliographystyle{IEEEtran}
 \bibliography{references}
 
 \end{document}
