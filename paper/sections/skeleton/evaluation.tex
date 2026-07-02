@@ -1,0 +1,56 @@
+% =====================================================================
+% V. Evaluation  (틀 — 내용 새로 작성)
+% =====================================================================
+\section{Evaluation}\label{sec:eval}
+
+% ---------------------------------------------------------------------
+\subsection{Setup}\label{sec:eval:setup}
+% [가이드] 하드웨어(플릿 구성), 모델, 워크로드, 베이스라인, 측정 지표.
+\todo{실험 셋업 서술.}
+
+\begin{figure}[t]
+  \centering
+  \framebox[\columnwidth]{\rule[-1cm]{0pt}{2cm}\textit{figure placeholder}}
+  \caption{\todo{Per-layer forward time 등 셋업 그림 캡션.}}
+  \label{fig:tiers}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\subsection{$\psi$+$R$ joint optimization beats decoupled baselines in normal mode}\label{sec:eval:a3b}
+% [가이드] 정상 모드에서 결합 최적화 vs 분리 베이스라인.
+\todo{결과 서술 + Fig.~\ref{fig:baselines} 해석.}
+
+\begin{figure}[t]
+  \centering
+  \framebox[\columnwidth]{\rule[-1cm]{0pt}{2cm}\textit{figure placeholder}}
+  \caption{\todo{Normal-mode 지표 그림 캡션.}}
+  \label{fig:baselines}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\subsection{Failure recovery survives where baselines abort}\label{sec:eval:recovery}
+% [가이드] 워커 강제 종료(SIGKILL) 시 복구 성공 vs 베이스라인 abort.
+\todo{장애 복구 실험 결과.}
+
+% ---------------------------------------------------------------------
+\subsection{Latency placement dominates throughput placement at $C \geq 4$}\label{sec:eval:matrix}
+% [가이드] 두 모델 크기에서 지연 최적 배치 vs 처리량 최적 배치 매트릭스.
+\todo{매트릭스 실험 결과.}
+
+% ---------------------------------------------------------------------
+\subsection{Subset selection and hop overhead do not reverse L $\succ$ T}\label{sec:eval:cost-model}
+% [가이드] 서브셋 선택/홉 오버헤드가 결론을 뒤집지 않음.
+\todo{비용 모델 분석 + Table~\ref{tab:matrix} 해석.}
+
+\begin{table*}[t]
+  \centering
+  \caption{\todo{Aggregate throughput / TBT 매트릭스 표 캡션.}}
+  \label{tab:matrix}
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    \todo{col1} & \todo{col2} & \todo{col3} & \todo{col4} \\
+    \midrule
+    \todo{row} & -- & -- & -- \\
+    \bottomrule
+  \end{tabular}
+\end{table*}

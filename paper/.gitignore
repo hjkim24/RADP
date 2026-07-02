@@ -1,6 +1,7 @@
 # Tectonic build artifacts
 main.pdf
 main_kor.pdf
+skeleton.pdf
 *.aux
 *.log
 *.out

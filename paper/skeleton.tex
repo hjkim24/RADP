@@ -1,0 +1,91 @@
+% =====================================================================
+% RADP — SKELETON / 틀만 남긴 템플릿
+% =====================================================================
+% 이 파일은 main.tex의 "틀"만 복제한 빈 골격입니다. 기존 main.tex와
+% sections/*.tex 는 전혀 건드리지 않았습니다. 여기에 내용을 새로 쓰세요.
+%
+%   - 프리앰블(클래스/패키지/폰트/매크로)은 main.tex와 100% 동일.
+%   - 섹션 본문은 sections/skeleton/*.tex 로 분리(빈 자리표시자).
+%   - 섹션 순서만 변경: Related Work를 Introduction 바로 뒤로 이동.
+%
+% Build:  tectonic --synctex --keep-logs --keep-intermediates skeleton.tex
+%     또는 VSCode LaTeX Workshop 레시피(기본 tectonic) 그대로.
+% =====================================================================
+
+\documentclass[journal]{IEEEtran}
+
+% --- Packages (main.tex와 동일) ----------------------------------------
+\usepackage{cite}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{newtxtext}            % Times text
+\usepackage{newtxmath}            % matching Times math
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subcaption}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{xspace}
+\usepackage{textcomp}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+
+% --- Typesetting tweaks (main.tex와 동일) ------------------------------
+\setlength{\emergencystretch}{2em}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\dbltextfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{6pt plus 2pt minus 2pt}
+
+% --- Macros (main.tex와 동일) ------------------------------------------
+\newcommand{\sys}{RADP\xspace}
+\newcommand{\psiR}{$\psi$-R\xspace}
+\newcommand{\todo}[1]{{\color{red}\textbf{[TODO: #1]}}}
+
+\begin{document}
+
+% --- Title -------------------------------------------------------------
+\title{\sys{}: Recovery-Aware Layer Placement for Distributed LLM Inference on Edge Clusters}
+
+% --- Authors -----------------------------------------------------------
+\author{Hakjae~Kim,~\IEEEmembership{Member,~IEEE,}
+  and~Wansu~Lim,~\IEEEmembership{Senior~Member,~IEEE}
+  \thanks{H. Kim and W. Lim are with the Department of Electronic and
+  Electrical Engineering, Sungkyunkwan University, Suwon 16419, Republic of
+  Korea (e-mail: hjkim24@g.skku.edu; wansu.lim@skku.edu).}%
+  \thanks{Corresponding author: Wansu Lim.}}
+
+\markboth{IEEE Transactions on Mobile Computing,~Vol.~XX, No.~X, Month~2026}%
+{Kim \MakeLowercase{\textit{et al.}}: \sys{}: Recovery-Aware Layer Placement for Distributed LLM Inference}
+
+\maketitle
+
+\input{sections/skeleton/abstract}
+
+\begin{IEEEkeywords}
+% [가이드] 5~8개 키워드. 아래는 기존 값 — 내용에 맞게 교체하세요.
+Distributed inference, edge computing, large language models, pipeline
+parallelism, fault tolerance, dynamic programming, heterogeneous devices.
+\end{IEEEkeywords}
+
+\IEEEpeerreviewmaketitle
+
+% --- 본문 (섹션 순서: Related Work가 Introduction 바로 뒤) --------------
+\input{sections/skeleton/introduction}
+\input{sections/skeleton/related}
+\input{sections/skeleton/background}
+\input{sections/skeleton/design}
+\input{sections/skeleton/evaluation}
+\input{sections/skeleton/discussion}
+
+% \nocite{*} 는 아직 본문에 \cite 가 없어도 참고문헌 목록을 렌더링해
+% 골격 빌드가 깨지지 않게 합니다. 본문 작성 시 실제 \cite 를 넣고
+% 이 줄은 지우세요.
+\nocite{*}
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
