@@ -13,11 +13,19 @@ from dataclasses import dataclass
 
 from experiments._harness import (
     deploy,
+    greedy_placement,
     in_process_cluster,
     in_process_cluster_with_mirror,
     wire_chain,
 )
-from radp.common.types import DeviceId, LayerIdx, Placement, RecoveryTable, Stage
+from radp.common.types import (
+    DeviceId,
+    DeviceProfile,
+    LayerIdx,
+    Placement,
+    RecoveryTable,
+    Stage,
+)
 from radp.coordinator.gateway import RequestGateway
 
 MODEL_ID = "facebook/opt-125m"
@@ -76,6 +84,22 @@ def generate_wired_reference(*, prompt: str, max_tokens: int) -> list[int]:
     ``experiments._harness.wire_chain``'s docstring — so it is not a valid
     reference for the in-place recovery lines.
     """
+    toks, _wall = _generate_wired_reference_impl(prompt=prompt, max_tokens=max_tokens)
+    return toks
+
+
+def generate_wired_reference_wall(
+    *, prompt: str, max_tokens: int
+) -> tuple[list[int], float]:
+    """Like :func:`generate_wired_reference`, but also returns the
+    healthy-cluster wall-clock — the ``reference_wall`` the cold-restart
+    line's TTR is measured against (see ``run_b1_cold_restart``)."""
+    return _generate_wired_reference_impl(prompt=prompt, max_tokens=max_tokens)
+
+
+def _generate_wired_reference_impl(
+    *, prompt: str, max_tokens: int
+) -> tuple[list[int], float]:
     device_ids, placement, recovery, _ = chain_config()
     with in_process_cluster_with_mirror(device_ids) as (addrs, servers, attach):
         deploy(addrs, placement, model_id=MODEL_ID, recovery=recovery)
@@ -85,9 +109,12 @@ def generate_wired_reference(*, prompt: str, max_tokens: int) -> list[int]:
             worker_addresses=addrs, model_id=MODEL_ID,
         )
         attach(gw)
+        gw.generate(prompt, max_tokens=2)  # warmup
+        t0 = time.perf_counter()
         toks = list(gw.generate(prompt, max_tokens=max_tokens))
+        wall = time.perf_counter() - t0
         gw.close()
-    return toks
+    return toks, wall
 
 
 def _inject_mid_stage_crash(gw, victim_server, victim_runner, *, dead_key, at_position):
@@ -229,4 +256,150 @@ def run_radp_full_replay(
         name="RADP-full-replay", recovery_mode="full_replay",
         prompt=prompt, max_tokens=max_tokens,
         kill_after_tokens=kill_after_tokens, reference=reference,
+    )
+
+
+def run_b0_abort(
+    *, prompt: str, max_tokens: int, kill_after_tokens: int, reference: list[int]
+) -> BaselineResult:
+    """No backup deployed (``recovery={}``). The SAME mid-stage crash on
+    worker-b makes ``mark_dead`` raise ``NoRecoveryError`` (no backup entry
+    to substitute) inside the gateway's chain-failure recovery, which
+    propagates straight out of ``generate_streaming`` — the stream aborts
+    with whatever tokens were already produced.
+    """
+    device_ids, placement, _recovery, victim = chain_config()
+    dead_key = next(
+        (int(s.start_layer), int(s.end_layer)) for s in placement if s.device == victim
+    )
+    with in_process_cluster_with_mirror(device_ids) as (addrs, servers, attach):
+        deploy(addrs, placement, model_id=MODEL_ID, recovery={})
+        wire_chain(addrs, placement)
+        gw = RequestGateway(
+            placement=placement, recovery={},
+            worker_addresses=addrs, model_id=MODEL_ID,
+        )
+        attach(gw)
+        gw.generate(prompt, max_tokens=2)  # warmup BEFORE installing the fault
+
+        tripped = _inject_mid_stage_crash(
+            gw, servers[victim], servers[victim].runner,
+            dead_key=dead_key, at_position=kill_after_tokens,
+        )
+
+        toks: list[int] = []
+        t_start = time.perf_counter()
+        try:
+            for tok in gw.generate_streaming(prompt, max_tokens=max_tokens):
+                toks.append(tok.token_id)
+        except Exception:
+            pass  # no recovery table -> abort is the expected outcome
+        total = time.perf_counter() - t_start
+        gw.close()
+
+    assert tripped.fired, (
+        f"B0-abort: injected mid-stage crash on {victim} never fired "
+        f"(dead_key={dead_key}, at_position={kill_after_tokens}) — "
+        "abort measured nothing"
+    )
+
+    completed = len(toks)
+    goodput = completed / total if total > 0 else 0.0
+    return BaselineResult(
+        name="B0-abort",
+        ttr_seconds=None,
+        tokens_completed=completed,
+        tokens_requested=max_tokens,
+        sequence_matches_reference=(toks == reference),
+        goodput_tok_per_s=goodput,
+        aborted=True,
+    )
+
+
+def resolve_excluding(dead: DeviceId, survivors: list[DeviceId]) -> Placement:
+    """Cold-restart's re-solve step: contiguous, equal-weight re-split of
+    all layers over ``survivors`` only (``dead`` dropped entirely) via the
+    same ``greedy_placement`` PETALS-style heuristic used elsewhere in this
+    harness. No per-device throughput profile is available in this
+    in-process test harness, so every survivor gets weight 1.0.
+    """
+    assert dead not in survivors, f"dead device {dead!r} must not be a survivor"
+    _device_ids, original_placement, _recovery, _victim = chain_config()
+    num_layers = max(int(s.end_layer) for s in original_placement)
+    devices = [
+        DeviceProfile(
+            id=DeviceId(d), total_memory_bytes=4_000_000_000, compute_throughput=1.0
+        )
+        for d in survivors
+    ]
+    return greedy_placement(devices, num_layers)
+
+
+def run_b1_cold_restart(
+    *, prompt: str, max_tokens: int, kill_after_tokens: int,
+    reference: list[int], reference_wall: float,
+) -> BaselineResult:
+    """Cold-restart baseline: no in-place recovery. On the SAME mid-stage
+    crash, the first attempt aborts exactly like ``run_b0_abort``. Recovery
+    then re-solves a placement over the survivors, redeploys the model on
+    them, wires a fresh chain, and re-runs generation from scratch on a
+    brand-new ``RequestGateway`` (full model reload included — that IS the
+    cold-restart cost). ``ttr_seconds`` is the whole restart's wall-clock
+    minus the healthy-cluster ``reference_wall``, per the TTR taxonomy.
+    """
+    device_ids, placement, _recovery, victim = chain_config()
+    dead_key = next(
+        (int(s.start_layer), int(s.end_layer)) for s in placement if s.device == victim
+    )
+    with in_process_cluster_with_mirror(device_ids) as (addrs, servers, attach):
+        deploy(addrs, placement, model_id=MODEL_ID, recovery={})
+        wire_chain(addrs, placement)
+        gw = RequestGateway(
+            placement=placement, recovery={},
+            worker_addresses=addrs, model_id=MODEL_ID,
+        )
+        attach(gw)
+        gw.generate(prompt, max_tokens=2)  # warmup BEFORE installing the fault
+
+        tripped = _inject_mid_stage_crash(
+            gw, servers[victim], servers[victim].runner,
+            dead_key=dead_key, at_position=kill_after_tokens,
+        )
+
+        t_start = time.perf_counter()
+        with contextlib.suppress(Exception):
+            for _tok in gw.generate_streaming(prompt, max_tokens=max_tokens):
+                pass
+        gw.close()
+
+        survivors = [d for d in device_ids if d != victim]
+        new_plan = resolve_excluding(victim, survivors)
+        surv_addrs = {d: addrs[d] for d in survivors}
+        deploy(surv_addrs, new_plan, model_id=MODEL_ID, recovery={})
+        wire_chain(surv_addrs, new_plan)
+        gw2 = RequestGateway(
+            placement=new_plan, recovery={},
+            worker_addresses=surv_addrs, model_id=MODEL_ID,
+        )
+        attach(gw2)
+        toks = list(gw2.generate(prompt, max_tokens=max_tokens))
+        total = time.perf_counter() - t_start
+        gw2.close()
+
+    assert tripped.fired, (
+        f"B1-cold-restart: injected mid-stage crash on {victim} never fired "
+        f"(dead_key={dead_key}, at_position={kill_after_tokens}) — "
+        "restart measured nothing"
+    )
+
+    completed = len(toks)
+    goodput = completed / total if total > 0 else 0.0
+    return BaselineResult(
+        name="B1-cold-restart",
+        ttr_seconds=total - reference_wall,
+        tokens_completed=completed,
+        tokens_requested=max_tokens,
+        sequence_matches_reference=(toks == reference),
+        goodput_tok_per_s=goodput,
+        aborted=False,
     )
