@@ -7,7 +7,12 @@ from __future__ import annotations
 
 import pytest
 
-from experiments.b1_ft_baselines import BaselineResult, chain_config, generate_reference
+from experiments.b1_ft_baselines import (
+    BaselineResult,
+    chain_config,
+    generate_reference,
+    run_radp,
+)
 
 pytestmark = pytest.mark.slow
 
@@ -25,3 +30,14 @@ def test_generate_reference_returns_tokens_and_walltime():
     toks, wall = generate_reference(prompt="The quick brown fox", max_tokens=6)
     assert len(toks) == 6
     assert wall > 0.0
+
+
+def test_radp_recovers_full_sequence():
+    prompt, max_tokens = "The quick brown fox", 12
+    ref, _ = generate_reference(prompt=prompt, max_tokens=max_tokens)
+    r = run_radp(prompt=prompt, max_tokens=max_tokens, kill_after_tokens=4, reference=ref)
+    assert r.name == "RADP"
+    assert not r.aborted
+    assert r.tokens_completed == max_tokens
+    assert r.sequence_matches_reference is True
+    assert r.ttr_seconds is not None and r.ttr_seconds > 0
