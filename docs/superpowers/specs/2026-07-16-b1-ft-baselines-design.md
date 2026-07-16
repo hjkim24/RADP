@@ -27,7 +27,7 @@ Five lines, all driven through the **same** injection (single mid-stream SIGKILL
 | **B0 — no-recovery (abort)** | `dp_placement_no_recovery` (R = {}, no backup memory) | no backup → stream aborts with partial output | EdgeShard, Jupiter (no recovery) |
 | **B1 — cold-restart** | re-solve placement excluding the dead node | re-run the entire request from position 0 on the healthy re-solve | naive checkpoint-less job restart |
 | **B2 — no-mirror replay** (ablation) | DP + backup reserved, **mirror cache disabled** | promote backup → rebuild KV by recomputing the prefix from the chain head (no out-of-band mirror to replay) | RADP ablation ≡ naive backup-promotion without out-of-band state |
-| **B3 — redundant hosting** | backup **pre-hosts a live replica** of the stage (weights resident on two devices) | reroute to the live replica (KV-rebuild mechanics: see Open Questions) | Petals swarm, JARVIS duplication, Parallax replica |
+| **B3 — redundant hosting** | backup **pre-hosts a live replica** of the stage (weights resident on two devices) | reroute to the live replica → rebuild KV via **replay** (same as RADP) | Petals swarm, JARVIS duplication, Parallax replica |
 
 ### 2.1 B2's dual role (labeling)
 B2 differs from RADP in **exactly one** dimension (the mirror cache), so it is simultaneously:
@@ -105,8 +105,8 @@ Handling:
 
 ---
 
-## 9. Open Questions (resolve during planning)
+## 9. Resolved Decisions (2026-07-16)
 
-- **B3 KV rebuild:** a live replica has the stage *weights* but not this request's *KV cache*. Does B3 (a) rebuild KV via replay like RADP, (b) actively mirror-compute in parallel (Petals dual-cache style), or (c) recompute prefix? This choice determines whether B3's TTR advantage over RADP is real or marginal. Pin it against what the Petals paper actually specifies before implementing.
-- **Cold-restart re-solve cost:** does B1's TTR include the DP re-solve time, or only the re-run? Decide and document (recommend: include it — that is the real cost a cold-restart system pays).
-- **Fleet config for B1:** use a neutral/representative config (not the 76× extreme) so recovery numbers are not entangled with the contested heterogeneity setup.
+1. **B3 KV rebuild = replay.** The live replica rebuilds this request's KV via replay, identical to RADP. B3's only distinction from RADP is therefore the *always-resident second copy* (memory cost, infeasible on 4 GB) vs RADP's *reserved-and-promoted* backup. Any TTR delta between B3 and RADP comes from weight residency, measured empirically — not from a different KV path.
+2. **Cold-restart TTR includes the DP re-solve time.** B1's time-to-recovery counts re-solve + full re-run from position 0 — the real cost a cold-restart system pays.
+3. **Fleet config = A (GPU-tier, neutral).** AGX Orin + Nano CUDA ×3 (4 GPU workers). Realistic ~1.36× heterogeneity, no manufactured 76× extreme, 4 GB tight regime preserved (Nano) so backup reservation stays motivated, and enough stages for a chain-interior victim. B3's 32 GB-board measurement is separate from this config (redundant hosting is infeasible at 4 GB).
