@@ -25,8 +25,8 @@ the stream.
 Existing systems treat layer placement~($\psi$) and recovery
 routing~($R$) as separate problems.  EdgeShard's DP optimizes
 $\psi$ assuming a redundant copy of every layer exists somewhere
-on the cluster --- a comfortable assumption on a 16+\,GB peer but
-unaffordable on a 4\,GB Nano.  Petals' greedy placement leaks
+on the cluster --- a comfortable assumption on a memory-abundant
+consumer GPU but unaffordable on a 4\,GB Nano.  Petals' greedy placement leaks
 2.38$\times$ throughput on heterogeneous fleets~\cite{mei2025helix}
 and its swarm-redundancy recovery model presupposes spare memory
 the edge does not have.  Jupiter's throughput-optimal DP has no

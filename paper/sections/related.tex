@@ -3,7 +3,8 @@
 Petals~\cite{borzunov2023petals,borzunov2023distributed}
 demonstrated collaborative LLM inference on consumer hardware
 with greedy placement and swarm-redundancy recovery, but its
-16+\,GB peer assumption excludes the 4\,GB Nano regime.
+spare-memory assumption --- redundant copies held on consumer GPUs
+an order of magnitude beyond a 4\,GB Nano --- excludes that regime.
 EdgeShard~\cite{zhang2024edgeshard} splits placement into two
 algorithms (latency Algorithm~1, throughput Algorithm~2) each
 reported against its own objective, so the relative behaviour

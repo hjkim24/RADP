@@ -47,8 +47,9 @@ The natural recipe is to take EdgeShard's latency-optimal DP for
 $\psi$ and bolt on Petals' swarm redundancy for $R$. The
 composition fails because Petals' recovery model assumes every
 peer has enough free memory to hold a redundant copy of multiple
-shards --- a comfortable assumption on its 16+\,GB consumer GPUs
-but unaffordable on a 4\,GB Nano. The Nano is already at the layer
+shards --- a comfortable assumption on the consumer GPUs Petals
+targets ($\sim$11--24\,GB in its evaluated swarm) but unaffordable
+on a 4\,GB Nano. The Nano is already at the layer
 floor with its primary stage; reserving Petals' redundancy
 displaces the primary.
 
