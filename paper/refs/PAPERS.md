@@ -10,12 +10,15 @@
 3. 상세 섹션 추가: 저자·년도·venue / 분야 태그 / 핵심 아이디어 / 실험 환경(scale·하드웨어·모델·실측 여부) / RADP 관련성.
 4. venue는 dblp 등에서 게재본 확인(vol/no/pages/doi), 없으면 arXiv id. 중복 파일은 md5 확인 후 정리.
 
-현재 28편.
+현재 32편.
 
 ## 인덱스
 
 | 시스템/논문 | 년도 | Venue | 주요 분야 | 실험 환경 | 실측 |
 |---|---|---|---|---|---|
+| [GhostServe](#ghostserve) | 2026 | MLSys 2026; arXiv:2605.00831 | Fault Tolerance, LLM Serving, Erasure Coding | 데이터센터 | 실측 |
+| [KevlarFlow](#kevlarflow) | 2026 | arXiv:2601.22438 (preprint) | Fault Tolerance, LLM Serving, KV Replication | 데이터센터(지리분산) | 실측 |
+| [LUMEN](#lumen) | 2026 | arXiv:2606.17787 (preprint) | Fault Tolerance, LLM Serving, Scheduling/SLO | 데이터센터 | 실측+시뮬레이션 |
 | [DualMap](#dualmap) | 2026 | ICLR 2026 (Published as a conference paper at I... | Load Balancing, Scheduling/SLO, Distributed Inference | 데이터센터 | 실측 |
 | [DyBAP](#dybap) | 2026 | IEEE Transactions on Mobile Computing (accepted... | Distributed Inference, Collaborative Edge Inference, Model Partitioning/Placement | 하이브리드 | 시뮬레이션 |
 | [HybridFlow](#hybridflow) | 2026 | ICML 2026 (poster); arXiv:2512.22137 | Collaborative Edge Inference, Scheduling/SLO, Model Partitioning/Placement | 하이브리드 | 실측 |
@@ -32,6 +35,7 @@
 | [Parallax](#parallax) | 2025 | arXiv:2509.26182 | Distributed Inference, Model Partitioning/Placement, Scheduling/SLO | 하이브리드 | 실측 |
 | [SLICE](#slice) | 2025 | arXiv:2510.18544v3 [cs.DC] (header shows placeh... | Scheduling/SLO, Edge LLM Serving, Batching/Rate Allocation | 엣지 | 실측 |
 | [TK-SLT](#tk-slt) | 2025 | 2025 17th Int'l Conf. on Wireless Communication... | Collaborative Edge Inference, Speculative Decoding, Wireless Networking | 하이브리드 | 실측+시뮬레이션 |
+| [DejaVu](#dejavu) | 2024 | ICML 2024 (PMLR 235); arXiv:2403.01876 | Fault Tolerance, LLM Serving, KV Streaming | 데이터센터 | 실측 |
 | [Andes](#andes) | 2024 | arXiv:2404.16283v2 [cs.DC] (13 Dec 2024) | QoE, Scheduling/SLO, LLM Serving | 데이터센터 | 실측 |
 | [Decentralized LLM Inference over Edge ](#decentralized-llm-inference-over-edge-networks-with-energy-harvesting) | 2024 | IEEE GLOBECOM 2024, pp.3703-3708 (doi:10.1109/G... | Distributed Inference, Collaborative Edge Inference, Energy Efficiency | 엣지 | 실측+시뮬레이션 |
 | [Distributed Mixture-of-Agents for Edge](#distributed-mixture-of-agents-for-edge-inference-with-large-language-models) | 2025 | IEEE PIMRC 2025 (doi:10.1109/PIMRC62392.2025.11275145); arXiv:2412.21200 | Distributed Inference, Collaborative Edge Inference, Mixture-of-Agents | 엣지 | 실측+시뮬레이션 |
@@ -358,6 +362,42 @@
 - **RADP 관련성**: 두 상충하는 목적(load balancing vs QoT constraint)을 하나의 constraint-coupled route selection으로 결합하는 구조는 RADP의 coupled feasibility(성능 placement와 recovery/backup memory constraint의 결합) 주장과 개념적 유사성이 있으나, 무선 mesh packet routing 대상이라 edge LLM inference placement와는 간접적 참고 수준이다.
 
 ---
+
+### DejaVu — DéjàVu: KV-cache Streaming for Fast, Fault-tolerant Generative LLM Serving
+
+- **파일**: `DejaVu_KV-cache-Streaming-for-Fast-Fault-tolerant-Generative-LLM-Serving.pdf`
+- **저자·년도·venue**: Strati et al., 2024, ICML 2024 (PMLR 235); arXiv:2403.01876
+- **분야**: Fault Tolerance, LLM Serving, KV Streaming
+- **핵심 아이디어**: pipeline-parallel LLM serving에서 KV cache **자체를** ring 이웃 워커로 per-token·비동기 스트리밍해 복제. 워커 crash(heartbeat 감지) 시 이웃이 replica를 반송하고, controller가 per-token ack로 "마지막 복제 시점 (microbatch j, step t)"을 판정 → **그 이후 토큰만 재계산**. 단일 장애 latency 증가 1.91×→1.24×. DejaVuLib 스트리밍 오버헤드 "within 2% for local SSD and remote CPU memory". microbatch swapping(GPU↔CPU)·prompt-token disaggregation은 별도 메커니즘.
+- **실험 환경**: A100-80GB×2 VM(40Gbps inter-VM) / V100-16GB VM(32Gbps), FasterTransformer, OPT-13B/66B·BLOOM-176B, 4-stage pipeline. 실측.
+- **RADP 관련성**(해석): "입력 재생(Petals/RADP) vs KV 자체 보호"의 대표 대조군. 이웃 replica는 노드당 KV **~2×** 메모리 + 수십 Gbps 링크 전제 → 4GB Jetson·저속 LAN에선 복제 자체가 병목/불가. RADP related work의 "KV-보호 계열은 memory headroom 전제" 논거.
+
+### GhostServe — A Lightweight Checkpointing System in the Shadow for Fault-Tolerant LLM Serving
+
+- **파일**: `GhostServe_A-Lightweight-Checkpointing-System-in-the-Shadow-for-Fault-Tolerant-LLM-Serving.pdf`
+- **저자·년도·venue**: MLSys 2026 (oral); arXiv:2605.00831
+- **분야**: Fault Tolerance, LLM Serving, Erasure Coding
+- **핵심 아이디어**: streaming KV cache를 chunk 단위로 **erasure coding**(XOR/RDP/RS, 헤드라인 8:2 → K=2 동시 GPU 장애 허용). 코딩 그룹 = **한 노드 안 tensor-parallel N개 shard**(같은 요청의 KV를 든 N GPU), parity는 **호스트 RAM으로 offload**("eliminating GPU memory overhead"). fused CUDA 커널로 encode/decode. 복구는 비용모델로 "앞 r chunk는 재계산 + 나머지는 parity+생존 shard 디코드" 하이브리드. 70B·64K 토큰에서 5초 미만 복구(SSD 방식 ~2분), 8:2가 full replication 대비 overhead 75% 절감, 평시 오버헤드 <5–10%.
+- **실험 환경**: H200×8(NVLink Gen4), 1TB DDR5, PCIe4, SGLang 0.5.1, LLaMA-3-8B/70B 등. **"primarily designed for intra-node serving, particularly for tensor parallelism"** — cross-node/pipeline-parallel + inter-node 대역폭은 명시적 future work. 실측.
+- **RADP 관련성**(해석): parity 기반 KV 보호의 대표. **cross-node pipeline(저속 링크)이 논문 스스로 남긴 공백** = RADP의 레짐. 엣지 이식 난제: 코딩 그룹을 TP shard→stage 간으로 재설계, parity를 1TB 호스트 RAM→coordinator/peer로, 저속 링크 amortization. RADP mirror 채널이 자연 후보.
+
+### KevlarFlow — Towards Resiliency in Large Language Model Serving
+
+- **파일**: `KevlarFlow_Towards-Resiliency-in-Large-Language-Model-Serving.pdf`
+- **저자·년도·venue**: 2026, arXiv:2601.22438 (preprint)
+- **분야**: Fault Tolerance, LLM Serving, KV Replication
+- **핵심 아이디어**: "runtime node failure를 견디는 최초의 LLM serving framework" 주장. 요청별 KV cache를 load-balancing 그룹 내 **다른 노드의 GPU 메모리**에 PagedAttention block 단위·ring 토폴로지로 백그라운드 복제(전용 CUDA stream 오버랩, NCCL/GPUDirect). 장애 시 같은 stage weight를 든 healthy 노드로 교체 + 복제된 KV block에서 재개("non-interruptive" = 진행 중 요청을 처음부터 재시도하지 않음). MTTR 29–35s(기존 ~10분, 20×). 평시 오버헤드 avg 2.3–4.0%. 메모리 압박 시 replica drop 후 필요 시 재계산(graceful).
+- **실험 환경**: A10 24GB×8/16노드, 미국 4개 데이터센터 지리분산, **1Gbps Ethernet·no-NVLink**(의도적), TensorRT-LLM, Llama-3.1-8B 4-stage pipeline, **동시 파이프라인 인스턴스 2–4개**(load-balancing 그룹) 전제. 실측.
+- **RADP 관련성**(해석): 1Gbps·no-NVLink라 엣지에 가장 근접한 KV-복제 계열이지만, **웜 여분 파이프라인 + GPU 메모리 헤드룸(50–60% util) 전제**가 4GB 단일 사본 엣지와 정반대. "spare 없는 레짐" 논거의 핵심 대조군.
+
+### LUMEN — Coordinated Failure Recovery for Distributed LLM Serving
+
+- **파일**: `LUMEN_Coordinated-Failure-Recovery-for-Distributed-LLM-Serving.pdf`
+- **저자·년도·venue**: 2026, arXiv:2606.17787 (preprint)
+- **분야**: Fault Tolerance, LLM Serving, Scheduling/SLO
+- **핵심 아이디어**: 복구를 3개 결정점의 load-aware coordination으로: (i) **장애 전 checkpoint placement** — 요청별 KV checkpoint의 보관 워커를 h(r)=argmin(q_w+λ·p_w(r))로 선택(prefill 완료 시 확정, 요청 단위·연속적), (ii) 장애 시 interrupted-request 분배(checkpoint 보유자로 라우팅 + 과부하 시 greedy 이주), (iii) reload 중 capacity 복원(draft 모델 speculation-assist → hotswap). 8-worker Qwen3-14B에서 복구 29.9s(고정 checkpoint 82.8s, 재시작 83.3s).
+- **실험 환경**: A800-80GB, NVLink 200GB/s+10Gbps Ethernet, 200GB DRAM/노드, SGLang, Qwen3-14B/32B. **워커 = 모델 전체 사본**("a worker is a complete copy of the model weights") — 파이프라인 분할은 워커 내부 구현일 뿐. checkpoint 예산 80–160GB/워커. 실측+시뮬레이션.
+- **RADP 관련성**(해석): "장애 전 배치 결정"이라는 표현이 겹쳐 보이나 실체는 **full-replica들 사이 요청별 KV checkpoint 보관자 선택**이며, **layer placement와 backup placement의 결합 최적화는 없음**(모든 워커가 전 layer 보유라 결합할 대상 자체가 없음). RADP의 ψ+R(메모리 상한 하 layer×backup 공동 배치) novelty와 **비충돌** 확인. 단 "KV를 checkpoint해 재사용(재계산 회피)"은 입력-재생 대비 우월한 지점이라 related work에서 대응 필요.
 
 ## TII 산업 프레이밍 논문 (venue-fit, 2026-07-08 추가)
 
