@@ -16,6 +16,7 @@ from experiments.b1_ft_baselines import (
     generate_wired_reference,
     generate_wired_reference_wall,
     resolve_excluding,
+    run_all,
     run_b0_abort,
     run_b1_cold_restart,
     run_radp_full_replay,
@@ -126,6 +127,24 @@ def test_resolve_excluding_covers_all_layers():
         assert int(prev.end_layer) + 1 == int(nxt.start_layer), (
             f"gap/overlap between {prev} and {nxt}"
         )
+
+
+@pytest.mark.slow
+def test_run_all_returns_all_four_lines():
+    """The unified driver generates the wired reference ONCE and runs all
+    four lines against it, returning a single JSON-serializable record."""
+    rec = run_all(prompt="The quick brown fox", max_tokens=12, kill_after_tokens=4)
+
+    names = {l["name"] for l in rec["lines"]}
+    assert names == {
+        "RADP-surgical", "RADP-full-replay", "B1-cold-restart", "B0-abort",
+    }
+    for line in rec["lines"]:
+        assert set(line) >= {
+            "ttr_seconds", "tokens_completed", "goodput_tok_per_s",
+            "sequence_matches_reference", "aborted",
+        }
+    assert rec["reference_wall_seconds"] > 0
 
 
 @pytest.mark.slow

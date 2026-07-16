@@ -6,10 +6,11 @@ See docs/superpowers/specs/2026-07-16-b1-ft-baselines-design.md.
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import time
 import types
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from experiments._harness import (
     deploy,
@@ -17,6 +18,7 @@ from experiments._harness import (
     in_process_cluster,
     in_process_cluster_with_mirror,
     wire_chain,
+    write_json,
 )
 from radp.common.types import (
     DeviceId,
@@ -403,3 +405,60 @@ def run_b1_cold_restart(
         goodput_tok_per_s=goodput,
         aborted=False,
     )
+
+
+def run_all(*, prompt: str, max_tokens: int, kill_after_tokens: int) -> dict:
+    """Generate the wired reference ONCE (tokens + wall), then run all four
+    lines under that SAME reference and the same mid-stage-crash injection.
+    Returns a JSON-serializable comparison record.
+    """
+    reference, reference_wall = generate_wired_reference_wall(
+        prompt=prompt, max_tokens=max_tokens
+    )
+    lines = [
+        run_radp_surgical(
+            prompt=prompt, max_tokens=max_tokens,
+            kill_after_tokens=kill_after_tokens, reference=reference,
+        ),
+        run_radp_full_replay(
+            prompt=prompt, max_tokens=max_tokens,
+            kill_after_tokens=kill_after_tokens, reference=reference,
+        ),
+        run_b1_cold_restart(
+            prompt=prompt, max_tokens=max_tokens,
+            kill_after_tokens=kill_after_tokens, reference=reference,
+            reference_wall=reference_wall,
+        ),
+        run_b0_abort(
+            prompt=prompt, max_tokens=max_tokens,
+            kill_after_tokens=kill_after_tokens, reference=reference,
+        ),
+    ]
+    return {
+        "model_id": MODEL_ID,
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "kill_after_tokens": kill_after_tokens,
+        "reference_wall_seconds": reference_wall,
+        "lines": [asdict(line) for line in lines],
+    }
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--prompt", default="The quick brown fox")
+    p.add_argument("--max-tokens", type=int, default=12)
+    p.add_argument("--kill-after-tokens", type=int, default=4)
+    p.add_argument("--out", default="b1_ft_baselines")
+    args = p.parse_args()
+
+    rec = run_all(
+        prompt=args.prompt, max_tokens=args.max_tokens,
+        kill_after_tokens=args.kill_after_tokens,
+    )
+    path = write_json(args.out, rec)
+    print(f"wrote {path}")
+
+
+if __name__ == "__main__":
+    main()
