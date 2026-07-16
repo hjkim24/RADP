@@ -22,6 +22,9 @@
 - In-process dev constants: `MODEL_ID = "facebook/opt-125m"`, 3-worker chain `worker-a/b/c` with layers `1-4 / 5-8 / 9-12`, interior victim `worker-b`, `max_tokens=12`, `kill_after_tokens=4`.
 - Do NOT commit `experiments/results/*.json` unless already tracked; follow the repo's existing results-tracking convention.
 - Commit trailer on every commit: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
+- **Test env:** run pytest as `.venv-py39/bin/python -m pytest ...`. This venv MUST have `transformers>=4.40,<4.51` (currently 4.50.3, the repo's pyproject pin). transformers 4.57.x breaks the OPT block forward with `KeyError: None` — if you see that, the venv drifted; fix with `uv pip install --python .venv-py39/bin/python 'transformers>=4.40,<4.51'`.
+- **pytest marker convention:** the repo sets `addopts = "-ra -q -m 'not slow'"`, so any test that constructs a `RequestGateway` or loads a model is DESELECTED by default. EVERY B1 test in this plan MUST be decorated `@pytest.mark.slow` (add `import pytest` and `pytestmark = pytest.mark.slow` at module top), and EVERY `Run:` pytest command in this plan MUST append `-m slow` (e.g. `.venv-py39/bin/python -m pytest tests/test_b1_ft_baselines.py -m slow -v`). A plain `pytest ...` without `-m slow` reports "no tests collected" (exit 5), NOT a pass.
+- **Known pre-existing test state (not caused by B1):** `tests/test_cache_replay_recovery.py` and `tests/test_failure_recovery_integration.py` currently fail ONLY on a stale `assert <dead> in gw._dead` bookkeeping check — recovery itself produces the correct recovered sequence. Do not treat this as a B1 regression; B1 tests assert on token correctness/completion, not `_dead` membership.
 
 ---
 
