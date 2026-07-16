@@ -15,11 +15,16 @@ from __future__ import annotations
 
 import contextlib
 import socket
-from collections.abc import Generator
+import types
+from collections.abc import Callable, Generator
+from concurrent import futures
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import grpc
+
+from radp.common.proto import radp_pb2_grpc
 from radp.common.protocol import WorkerClient
 from radp.common.types import (
     SLO,
@@ -32,8 +37,10 @@ from radp.common.types import (
     RecoveryTable,
     Stage,
 )
+from radp.coordinator.gateway import RequestGateway
 from radp.coordinator.recovery_plan import inverse_recovery
 from radp.coordinator.scheduler import Scheduler, uniform_placement
+from radp.coordinator.server import _CoordinatorServicer
 from radp.worker.server import WorkerServer
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -69,6 +76,63 @@ def in_process_cluster(
                 s.stop()
 
 
+@contextmanager
+def in_process_cluster_with_mirror(
+    device_ids: list[str],
+) -> Generator[
+    tuple[
+        dict[DeviceId, str],
+        dict[DeviceId, WorkerServer],
+        Callable[[RequestGateway], None],
+    ],
+    None,
+    None,
+]:
+    """Like ``in_process_cluster``, but stands up a real CoordinatorService
+    and points every WorkerServer at it, so non-first-stage workers actually
+    mirror their interior activations. The servicer is reused as-is
+    (`radp.coordinator.server._CoordinatorServicer`) by handing it a
+    duck-typed holder instead of a full CoordinatorServer -- it only ever
+    reads `.gateway` and `.detector` off what it's given.
+
+    Yields (addrs, servers, attach) where attach(gw) wires `holder.gateway`
+    so MirrorActivation pushes land in `gw.cache` (query interior stages via
+    `gw.cache.get_history(rid, (start, end))` -- the head stage never
+    mirrors, only non-first stages do).
+    """
+    holder = types.SimpleNamespace(gateway=None, detector=None)
+    coord_port = _free_port()
+    coord_addr = f"127.0.0.1:{coord_port}"
+    coord_server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
+    radp_pb2_grpc.add_CoordinatorServiceServicer_to_server(
+        _CoordinatorServicer(holder), coord_server
+    )
+    coord_server.add_insecure_port(coord_addr)
+    coord_server.start()
+
+    servers: dict[DeviceId, WorkerServer] = {}
+    for did in device_ids:
+        port = _free_port()
+        wid = DeviceId(did)
+        servers[wid] = WorkerServer(
+            wid, f"127.0.0.1:{port}", coordinator_address=coord_addr
+        )
+    addrs = {wid: s.bind_address for wid, s in servers.items()}
+    for s in servers.values():
+        s.start()
+
+    def attach(gw: RequestGateway) -> None:
+        holder.gateway = gw
+
+    try:
+        yield addrs, servers, attach
+    finally:
+        for s in servers.values():
+            with contextlib.suppress(Exception):
+                s.stop()
+        coord_server.stop(0)
+
+
 def deploy(
     addrs: dict[DeviceId, str],
     placement: Placement,
@@ -101,6 +165,40 @@ def deploy(
                         end_layer=int(js.end_layer),
                         model_id=model_id,
                     )
+
+
+def wire_chain(addrs: dict[DeviceId, str], placement: Placement) -> None:
+    """Chain-wire consecutive stages via SetNextHop so RunStage actually
+    forwards past the head worker.
+
+    ``deploy()`` only loads primaries/backups. Without this, every worker's
+    ``_next_hops`` stays empty, ``_get_next_hop`` returns None, and the head
+    worker treats itself as the chain tail -- it runs ONLY its own stage and
+    hands the (incomplete) activation straight back to the gateway. Verified
+    by instrumenting ``_WorkerServicer.RunStage``: with a 3-stage placement
+    and no wiring, only the head stage's RunStage ever fires; with this
+    helper called after ``deploy()``, all 3 stages fire in order. Mirrors
+    ``RequestGateway._rewire_chain`` (used there only for post-recovery
+    re-wiring); this is the same wiring needed once, up front, for the
+    initial deploy.
+    """
+    for i, stage in enumerate(placement):
+        with WorkerClient(addrs[stage.device]) as client:
+            if i + 1 < len(placement):
+                nxt = placement[i + 1]
+                client.set_next_hop(
+                    my_start=int(stage.start_layer),
+                    my_end=int(stage.end_layer),
+                    next_address=addrs[nxt.device],
+                    next_start=int(nxt.start_layer),
+                    next_end=int(nxt.end_layer),
+                )
+            else:
+                client.set_next_hop(
+                    my_start=int(stage.start_layer),
+                    my_end=int(stage.end_layer),
+                    next_address="",
+                )
 
 
 # ---------------------------------------------------------------------------
