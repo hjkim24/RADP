@@ -97,7 +97,14 @@ class RequestGateway:
         activation_cache_bytes: int = 256 * 1024 * 1024,
         chain_mode: str = "sync",
         async_chain_timeout_seconds: float = 30.0,
+        recovery_mode: str = "full_replay",
     ) -> None:
+        if recovery_mode not in {"full_replay", "surgical"}:
+            raise ValueError(
+                f"recovery_mode must be 'full_replay' or 'surgical', "
+                f"got {recovery_mode!r}"
+            )
+        self.recovery_mode = recovery_mode
         self.placement = placement
         self.recovery = recovery
         self.worker_addresses = worker_addresses
@@ -650,7 +657,17 @@ class RequestGateway:
         plus the backup promotion latency — acceptable for the paper
         claim ("R guarantees correctness on single-fault scenarios"),
         not optimised for high-frequency failures.
+
+        ``recovery_mode == "surgical"`` swaps the O(positions × stages)
+        full replay for the O(positions × 1 stage) mirror-fed rebuild of
+        ONLY the promoted backup — see :meth:`_recover_surgical`. The
+        default ("full_replay") keeps the behaviour documented above.
         """
+        if self.recovery_mode == "surgical":
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+
         dead_stage = self._attribute_chain_failure(head_stage, error)
         already_dead = dead_stage.device in self._dead
 
@@ -715,6 +732,123 @@ class RequestGateway:
             request_id, new_head, current_position
         )
         return new_head, last_resp
+
+    def _recover_surgical(
+        self,
+        request_id: RequestId,
+        head_stage: Stage,
+        error: grpc.RpcError,
+        current_position: int,
+    ) -> tuple[Stage, Any]:
+        """Surgical recovery — rebuild ONLY the promoted backup's KV.
+
+        Same ``(new_head_stage, last_response)`` contract as
+        :meth:`_recover_from_chain_failure`, but instead of evicting every
+        survivor's KV and replaying the whole request from position 0
+        through the entire chain (O(positions × all stages)), we:
+
+          1. promote the backup + rewire the chain (identical prefix), then
+          2. replay the *dead stage's* mirrored inputs for positions
+             0..P-1 into the promoted backup with ``replay_only=True`` —
+             rebuilding only that one stage's KV, leaving the survivors'
+             KV intact (they already hold 0..P-1), and
+          3. run the failed position P LIVE: feed the mirrored dead-stage
+             input at P into the backup and forward downstream, which
+             yields the recovered token. The chain head already advanced
+             to P on the failed attempt, so we do NOT re-run it — the
+             mirrored dead-stage input at P *is* the head's output at P.
+
+        Cost: O(positions × 1 stage). See design spec §10.
+
+        Async-mirror safety: the worker mirror is fire-and-forget, so the
+        input for position P may not have arrived yet. If the mirrored
+        history is shorter than P+1 we cannot reconstruct P without
+        re-running the head, so we fall back to the correct-but-costly
+        full-chain replay rather than emit a silently-wrong token.
+        """
+        dead_stage = self._attribute_chain_failure(head_stage, error)
+        if dead_stage.device not in self._dead:
+            log.warning(
+                "request=%d surgical recovery: chain failure attributed to "
+                "%s[%d..%d] (head was %s)",
+                request_id, dead_stage.device,
+                dead_stage.start_layer, dead_stage.end_layer, head_stage.device,
+            )
+            self.mark_dead(dead_stage.device)
+
+        backup_dev = self.recovery.get(dead_stage.device)
+        if backup_dev is None:
+            raise RuntimeError(
+                f"no recovery entry for dead device {dead_stage.device}"
+            )
+        backup_addr = self.worker_addresses.get(backup_dev)
+        if backup_addr is None:
+            raise RuntimeError(f"recovery device {backup_dev} has no address")
+
+        # PromoteBackup is idempotent on the worker side.
+        try:
+            with WorkerClient(backup_addr) as client:
+                client.promote_backup(for_device_id=dead_stage.device)
+        except Exception:
+            log.exception(
+                "request=%d promote_backup on %s failed", request_id, backup_dev
+            )
+            raise
+        self._rewire_chain()
+
+        dead_key = (int(dead_stage.start_layer), int(dead_stage.end_layer))
+        history = self.cache.get_history(request_id, dead_key)
+
+        # Async-mirror lag safety fallback: no mirrored input for position P
+        # → we can't reconstruct P surgically. Fall back to full replay.
+        if len(history) <= current_position:
+            log.warning(
+                "request=%d surgical recovery: mirror history for stage[%d..%d] "
+                "has %d positions (<= failed position %d); falling back to "
+                "full-chain replay",
+                request_id, *dead_key, len(history), current_position,
+            )
+            self._evict_kv_for_request(request_id)
+            new_plan = self.current_plan()
+            new_head = new_plan[0]
+            last_resp = self._replay_through_chain(
+                request_id, new_head, current_position
+            )
+            return new_head, last_resp
+
+        # Locate the promoted backup stage now owning the dead layer range.
+        plan = self.current_plan()
+        backup_stage = next(
+            (s for s in plan
+             if (int(s.start_layer), int(s.end_layer)) == dead_key),
+            None,
+        )
+        if backup_stage is None:
+            raise RuntimeError(
+                f"layer range {dead_key} not present in post-recovery plan"
+            )
+
+        log.warning(
+            "request=%d SURGICAL rebuild: backup %s stage[%d..%d] KV "
+            "positions 0..%d, then run %d live (history_len=%d)",
+            request_id, backup_stage.device, *dead_key,
+            current_position - 1, current_position, len(history),
+        )
+        # Rebuild ONLY the backup's KV for 0..P-1 — no forward, survivors
+        # keep their intact caches.
+        for i in range(current_position):
+            self._invoke(
+                backup_stage, request_id, history[i],
+                is_prefill=(i == 0), position=i, replay_only=True,
+            )
+        # Run position P live: forwards backup → downstream and yields the
+        # recovered response. The head already advanced to P; we skip it.
+        last_resp = self._invoke(
+            backup_stage, request_id, history[current_position],
+            is_prefill=(current_position == 0),
+            position=current_position, replay_only=False,
+        )
+        return backup_stage, last_resp
 
     def _replay_through_chain(
         self,
