@@ -110,3 +110,26 @@ Handling:
 1. **B3 KV rebuild = replay.** The live replica rebuilds this request's KV via replay, identical to RADP. B3's only distinction from RADP is therefore the *always-resident second copy* (memory cost, infeasible on 4 GB) vs RADP's *reserved-and-promoted* backup. Any TTR delta between B3 and RADP comes from weight residency, measured empirically — not from a different KV path.
 2. **Cold-restart TTR includes the DP re-solve time.** B1's time-to-recovery counts re-solve + full re-run from position 0 — the real cost a cold-restart system pays.
 3. **Fleet config = A (GPU-tier, neutral).** AGX Orin + Nano CUDA ×3 (4 GPU workers). Realistic ~1.36× heterogeneity, no manufactured 76× extreme, 4 GB tight regime preserved (Nano) so backup reservation stays motivated, and enough stages for a chain-interior victim. B3's 32 GB-board measurement is separate from this config (redundant hosting is infeasible at 4 GB).
+
+---
+
+## 10. REVISION — Path 2 (surgical recovery), 2026-07-16
+
+**Trigger.** During implementation we verified the actual recovery path in `radp/coordinator/gateway.py`: `_recover_from_chain_failure` calls `_replay_through_chain`, which **evicts every surviving worker's KV and replays the whole request from position 0 through the entire chain** — an O(positions × *all* stages) recompute. That is essentially cold-restart cost with a pre-provisioned backup. The mirror cache's actual payoff — rebuilding **only the promoted backup's** KV from the mirrored stage inputs (`_replay_stage_history`, O(positions × *one* stage)) — **exists as a method but is never called** (dead code; = the "surgical rollback" `discussion.tex` already flags as future work). So the original B2 "no-mirror ablation" is meaningless (the `get_history=[]` hack just deletes the coord-native head history and aborts), and the mirror's value is currently unrealized.
+
+**New centerpiece.** Wire the surgical recovery in as a selectable gateway recovery mode, and benchmark it — turning `discussion.tex`'s future-work into a measured contribution that makes the mirror the star (serves the advisor's "FT as main axis").
+
+**Revised baseline set (supersedes §2's B0–B3):**
+
+| Line | Recovery on mid-chain SIGKILL | Cost | Status |
+|---|---|---|---|
+| **RADP-surgical** (star) | rebuild ONLY the backup's KV from mirrored stage inputs; leave survivors' KV intact; reconcile the one failed position P | O(positions × 1 stage) | **NEW — implement** |
+| **RADP-full-replay** | current default: evict all KV, replay from position 0 through the whole chain | O(positions × all stages) | done (Task 2 `run_radp`) |
+| **cold-restart** | re-solve placement excluding dead node + re-run from scratch | O(positions × all stages) + re-solve | Task 6 |
+| **abort** | no recovery (R={}) → stream aborts | — | Task 5 |
+
+- **B2 (no-mirror ablation)** is absorbed: RADP-full-replay IS "recovery that does not exploit the mirror's saving."
+- **B3 (redundant hosting / coupled-feasibility)** deferred to a separate experiment — it is a memory-feasibility axis orthogonal to the recovery-efficiency story B1 now tells.
+- **Claim (revised):** *under a mid-chain SIGKILL, RADP-surgical rebuilds only the promoted backup's KV (mirror-fed) and recovers ~an order faster than the full-chain replay the system does today, which itself ≈ cold-restart; all three preserve correctness, abort does not.* The headline becomes **surgical ≪ full-replay ≈ cold-restart ≫ abort**.
+
+**Surgical recovery mechanics (for the implementer):** on failure at position P (chain coord→a→b→c, b dies): a advanced to P, c is at P-1, backup is cold. (i) promote backup + rewire; (ii) replay the dead stage's mirrored inputs for positions **0..P-1** into the backup with `replay_only=True` (rebuild KV, no forward) — do NOT evict survivors; (iii) run position **P live**: feed the mirrored b-input-at-P into the backup (skip re-running a, which is already at P), forward backup→c, sample → recovered token; (iv) continue. Correctness gate: recovered sequence must equal the healthy reference exactly (same bar as full-replay).

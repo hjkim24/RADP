@@ -1,817 +1,252 @@
-# B1 Fault-Tolerance Baseline Comparison — Implementation Plan
+# B1 Fault-Tolerance Baseline Comparison — Implementation Plan (Path 2: surgical recovery)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a benchmark that drives RADP and four recovery-strategy baselines through one identical mid-stream worker failure and emits a single comparison record (TTR, correctness, goodput) per line.
+**Goal:** Wire the mirror cache's surgical recovery (rebuild only the promoted backup's KV) into the gateway, then benchmark RADP-surgical vs RADP-full-replay vs cold-restart vs abort under one identical mid-chain worker kill.
 
-**Architecture:** A new self-contained driver module `experiments/b1_ft_baselines.py` reuses the existing in-process cluster harness (`experiments/_harness.py`) and `RequestGateway`. Each baseline is one function returning a `BaselineResult`; a top-level `run_all()` runs them through the same injection and writes one JSON. Development and TDD happen in-process with `facebook/opt-125m`; the confirmed lines port to the real fleet (config A) as the final task.
+**Architecture:** The centerpiece is a new *surgical* recovery mode in `radp/coordinator/gateway.py` — on a mid-chain fault it rebuilds only the promoted backup's KV from the mirrored stage inputs (leaving survivors' KV intact and reconciling the single failed position), instead of the current full-chain replay that evicts and recomputes every stage. The benchmark driver `experiments/b1_ft_baselines.py` drives all four recovery strategies through the same injection and reports TTR / correctness / goodput.
 
-**Tech Stack:** Python 3.9+, pytest, PyTorch, gRPC, the RADP coordinator/worker packages.
+**Tech Stack:** Python 3.9+, pytest, PyTorch, gRPC, RADP coordinator/worker packages.
 
 ## Global Constraints
 
-- Spec of record: `docs/superpowers/specs/2026-07-16-b1-ft-baselines-design.md`. Every task's requirements implicitly include it.
-- Baselines: **B0 abort**, **B1 cold-restart**, **B2 no-mirror replay (ablation)**, **B3 redundant hosting**, plus **RADP**.
-- Metrics only: **TTR**, **token correctness/completeness**, **goodput under failure**. NOT steady-state overhead, NOT failure diversity, NOT the heterogeneity sweep.
-- Failure injection: **single mid-stream SIGKILL** of one chain-interior worker.
-- Resolved decisions: B3 rebuilds KV via **replay**; cold-restart TTR **includes** the DP re-solve; fleet config **A** = AGX Orin + Nano CUDA ×3.
-- **TTR taxonomy** (defined once, used by every line):
-  - *In-place* lines (RADP, B3): TTR = latency of the failed decode step (`recovery_step_seconds`).
-  - *Restart* lines (B1, B2): TTR = `total_wall_clock_with_failure − reference_wall_clock` (extra time to recover by restarting).
-  - *Abort* line (B0): TTR = `None` (never recovers).
-- In-process dev constants: `MODEL_ID = "facebook/opt-125m"`, 3-worker chain `worker-a/b/c` with layers `1-4 / 5-8 / 9-12`, interior victim `worker-b`, `max_tokens=12`, `kill_after_tokens=4`.
-- Do NOT commit `experiments/results/*.json` unless already tracked; follow the repo's existing results-tracking convention.
-- Commit trailer on every commit: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
-- **Test env:** run pytest as `.venv-py39/bin/python -m pytest ...`. This venv MUST have `transformers>=4.40,<4.51` (currently 4.50.3, the repo's pyproject pin). transformers 4.57.x breaks the OPT block forward with `KeyError: None` — if you see that, the venv drifted; fix with `uv pip install --python .venv-py39/bin/python 'transformers>=4.40,<4.51'`.
-- **pytest marker convention:** the repo sets `addopts = "-ra -q -m 'not slow'"`, so any test that constructs a `RequestGateway` or loads a model is DESELECTED by default. EVERY B1 test in this plan MUST be decorated `@pytest.mark.slow` (add `import pytest` and `pytestmark = pytest.mark.slow` at module top), and EVERY `Run:` pytest command in this plan MUST append `-m slow` (e.g. `.venv-py39/bin/python -m pytest tests/test_b1_ft_baselines.py -m slow -v`). A plain `pytest ...` without `-m slow` reports "no tests collected" (exit 5), NOT a pass.
-- **Known pre-existing test state (not caused by B1):** `tests/test_cache_replay_recovery.py` and `tests/test_failure_recovery_integration.py` currently fail ONLY on a stale `assert <dead> in gw._dead` bookkeeping check — recovery itself produces the correct recovered sequence. Do not treat this as a B1 regression; B1 tests assert on token correctness/completion, not `_dead` membership.
+- Spec of record: `docs/superpowers/specs/2026-07-16-b1-ft-baselines-design.md` — **read §10 (Path 2 revision)**; it supersedes the original B0–B3 set.
+- **Baseline set (4 lines):** **RADP-surgical** (new), **RADP-full-replay** (current default, already built in Task 2 as `run_radp`), **cold-restart**, **abort**. B2 (no-mirror ablation) is absorbed into full-replay; B3 (redundant hosting) is deferred to a separate experiment.
+- Metrics only: **TTR**, **token correctness/completeness**, **goodput under failure**.
+- Failure injection: **single mid-stream SIGKILL** of one chain-interior worker (`worker-b`).
+- **TTR taxonomy:** *in-place* lines (RADP-surgical, RADP-full-replay) → TTR = latency of the single failed decode step. *Restart* lines (cold-restart) → TTR = `wall_with_failure − reference_wall`. *Abort* → `None`.
+- In-process dev constants: `MODEL_ID = "facebook/opt-125m"`, 3-worker chain `worker-a/b/c` layers `1-4 / 5-8 / 9-12`, interior victim `worker-b`, `max_tokens=12`, `kill_after_tokens=4`.
+- **Test env:** run pytest ONLY as `.venv-py39/bin/python -m pytest ...`. The venv MUST have `transformers>=4.40,<4.51` (currently 4.50.3). `KeyError: None` from an OPT forward ⇒ venv drifted (`uv pip install --python .venv-py39/bin/python 'transformers>=4.40,<4.51'`).
+- **pytest marker:** `addopts = "-ra -q -m 'not slow'"` deselects model-loading tests. Every model-loading test MUST be `@pytest.mark.slow` (module-level `pytestmark = pytest.mark.slow`) and run with `-m slow`. A plain run yielding "no tests collected" (exit 5) is NOT a pass.
+- **Do not break existing recovery:** `recovery_mode` defaults to the current full-replay behavior; existing callers and tests must be unaffected.
+- **Known pre-existing test state:** `tests/test_cache_replay_recovery.py` and `tests/test_failure_recovery_integration.py` fail ONLY on a stale `assert <dead> in gw._dead` bookkeeping check; recovery produces the correct sequence. Not a regression; do not "fix" it as part of this work.
+- Commit trailer: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`. Do NOT commit `experiments/results/*.json`.
 
 ---
 
 ## File Structure
 
-- **Create** `experiments/b1_ft_baselines.py` — driver: `BaselineResult`, config helpers, reference generation, one function per line, `run_all()`, `main()` CLI.
-- **Create** `tests/test_b1_ft_baselines.py` — in-process TDD tests (opt-125m, fake cluster).
-- **Reuse (no edit)** `experiments/_harness.py` (`in_process_cluster`, `deploy`, `dp_placement_no_recovery`, `write_json`, `greedy_placement`), `radp/coordinator/gateway.py` (`RequestGateway`), `radp/coordinator/scheduler.py` (`Scheduler`).
-- **Modify (final task only)** `experiments/run_failure_remote.py` + `experiments/REPORT.md` for the fleet run.
-
-Reference for existing patterns: `experiments/run_failure.py` (`measure_mid_decode_replay`, `measure_e2e_wall_clock` — the `re_prefill` variant disables the mirror via `gw.cache.get_history = lambda *a, **kw: []`).
+- **Modify** `radp/coordinator/gateway.py` — add `recovery_mode` to `RequestGateway`; add `_recover_surgical(...)`; branch `_recover_from_chain_failure` on the mode. Reuse the existing `_replay_stage_history` for the KV rebuild.
+- **Create** `tests/test_surgical_recovery.py` — correctness tests for the surgical mode (in-process, opt-125m, slow).
+- **Modify** `experiments/b1_ft_baselines.py` — add `run_radp_surgical`, `run_b0_abort`, `run_b1_cold_restart`, `resolve_excluding`, the unified `run_all`, and `main()`. (`run_radp` from Task 2 is the full-replay line.)
+- **Modify** `tests/test_b1_ft_baselines.py` — tests for the new lines + driver.
+- **Modify (final task)** `experiments/run_failure_remote.py`, `experiments/REPORT.md` — fleet run.
 
 ---
 
-### Task 1: Driver scaffold — `BaselineResult`, config, reference generation
+## Task 1 — DONE (commit 33bcd22)
+Driver scaffold: `BaselineResult`, `chain_config()`, `generate_reference()`. Reviewed clean.
+
+## Task 2 — DONE (commit 310e0c1)
+`run_radp` = the **RADP-full-replay** line (drives the gateway's current default recovery; in-place TTR). Reviewed clean. Recovers 12/12, sequence matches reference. (In the driver, this line is labeled "RADP-full-replay".)
+
+---
+
+### Task 3: Surgical recovery mode in the gateway (CORE)
 
 **Files:**
-- Create: `experiments/b1_ft_baselines.py`
-- Test: `tests/test_b1_ft_baselines.py`
+- Modify: `radp/coordinator/gateway.py`
+- Test: `tests/test_surgical_recovery.py`
 
 **Interfaces:**
-- Produces:
-  - `MODEL_ID: str`
-  - `@dataclass BaselineResult(name: str, ttr_seconds: float | None, tokens_completed: int, tokens_requested: int, sequence_matches_reference: bool, goodput_tok_per_s: float, aborted: bool)`
-  - `chain_config() -> tuple[list[str], Placement, RecoveryTable, DeviceId]` returning `(device_ids, placement, recovery, victim)`
-  - `generate_reference(*, prompt: str, max_tokens: int) -> tuple[list[int], float]` returning `(reference_token_ids, reference_wall_seconds)` on a healthy cluster
+- Consumes: existing `RequestGateway`, `_replay_stage_history`, `_attribute_chain_failure`, `_rewire_chain`, `_invoke`, `cache.get_history`.
+- Produces: `RequestGateway(..., recovery_mode: str = "full_replay")` accepting `"full_replay"` | `"surgical"`; a `_recover_surgical(self, request_id, head_stage, error, current_position) -> tuple[Stage, Any]` with the SAME return contract as `_recover_from_chain_failure`.
 
-- [ ] **Step 1: Write the failing test**
+**Mechanics (chain coord→a→b→c, b dies at position P; a advanced to P, c at P-1, backup cold):**
+1. Attribute dead stage; `mark_dead`; promote backup; `_rewire_chain` — same as the full-replay path.
+2. **Do NOT evict survivors' KV.**
+3. Rebuild the backup's KV: replay the dead stage's mirrored inputs for positions **0..P-1** into the backup with `replay_only=True` (this is what `_replay_stage_history` does — but slice to exclude P; see Step 3b of the TDD below).
+4. Run position **P live**: `_invoke` the backup with the mirrored dead-stage input at P (do NOT re-run `a`), let it forward backup→c, and capture the response as the recovered token/activation.
+5. Return `(new_head_or_backup_stage, last_resp)`.
 
-```python
-# tests/test_b1_ft_baselines.py
-from experiments.b1_ft_baselines import BaselineResult, chain_config, generate_reference
+**Correctness gate:** recovered full sequence == the healthy reference, exactly (same bar as full-replay).
 
+**⚠️ Dependency risk — verify FIRST (Step 0):** surgical replay reads `cache.get_history(request_id, dead_stage_key)` — the *worker mirror* for a non-head stage. Task 2's full-replay path used only the coord-native HEAD history, so its success does NOT prove the worker mirror is populated in the in-process cluster. Before building anything, confirm the mirror history for `worker-b`'s stage is non-empty after a few decode steps in `in_process_cluster`. If it is empty (mirror not wired in-process), STOP and report BLOCKED with what you found — the surgical path cannot be built or tested in-process without it.
 
-def test_chain_config_has_interior_victim():
-    device_ids, placement, recovery, victim = chain_config()
-    assert victim == "worker-b"
-    # victim is interior: not the first and not the last stage's device
-    assert placement[0].device != victim
-    assert placement[-1].device != victim
-    assert recovery[victim] in device_ids
+- [ ] **Step 0: Verify the mirror is populated in-process (spike)**
 
+Write a throwaway check (a scratch script or a temporary test) that stands up the 3-worker `in_process_cluster`, deploys with recovery, runs ~4 decode steps, and prints `gw.cache.get_history(request_id, (5, 8))` length. Run it with `.venv-py39/bin/python`. Expected: length > 0 (mirror populated for worker-b's stage 5–8). If it is 0, report BLOCKED (do not proceed) — include the finding and, if you can see why (e.g. the coordinator service that receives `MirrorActivation` is not running in `in_process_cluster`), say so.
 
-def test_generate_reference_returns_tokens_and_walltime():
-    toks, wall = generate_reference(prompt="The quick brown fox", max_tokens=6)
-    assert len(toks) == 6
-    assert wall > 0.0
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_b1_ft_baselines.py -v`
-Expected: FAIL with `ModuleNotFoundError` / `ImportError: cannot import name 'BaselineResult'`.
-
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 1: Write the failing correctness test**
 
 ```python
-# experiments/b1_ft_baselines.py
-"""B1 — fault-tolerance baseline comparison (spec 2026-07-16).
-
-Drives RADP + four recovery-strategy baselines through one identical
-mid-stream worker SIGKILL and reports TTR / correctness / goodput.
-See docs/superpowers/specs/2026-07-16-b1-ft-baselines-design.md.
-"""
-from __future__ import annotations
-
-import time
-from dataclasses import dataclass
+# tests/test_surgical_recovery.py
+import pytest
+pytestmark = pytest.mark.slow
 
 from experiments._harness import deploy, in_process_cluster
-from radp.common.types import DeviceId, LayerIdx, Placement, RecoveryTable, Stage
+from radp.common.types import DeviceId, LayerIdx, Stage
 from radp.coordinator.gateway import RequestGateway
 
 MODEL_ID = "facebook/opt-125m"
 
 
-@dataclass
-class BaselineResult:
-    name: str
-    ttr_seconds: float | None          # None => never recovered (abort)
-    tokens_completed: int
-    tokens_requested: int
-    sequence_matches_reference: bool
-    goodput_tok_per_s: float
-    aborted: bool
-
-
-def chain_config() -> tuple[list[str], Placement, RecoveryTable, DeviceId]:
-    """3-worker chain with an interior victim (worker-b)."""
-    device_ids = ["worker-a", "worker-b", "worker-c"]
-    placement: Placement = [
+def _chain():
+    placement = [
         Stage(LayerIdx(1), LayerIdx(4), DeviceId("worker-a")),
         Stage(LayerIdx(5), LayerIdx(8), DeviceId("worker-b")),
         Stage(LayerIdx(9), LayerIdx(12), DeviceId("worker-c")),
     ]
-    recovery: RecoveryTable = {
+    recovery = {
         DeviceId("worker-a"): DeviceId("worker-b"),
         DeviceId("worker-b"): DeviceId("worker-c"),
         DeviceId("worker-c"): DeviceId("worker-a"),
     }
-    return device_ids, placement, recovery, DeviceId("worker-b")
+    return ["worker-a", "worker-b", "worker-c"], placement, recovery, DeviceId("worker-b")
 
 
-def generate_reference(*, prompt: str, max_tokens: int) -> tuple[list[int], float]:
-    """Healthy-cluster run: the correct token sequence + wall-clock baseline."""
-    device_ids, placement, recovery, _ = chain_config()
-    with in_process_cluster(device_ids) as (addrs, _servers):
+def test_surgical_recovery_matches_reference():
+    ids, placement, recovery, victim = _chain()
+    prompt, max_tokens, kill_after = "The quick brown fox", 12, 4
+
+    # healthy reference
+    with in_process_cluster(ids) as (addrs, _):
         deploy(addrs, placement, model_id=MODEL_ID, recovery=recovery)
-        gw = RequestGateway(
-            placement=placement, recovery=recovery,
-            worker_addresses=addrs, model_id=MODEL_ID,
-        )
-        gw.generate(prompt, max_tokens=2)  # warmup
-        t0 = time.perf_counter()
-        toks = gw.generate(prompt, max_tokens=max_tokens)
-        wall = time.perf_counter() - t0
-        gw.close()
-    return list(toks), wall
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_b1_ft_baselines.py -v`
-Expected: PASS (both tests). If `generate_reference` is slow, that is acceptable — opt-125m loads once per `in_process_cluster`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add experiments/b1_ft_baselines.py tests/test_b1_ft_baselines.py
-git commit -m "test(b1): driver scaffold — BaselineResult, chain config, reference gen
-
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
-```
-
----
-
-### Task 2: RADP line (in-place replay)
-
-**Files:**
-- Modify: `experiments/b1_ft_baselines.py`
-- Test: `tests/test_b1_ft_baselines.py`
-
-**Interfaces:**
-- Consumes: `chain_config`, `generate_reference`, `BaselineResult`, `MODEL_ID`.
-- Produces: `run_radp(*, prompt: str, max_tokens: int, kill_after_tokens: int, reference: list[int]) -> BaselineResult`
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-from experiments.b1_ft_baselines import run_radp, generate_reference
-
-
-def test_radp_recovers_full_sequence():
-    prompt, max_tokens = "The quick brown fox", 12
-    ref, _ = generate_reference(prompt=prompt, max_tokens=max_tokens)
-    r = run_radp(prompt=prompt, max_tokens=max_tokens, kill_after_tokens=4, reference=ref)
-    assert r.name == "RADP"
-    assert not r.aborted
-    assert r.tokens_completed == max_tokens
-    assert r.sequence_matches_reference is True
-    assert r.ttr_seconds is not None and r.ttr_seconds > 0
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_b1_ft_baselines.py::test_radp_recovers_full_sequence -v`
-Expected: FAIL with `ImportError: cannot import name 'run_radp'`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-```python
-import contextlib
-
-
-def _drive_inplace(
-    *, name: str, prompt: str, max_tokens: int, kill_after_tokens: int,
-    reference: list[int], disable_mirror: bool,
-) -> BaselineResult:
-    """Manual prefill+decode; kill the interior victim mid-decode; the
-    gateway's in-place recovery (mirror replay) fixes the failed step."""
-    device_ids, placement, recovery, victim = chain_config()
-    with in_process_cluster(device_ids) as (addrs, servers):
-        deploy(addrs, placement, model_id=MODEL_ID, recovery=recovery)
-        gw = RequestGateway(
-            placement=placement, recovery=recovery,
-            worker_addresses=addrs, model_id=MODEL_ID,
-        )
-        if disable_mirror:
-            gw.cache.get_history = lambda *a, **kw: []  # type: ignore[method-assign]
-        gw.generate(prompt, max_tokens=2)  # warmup
-        rid = gw.new_request_id()
-        ttr: float | None = None
-        aborted = False
-        toks: list[int] = []
-        t_start = time.perf_counter()
-        try:
-            gw._prefill(rid, prompt)
-            for step in range(1, max_tokens):
-                if step == kill_after_tokens:
-                    servers[victim].stop()
-                t0 = time.perf_counter()
-                gw._decode_step(rid)
-                dt = time.perf_counter() - t0
-                if step == kill_after_tokens:
-                    ttr = dt
-            toks = list(gw._requests[rid].generated_token_ids)
-        except Exception:
-            aborted = True
-            with contextlib.suppress(Exception):
-                toks = list(gw._requests[rid].generated_token_ids)
-        finally:
-            with contextlib.suppress(Exception):
-                gw._evict_everywhere(rid)
-        total = time.perf_counter() - t_start
-        gw.close()
-
-    completed = len(toks)
-    goodput = completed / total if total > 0 else 0.0
-    return BaselineResult(
-        name=name,
-        ttr_seconds=None if aborted else ttr,
-        tokens_completed=completed,
-        tokens_requested=max_tokens,
-        sequence_matches_reference=(toks == reference),
-        goodput_tok_per_s=goodput,
-        aborted=aborted,
-    )
-
-
-def run_radp(
-    *, prompt: str, max_tokens: int, kill_after_tokens: int, reference: list[int]
-) -> BaselineResult:
-    return _drive_inplace(
-        name="RADP", prompt=prompt, max_tokens=max_tokens,
-        kill_after_tokens=kill_after_tokens, reference=reference,
-        disable_mirror=False,
-    )
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_b1_ft_baselines.py::test_radp_recovers_full_sequence -v`
-Expected: PASS. (This mirrors the proven `measure_mid_decode_replay` path, so recovery should succeed and the sequence should match the healthy reference.)
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add experiments/b1_ft_baselines.py tests/test_b1_ft_baselines.py
-git commit -m "feat(b1): RADP in-place replay line
-
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
-```
-
----
-
-### Task 3: B2 no-mirror line (restart-based ablation)
-
-**Files:**
-- Modify: `experiments/b1_ft_baselines.py`
-- Test: `tests/test_b1_ft_baselines.py`
-
-**Interfaces:**
-- Consumes: `generate_reference`, `chain_config`, `BaselineResult`.
-- Produces: `run_b2_no_mirror(*, prompt: str, max_tokens: int, kill_after_tokens: int, reference: list[int], reference_wall: float) -> BaselineResult`
-
-**Rationale:** With the mirror disabled, a manual `_decode_step` cannot replay KV. B2 must use `gw.generate()` so the gateway's `_generate_inner` re-prefill loop restarts the whole request. TTR for this restart line = extra wall-clock over the reference (per the TTR taxonomy).
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-from experiments.b1_ft_baselines import run_b2_no_mirror
-
-
-def test_b2_no_mirror_recovers_by_restart():
-    prompt, max_tokens = "The quick brown fox", 12
-    ref, ref_wall = generate_reference(prompt=prompt, max_tokens=max_tokens)
-    r = run_b2_no_mirror(
-        prompt=prompt, max_tokens=max_tokens, kill_after_tokens=4,
-        reference=ref, reference_wall=ref_wall,
-    )
-    assert r.name == "B2-no-mirror"
-    assert not r.aborted
-    assert r.tokens_completed == max_tokens
-    assert r.sequence_matches_reference is True
-    assert r.ttr_seconds is not None  # extra-wall-clock, may be small in-process
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_b1_ft_baselines.py::test_b2_no_mirror_recovers_by_restart -v`
-Expected: FAIL with `ImportError: cannot import name 'run_b2_no_mirror'`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-```python
-def _drive_restart(
-    *, name: str, prompt: str, max_tokens: int, kill_after_tokens: int,
-    reference: list[int], reference_wall: float, disable_mirror: bool,
-) -> BaselineResult:
-    """Use gw.generate(); kill the victim mid-stream via a background timer
-    on token count. Recovery happens by _generate_inner's re-prefill restart.
-    TTR = wall_with_failure - reference_wall."""
-    device_ids, placement, recovery, victim = chain_config()
-    with in_process_cluster(device_ids) as (addrs, servers):
-        deploy(addrs, placement, model_id=MODEL_ID, recovery=recovery)
-        gw = RequestGateway(
-            placement=placement, recovery=recovery,
-            worker_addresses=addrs, model_id=MODEL_ID,
-        )
-        if disable_mirror:
-            gw.cache.get_history = lambda *a, **kw: []  # type: ignore[method-assign]
-        gw.generate(prompt, max_tokens=2)  # warmup
-
-        # Kill the victim after `kill_after_tokens` streamed tokens.
-        killed = {"done": False}
-
-        def _kill_when_ready(tokens_so_far: int) -> None:
-            if not killed["done"] and tokens_so_far >= kill_after_tokens:
-                servers[victim].stop()
-                killed["done"] = True
-
-        aborted = False
-        toks: list[int] = []
-        t0 = time.perf_counter()
-        try:
-            for i, st in enumerate(gw.generate_streaming(prompt, max_tokens=max_tokens)):
-                toks.append(st.token_id)
-                _kill_when_ready(len(toks))
-        except Exception:
-            aborted = True
-        total = time.perf_counter() - t0
-        gw.close()
-
-    completed = len(toks)
-    goodput = completed / total if total > 0 else 0.0
-    ttr = None if aborted else max(0.0, total - reference_wall)
-    return BaselineResult(
-        name=name, ttr_seconds=ttr, tokens_completed=completed,
-        tokens_requested=max_tokens,
-        sequence_matches_reference=(toks == reference),
-        goodput_tok_per_s=goodput, aborted=aborted,
-    )
-
-
-def run_b2_no_mirror(
-    *, prompt: str, max_tokens: int, kill_after_tokens: int,
-    reference: list[int], reference_wall: float,
-) -> BaselineResult:
-    return _drive_restart(
-        name="B2-no-mirror", prompt=prompt, max_tokens=max_tokens,
-        kill_after_tokens=kill_after_tokens, reference=reference,
-        reference_wall=reference_wall, disable_mirror=True,
-    )
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_b1_ft_baselines.py::test_b2_no_mirror_recovers_by_restart -v`
-Expected: PASS. If `generate_streaming` yields objects whose token field is not `token_id`, inspect `radp/coordinator/gateway.py:71` (`class StreamingToken`) and use the correct attribute — adjust `st.token_id` accordingly, then re-run. This is the one field to verify against the real class.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add experiments/b1_ft_baselines.py tests/test_b1_ft_baselines.py
-git commit -m "feat(b1): B2 no-mirror restart ablation line
-
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
-```
-
----
-
-### Task 4: B0 abort line (no recovery)
-
-**Files:**
-- Modify: `experiments/b1_ft_baselines.py`
-- Test: `tests/test_b1_ft_baselines.py`
-
-**Interfaces:**
-- Consumes: `_drive_restart` pattern, `chain_config`, `BaselineResult`.
-- Produces: `run_b0_abort(*, prompt: str, max_tokens: int, kill_after_tokens: int, reference: list[int], reference_wall: float) -> BaselineResult`
-
-**Rationale:** B0 deploys with `recovery={}` (no backup). When the victim dies, `_generate_inner` retries re-prefill up to `len(placement)` times and then raises — but the victim stays dead, so it aborts. `tokens_completed` = tokens streamed before the abort; `ttr = None`; `aborted = True`.
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-from experiments.b1_ft_baselines import run_b0_abort
-
-
-def test_b0_aborts_with_partial_output():
-    prompt, max_tokens = "The quick brown fox", 12
-    ref, ref_wall = generate_reference(prompt=prompt, max_tokens=max_tokens)
-    r = run_b0_abort(
-        prompt=prompt, max_tokens=max_tokens, kill_after_tokens=4,
-        reference=ref, reference_wall=ref_wall,
-    )
-    assert r.name == "B0-abort"
-    assert r.aborted is True
-    assert r.ttr_seconds is None
-    assert r.tokens_completed < max_tokens          # never finished
-    assert r.sequence_matches_reference is False
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_b1_ft_baselines.py::test_b0_aborts_with_partial_output -v`
-Expected: FAIL with `ImportError: cannot import name 'run_b0_abort'`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-```python
-def run_b0_abort(
-    *, prompt: str, max_tokens: int, kill_after_tokens: int,
-    reference: list[int], reference_wall: float,
-) -> BaselineResult:
-    """No recovery: deploy with recovery={}. Victim death aborts the stream."""
-    device_ids, placement, _recovery, victim = chain_config()
-    with in_process_cluster(device_ids) as (addrs, servers):
-        deploy(addrs, placement, model_id=MODEL_ID, recovery={})
-        gw = RequestGateway(
-            placement=placement, recovery={},
-            worker_addresses=addrs, model_id=MODEL_ID,
-        )
-        gw.generate(prompt, max_tokens=2)  # warmup
-        killed = {"done": False}
-        aborted = False
-        toks: list[int] = []
-        t0 = time.perf_counter()
-        try:
-            for st in gw.generate_streaming(prompt, max_tokens=max_tokens):
-                toks.append(st.token_id)
-                if not killed["done"] and len(toks) >= kill_after_tokens:
-                    servers[victim].stop()
-                    killed["done"] = True
-        except Exception:
-            aborted = True
-        total = time.perf_counter() - t0
-        gw.close()
-
-    completed = len(toks)
-    return BaselineResult(
-        name="B0-abort",
-        ttr_seconds=None,
-        tokens_completed=completed,
-        tokens_requested=max_tokens,
-        sequence_matches_reference=(toks == reference),
-        goodput_tok_per_s=(completed / total if total > 0 else 0.0),
-        aborted=(aborted or completed < max_tokens),
-    )
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_b1_ft_baselines.py::test_b0_aborts_with_partial_output -v`
-Expected: PASS. If B0 unexpectedly completes (recovery happened without a table), verify `deploy(..., recovery={})` truly loaded no backups and that `RequestGateway(recovery={})` has no fallback — check `radp/coordinator/gateway.py:620` `_recover_from_chain_failure`; with an empty table `NoRecoveryError` should propagate and abort. Adjust the injection only if the mechanism differs.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add experiments/b1_ft_baselines.py tests/test_b1_ft_baselines.py
-git commit -m "feat(b1): B0 no-recovery abort line
-
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
-```
-
----
-
-### Task 5: B1 cold-restart line (re-solve survivors + full re-run)
-
-**Files:**
-- Modify: `experiments/b1_ft_baselines.py`
-- Test: `tests/test_b1_ft_baselines.py`
-
-**Interfaces:**
-- Consumes: `chain_config`, `greedy_placement` (from `_harness`), `BaselineResult`.
-- Produces:
-  - `resolve_excluding(dead: DeviceId, survivors: list[str]) -> Placement` — contiguous re-split of all 12 layers over the survivors (in-process stand-in for the fleet DP re-solve).
-  - `run_b1_cold_restart(*, prompt: str, max_tokens: int, kill_after_tokens: int, reference: list[int], reference_wall: float) -> BaselineResult`
-
-**Rationale:** Cold-restart = on failure, drop the dead node, re-solve a placement over survivors, redeploy, re-run from scratch. TTR includes the re-solve (per resolved decision). In-process the re-solve is a cheap contiguous re-split; the real DP re-solve cost is measured on the fleet (Task 7).
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-from experiments.b1_ft_baselines import run_b1_cold_restart, resolve_excluding
-
-
-def test_resolve_excluding_covers_all_layers_over_survivors():
-    plan = resolve_excluding("worker-b", ["worker-a", "worker-c"])
-    assert {s.device for s in plan} == {"worker-a", "worker-c"}
-    assert int(plan[0].start_layer) == 1
-    assert int(plan[-1].end_layer) == 12
-
-
-def test_b1_cold_restart_recovers_full_sequence():
-    prompt, max_tokens = "The quick brown fox", 12
-    ref, ref_wall = generate_reference(prompt=prompt, max_tokens=max_tokens)
-    r = run_b1_cold_restart(
-        prompt=prompt, max_tokens=max_tokens, kill_after_tokens=4,
-        reference=ref, reference_wall=ref_wall,
-    )
-    assert r.name == "B1-cold-restart"
-    assert not r.aborted
-    assert r.tokens_completed == max_tokens
-    assert r.sequence_matches_reference is True
-    assert r.ttr_seconds is not None and r.ttr_seconds >= 0
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_b1_ft_baselines.py -k "resolve_excluding or cold_restart" -v`
-Expected: FAIL with `ImportError: cannot import name 'run_b1_cold_restart'`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-```python
-from experiments._harness import greedy_placement
-from radp.common.types import DeviceProfile
-
-
-def resolve_excluding(dead: DeviceId, survivors: list[str]) -> Placement:
-    """Contiguous re-split of all 12 layers over the survivors (equal-weight).
-    In-process stand-in for the fleet DP re-solve."""
-    devs = [DeviceProfile(id=DeviceId(s), total_memory_bytes=4_000_000_000,
-                          compute_throughput=1.0) for s in survivors if s != dead]
-    return greedy_placement(devs, num_layers=12)
-
-
-def run_b1_cold_restart(
-    *, prompt: str, max_tokens: int, kill_after_tokens: int,
-    reference: list[int], reference_wall: float,
-) -> BaselineResult:
-    device_ids, placement, recovery, victim = chain_config()
-    survivors = [d for d in device_ids if d != victim]
-    with in_process_cluster(device_ids) as (addrs, servers):
+        gwr = RequestGateway(placement=placement, recovery=recovery,
+                             worker_addresses=addrs, model_id=MODEL_ID)
+        reference = list(gwr.generate(prompt, max_tokens=max_tokens))
+        gwr.close()
+
+    # surgical recovery under a mid-chain kill
+    with in_process_cluster(ids) as (addrs, servers):
         deploy(addrs, placement, model_id=MODEL_ID, recovery=recovery)
         gw = RequestGateway(placement=placement, recovery=recovery,
-                            worker_addresses=addrs, model_id=MODEL_ID)
+                            worker_addresses=addrs, model_id=MODEL_ID,
+                            recovery_mode="surgical")
         gw.generate(prompt, max_tokens=2)  # warmup
-
-        t0 = time.perf_counter()
-        aborted = False
-        toks: list[int] = []
-        # First attempt: stream until the victim is killed mid-stream.
-        killed = {"done": False}
-        try:
-            for st in gw.generate_streaming(prompt, max_tokens=max_tokens):
-                toks.append(st.token_id)
-                if not killed["done"] and len(toks) >= kill_after_tokens:
-                    servers[victim].stop()
-                    killed["done"] = True
-        except Exception:
-            pass  # expected: first attempt fails, cold-restart follows
+        rid = gw.new_request_id()
+        gw._prefill(rid, prompt)
+        for step in range(1, max_tokens):
+            if step == kill_after:
+                servers[victim].stop()
+            gw._decode_step(rid)
+        recovered = list(gw._requests[rid].generated_token_ids)
+        gw._evict_everywhere(rid)
         gw.close()
 
-        # Cold restart: re-solve over survivors, redeploy, re-run from scratch.
-        new_plan = resolve_excluding(victim, survivors)
-        surv_addrs = {DeviceId(d): addrs[DeviceId(d)] for d in survivors}
-        deploy(surv_addrs, new_plan, model_id=MODEL_ID, recovery={})
-        gw2 = RequestGateway(placement=new_plan, recovery={},
-                             worker_addresses=surv_addrs, model_id=MODEL_ID)
-        try:
-            toks = gw2.generate(prompt, max_tokens=max_tokens)
-        except Exception:
-            aborted = True
-            toks = []
-        gw2.close()
-        total = time.perf_counter() - t0
+    assert len(recovered) == max_tokens
+    assert recovered == reference, f"recovered={recovered}\nreference={reference}"
 
-    completed = len(toks)
-    return BaselineResult(
-        name="B1-cold-restart",
-        ttr_seconds=None if aborted else max(0.0, total - reference_wall),
-        tokens_completed=completed,
-        tokens_requested=max_tokens,
-        sequence_matches_reference=(list(toks) == reference),
-        goodput_tok_per_s=(completed / total if total > 0 else 0.0),
-        aborted=aborted,
-    )
+
+def test_full_replay_still_default():
+    # Regression guard: default mode unchanged.
+    gw = RequestGateway.__new__(RequestGateway)
+    assert getattr(RequestGateway, "__init__")  # sanity
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+(Keep `test_full_replay_still_default` minimal or replace with a real default-mode assertion you can construct cheaply; the intent is "default mode is still full_replay".)
 
-Run: `pytest tests/test_b1_ft_baselines.py -k "resolve_excluding or cold_restart" -v`
-Expected: PASS. If the re-run sequence does not match the reference (2-device re-split changes layer boundaries but not the model, so greedy argmax output must be identical), confirm `resolve_excluding` covers exactly layers 1–12 with no gaps/overlaps; fix the split if `test_resolve_excluding_*` passed but the sequence differs.
+- [ ] **Step 2: Run the test to confirm RED**
 
-- [ ] **Step 5: Commit**
+Run: `.venv-py39/bin/python -m pytest tests/test_surgical_recovery.py::test_surgical_recovery_matches_reference -m slow -v`
+Expected: FAIL — `RequestGateway.__init__` has no `recovery_mode` kwarg (TypeError) until you add it.
+
+- [ ] **Step 3: Add `recovery_mode` + branch (no behavior change at default)**
+
+In `RequestGateway.__init__`, add `recovery_mode: str = "full_replay"` and store `self.recovery_mode = recovery_mode`. In `_recover_from_chain_failure`, at the point where it currently does evict + `_replay_through_chain`, branch: if `self.recovery_mode == "surgical"`, delegate to `self._recover_surgical(request_id, head_stage, error, current_position)` and return its result; otherwise keep the existing full-replay behavior byte-for-byte.
+
+- [ ] **Step 3b: Implement `_recover_surgical`**
+
+Reuse the promote+rewire prefix from `_recover_from_chain_failure`, then rebuild only the backup's KV and run the failed position live. Concretely: identify `dead_stage` and its `stage_key=(start,end)`; promote backup; `_rewire_chain()`; get `history = self.cache.get_history(request_id, stage_key)`; replay `history[:current_position]` into the backup via `_invoke(..., replay_only=True)` (rebuild KV for 0..P-1, NO survivor evict); then `_invoke` the backup with `history[current_position]` (the mirrored input at P), `replay_only=False`, so it forwards through c and yields the recovered response; return `(backup_stage, last_resp)`. If `history` is shorter than expected (no entry at P), fall back to the full-replay path and log — do not silently produce a wrong token.
+
+Show the complete method body in your implementation; do not leave `...` placeholders. Follow the surrounding code's logging and error style.
+
+- [ ] **Step 4: Run the test to confirm GREEN**
+
+Run: `.venv-py39/bin/python -m pytest tests/test_surgical_recovery.py -m slow -v`
+Expected: PASS — recovered sequence equals the healthy reference (12/12 tokens). If tokens diverge at the recovery position, the position-P reconciliation (Step 3b) is off by one — check whether `history` includes P and whether you replayed `[:P]` vs `[:P+1]`.
+
+- [ ] **Step 5: Guard the existing recovery tests still behave**
+
+Run the existing recovery suite to confirm you did not change default behavior:
+`.venv-py39/bin/python -m pytest tests/test_cache_replay_recovery.py tests/test_failure_recovery_integration.py -m slow -q`
+Expected: SAME pre-existing state as before your change (they still fail ONLY on the `_dead` bookkeeping assert; the recovered sequences still match). If any NEW failure appears, your default-path branch changed behavior — fix it.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add experiments/b1_ft_baselines.py tests/test_b1_ft_baselines.py
-git commit -m "feat(b1): B1 cold-restart line (re-solve survivors + re-run)
+git add radp/coordinator/gateway.py tests/test_surgical_recovery.py
+git commit -m "feat(recovery): surgical recovery mode — rebuild only the promoted backup's KV
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 6: Unified driver + B3 infeasibility calc + JSON/CLI
+### Task 4: RADP-surgical benchmark line
 
-**Files:**
-- Modify: `experiments/b1_ft_baselines.py`
-- Test: `tests/test_b1_ft_baselines.py`
+**Files:** Modify `experiments/b1_ft_baselines.py`; Test `tests/test_b1_ft_baselines.py`.
 
-**Interfaces:**
-- Consumes: all `run_*` line functions, `generate_reference`, `write_json` (from `_harness`).
-- Produces:
-  - `redundant_hosting_fits(*, device_mem_bytes: int, stage_weight_bytes: int, primary_stage_bytes: int) -> bool` — B3 feasibility: a device already holding its primary stage must also fit a full replica of the backed-up stage.
-  - `run_all(*, prompt: str, max_tokens: int, kill_after_tokens: int) -> dict` — runs RADP/B0/B1/B2 in-process through the same injection, adds the B3 feasibility flag, returns a JSON-serializable comparison record.
-  - `main() -> None` — argparse CLI writing `experiments/results/<out>.json`.
+**Interfaces:** Consumes `_drive_inplace` (Task 2), `chain_config`, `generate_reference`. Produces `run_radp_surgical(*, prompt, max_tokens, kill_after_tokens, reference) -> BaselineResult` (name `"RADP-surgical"`).
 
-**Rationale:** B3's in-place TTR equals RADP's in-process (same replay path), so in-process B3 adds no signal beyond RADP; its real content is the **memory feasibility** finding (pure function here) and a fleet TTR on a 32 GB board (Task 7). The driver records the feasibility flag for the config-A 4 GB Nano.
+**Approach:** identical to `run_radp` (Task 2's `_drive_inplace`) EXCEPT construct the gateway with `recovery_mode="surgical"`. Add a `recovery_mode` parameter to `_drive_inplace` (default `"full_replay"`), pass it into `RequestGateway(...)`. Update `run_radp` to set its `BaselineResult.name` to `"RADP-full-replay"` (it drives the default mode).
 
-- [ ] **Step 1: Write the failing test**
-
-```python
-from experiments.b1_ft_baselines import redundant_hosting_fits, run_all
-
-
-def test_redundant_hosting_infeasible_on_4gb():
-    # 4GB Nano already holds a ~2GB primary; a full ~2GB replica does not fit.
-    assert redundant_hosting_fits(
-        device_mem_bytes=4_000_000_000,
-        stage_weight_bytes=2_000_000_000,
-        primary_stage_bytes=2_000_000_000,
-    ) is False
-    # A 32GB board fits both.
-    assert redundant_hosting_fits(
-        device_mem_bytes=32_000_000_000,
-        stage_weight_bytes=2_000_000_000,
-        primary_stage_bytes=2_000_000_000,
-    ) is True
-
-
-def test_run_all_returns_all_lines():
-    rec = run_all(prompt="The quick brown fox", max_tokens=8, kill_after_tokens=3)
-    names = {line["name"] for line in rec["lines"]}
-    assert {"RADP", "B0-abort", "B1-cold-restart", "B2-no-mirror"} <= names
-    assert rec["b3_redundant_fits_4gb"] is False
-    for line in rec["lines"]:
-        assert "ttr_seconds" in line and "tokens_completed" in line
-        assert "goodput_tok_per_s" in line and "sequence_matches_reference" in line
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_b1_ft_baselines.py -k "redundant or run_all" -v`
-Expected: FAIL with `ImportError: cannot import name 'redundant_hosting_fits'`.
-
-- [ ] **Step 3: Write minimal implementation**
-
-```python
-import argparse
-from dataclasses import asdict
-
-from experiments._harness import write_json
-
-
-def redundant_hosting_fits(
-    *, device_mem_bytes: int, stage_weight_bytes: int, primary_stage_bytes: int
-) -> bool:
-    """A redundant-hosting backup device holds its own primary stage AND a
-    full live replica of the backed-up stage. Fits only if both reside."""
-    return primary_stage_bytes + stage_weight_bytes <= device_mem_bytes
-
-
-def run_all(*, prompt: str, max_tokens: int, kill_after_tokens: int) -> dict:
-    reference, reference_wall = generate_reference(prompt=prompt, max_tokens=max_tokens)
-    lines = [
-        run_radp(prompt=prompt, max_tokens=max_tokens,
-                 kill_after_tokens=kill_after_tokens, reference=reference),
-        run_b0_abort(prompt=prompt, max_tokens=max_tokens,
-                     kill_after_tokens=kill_after_tokens,
-                     reference=reference, reference_wall=reference_wall),
-        run_b1_cold_restart(prompt=prompt, max_tokens=max_tokens,
-                            kill_after_tokens=kill_after_tokens,
-                            reference=reference, reference_wall=reference_wall),
-        run_b2_no_mirror(prompt=prompt, max_tokens=max_tokens,
-                         kill_after_tokens=kill_after_tokens,
-                         reference=reference, reference_wall=reference_wall),
-    ]
-    # B3 config-A feasibility: 4GB Nano holding a ~2GB stage cannot also host
-    # a full replica. Weights are placeholders here; the fleet run (Task 7)
-    # substitutes measured per-stage bytes.
-    b3_fits = redundant_hosting_fits(
-        device_mem_bytes=4_000_000_000,
-        stage_weight_bytes=2_000_000_000,
-        primary_stage_bytes=2_000_000_000,
-    )
-    return {
-        "model_id": MODEL_ID,
-        "prompt": prompt,
-        "max_tokens": max_tokens,
-        "kill_after_tokens": kill_after_tokens,
-        "reference_wall_seconds": reference_wall,
-        "b3_redundant_fits_4gb": b3_fits,
-        "lines": [asdict(line) for line in lines],
-    }
-
-
-def main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument("--prompt", default="The quick brown fox")
-    p.add_argument("--max-tokens", type=int, default=12)
-    p.add_argument("--kill-after-tokens", type=int, default=4)
-    p.add_argument("--out", default="b1_ft_baselines")
-    args = p.parse_args()
-    rec = run_all(prompt=args.prompt, max_tokens=args.max_tokens,
-                  kill_after_tokens=args.kill_after_tokens)
-    path = write_json(args.out, rec)
-    print(f"wrote {path}")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pytest tests/test_b1_ft_baselines.py -k "redundant or run_all" -v`
-Then smoke-run the CLI: `python -m experiments.b1_ft_baselines --max-tokens 8 --kill-after-tokens 3 --out b1_smoke`
-Expected: tests PASS; CLI prints `wrote .../results/b1_smoke.json` with four lines + the `b3_redundant_fits_4gb: false` flag.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add experiments/b1_ft_baselines.py tests/test_b1_ft_baselines.py
-git commit -m "feat(b1): unified driver + B3 feasibility calc + CLI
-
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
-```
+- [ ] Step 1: failing test `test_radp_surgical_recovers_full_sequence` — same shape as `test_radp_recovers_full_sequence` but calls `run_radp_surgical`, asserts `name == "RADP-surgical"`, `tokens_completed == max_tokens`, `sequence_matches_reference is True`, `ttr_seconds is not None`. (module already `pytestmark = slow`.)
+- [ ] Step 2: run `-m slow` → RED (`run_radp_surgical` undefined).
+- [ ] Step 3: add `recovery_mode` param to `_drive_inplace`; add `run_radp_surgical`; relabel `run_radp` name to `"RADP-full-replay"`.
+- [ ] Step 4: run `-m slow` → GREEN (surgical recovers 12/12, matches reference). Compare its `ttr_seconds` to full-replay in the report if easy (surgical should be ≤ full-replay).
+- [ ] Step 5: commit `feat(b1): RADP-surgical benchmark line`.
 
 ---
 
-### Task 7: Fleet port + config-A run + REPORT section (procedural, hardware)
+### Task 5: B0 abort line
 
-**Files:**
-- Modify: `experiments/run_failure_remote.py` (add a `--baselines` path invoking the `run_*` functions against real worker addresses)
-- Modify: `experiments/REPORT.md` (add a B1 results subsection)
+**Files:** Modify `experiments/b1_ft_baselines.py`; Test `tests/test_b1_ft_baselines.py`.
+**Interfaces:** Produces `run_b0_abort(*, prompt, max_tokens, kill_after_tokens, reference, reference_wall) -> BaselineResult` (name `"B0-abort"`). Deploy with `recovery={}` (no backup); stream via `gw.generate_streaming`; the victim death aborts. `ttr_seconds=None`, `aborted=True`, `tokens_completed < max_tokens`, `sequence_matches_reference=False`.
 
-**Interfaces:**
-- Consumes: the confirmed `run_*` line functions; the fleet's real worker addresses and ansible deploy from the existing remote harness.
+- [ ] Step 1: failing test `test_b0_aborts_with_partial_output` (asserts aborted True, ttr None, tokens_completed < max, sequence match False).
+- [ ] Step 2: `-m slow` → RED.
+- [ ] Step 3: implement `run_b0_abort` (deploy recovery={}, stream, kill after `kill_after_tokens` streamed, catch abort). If `generate_streaming` yields objects whose token attr differs, inspect `radp/coordinator/gateway.py:71` `class StreamingToken` and use the real attribute.
+- [ ] Step 4: `-m slow` → GREEN. If B0 unexpectedly completes, confirm `recovery={}` truly loaded no backup and that `NoRecoveryError` aborts (`gateway.py:620`+).
+- [ ] Step 5: commit `feat(b1): B0 no-recovery abort line`.
 
-**Note:** This task runs on the physical fleet (config A: AGX Orin + Nano CUDA ×3) with `MODEL_ID` set to the fleet model (OPT-350M; Llama-3.2-1B if time permits). It is not TDD — it produces measured numbers. The in-process line functions are reused; only the cluster wiring differs.
+---
 
-- [ ] **Step 1: Parameterize the line functions for real addresses**
+### Task 6: B1 cold-restart line
 
-Extract the cluster wiring so `run_*` can accept an externally-provided `(addrs, servers-or-None, placement, recovery, victim)` instead of always calling `in_process_cluster`/`chain_config`. Keep the in-process default. Show the refactor as a `cluster` parameter with the in-process context manager as default; do not duplicate the driving logic.
+**Files:** Modify `experiments/b1_ft_baselines.py`; Test `tests/test_b1_ft_baselines.py`.
+**Interfaces:** Produces `resolve_excluding(dead, survivors) -> Placement` (contiguous re-split of all 12 layers over survivors, via `_harness.greedy_placement`) and `run_b1_cold_restart(*, prompt, max_tokens, kill_after_tokens, reference, reference_wall) -> BaselineResult` (name `"B1-cold-restart"`). On failure: stream until the victim is killed; then re-solve over survivors, redeploy, re-run from scratch; `ttr_seconds = wall_with_failure − reference_wall` (INCLUDES the re-solve, per resolved decision), full correct sequence.
 
-- [ ] **Step 2: Wire config A in `run_failure_remote.py`**
+- [ ] Step 1: failing tests `test_resolve_excluding_covers_all_layers_over_survivors` + `test_b1_cold_restart_recovers_full_sequence`.
+- [ ] Step 2: `-m slow` (and the non-slow `resolve_excluding` test) → RED.
+- [ ] Step 3: implement `resolve_excluding` (survivors get all 12 layers, contiguous) + `run_b1_cold_restart` (first attempt streams to kill; then deploy new plan on survivors + fresh `RequestGateway(recovery={})` + `generate` from scratch; total wall includes both).
+- [ ] Step 4: `-m slow` → GREEN (re-run sequence == reference; `resolve_excluding` covers layers 1–12 with no gaps/overlaps).
+- [ ] Step 5: commit `feat(b1): B1 cold-restart line`.
 
-Use the existing remote deploy to stand up AGX Orin + Nano CUDA ×3, build the placement/recovery over those four devices, pick an interior victim, and call `run_all` with the real addresses. Kill the victim via the remote harness's existing SIGKILL mechanism (`experiments/run_failure_remote.py` `_find_recovery_step` already tracks the victim-drop step).
+---
 
-- [ ] **Step 3: Run and capture**
+### Task 7: Unified driver + metrics + CLI
 
-Run the fleet benchmark (operator-invoked on the cluster). Capture `experiments/results/b1_ft_baselines_configA_opt350m.json`.
+**Files:** Modify `experiments/b1_ft_baselines.py`; Test `tests/test_b1_ft_baselines.py`.
+**Interfaces:** Produces `run_all(*, prompt, max_tokens, kill_after_tokens) -> dict` (runs RADP-surgical, RADP-full-replay, B0-abort, B1-cold-restart through the same injection; returns `{"model_id","prompt","max_tokens","kill_after_tokens","reference_wall_seconds","lines":[asdict(...)]}`) and `main()` (argparse CLI writing `experiments/results/<out>.json` via `_harness.write_json`).
 
-- [ ] **Step 4: Measure B3 TTR on a 32 GB board**
+- [ ] Step 1: failing test `test_run_all_returns_all_four_lines` — `names == {"RADP-surgical","RADP-full-replay","B0-abort","B1-cold-restart"}`; each line dict has `ttr_seconds, tokens_completed, goodput_tok_per_s, sequence_matches_reference`.
+- [ ] Step 2: `-m slow` → RED.
+- [ ] Step 3: implement `run_all` (generate reference once, run the four lines, `asdict` each) + `main()`.
+- [ ] Step 4: `-m slow` → GREEN; then smoke-run the CLI: `.venv-py39/bin/python -m experiments.b1_ft_baselines --max-tokens 8 --kill-after-tokens 3 --out b1_smoke` — prints `wrote .../results/b1_smoke.json` with four lines.
+- [ ] Step 5: commit `feat(b1): unified driver + CLI`.
 
-On AGX Orin 32 GB (ao-2), deploy a redundant replica of the victim's stage on a live peer, kill the victim, measure the reroute+replay TTR. Record it alongside `redundant_hosting_fits(...)=False` for the 4 GB Nano (using measured per-stage bytes).
+---
 
-- [ ] **Step 5: Write the REPORT.md subsection + commit**
+### Task 8: Fleet config-A run + REPORT (procedural, hardware — operator-run)
 
-Add a "B1 — FT baseline comparison" subsection to `experiments/REPORT.md` with the comparison table (per line: TTR, tokens_completed, sequence_match, goodput) and the B3 infeasibility note.
+**Files:** Modify `experiments/run_failure_remote.py`, `experiments/REPORT.md`.
+Not TDD — produces measured numbers on the physical fleet (config A: AGX Orin + Nano CUDA ×3, `MODEL_ID` = OPT-350M; Llama-3.2-1B if time permits).
 
-```bash
-git add experiments/run_failure_remote.py experiments/REPORT.md experiments/results/b1_ft_baselines_configA_opt350m.json
-git commit -m "feat(b1): fleet config-A FT baseline run + REPORT section
-
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
-```
+- [ ] Step 1: parameterize the `run_*` line functions to accept externally-provided real worker addresses (keep the in-process default), so they run against the fleet without duplicating the drive logic.
+- [ ] Step 2: wire config A in `run_failure_remote.py` (real deploy, interior victim, real SIGKILL via the existing remote mechanism); call `run_all`.
+- [ ] Step 3: run on the cluster; capture `experiments/results/b1_ft_baselines_configA_opt350m.json`.
+- [ ] Step 4: add a "B1 — FT baseline comparison" subsection to `experiments/REPORT.md` with the comparison table (per line: TTR, tokens, sequence_match, goodput) — headline **surgical ≪ full-replay ≈ cold-restart ≫ abort**.
+- [ ] Step 5: commit `feat(b1): fleet config-A FT baseline run + REPORT section`.
 
 ---
 
 ## Self-Review
 
-**Spec coverage:**
-- Baselines B0/B1/B2/B3 + RADP → Tasks 2–6 (B3 = feasibility calc T6 + fleet TTR T7). ✓
-- Metrics TTR/correctness/goodput → `BaselineResult` (T1), populated by every line. ✓
-- Single mid-stream SIGKILL → the shared injection in `_drive_inplace`/`_drive_restart`/B0/B1. ✓
-- B2 dual-role labeling → name `B2-no-mirror`; ablation grouping is a reporting concern in T7's table. ✓
-- B3 4 GB infeasibility + 32 GB TTR → `redundant_hosting_fits` (T6) + T7 Step 4. ✓
-- Resolved decisions (replay / re-solve in TTR / config A) → Global Constraints + T5 + T7. ✓
-- In-process dev → fleet headline → Tasks 1–6 in-process, Task 7 fleet. ✓
-- Scope exclusions (overhead L8, diversity L7, sweep L4) → not present in any task. ✓
+**Spec coverage (§10 Path 2):** RADP-surgical → Task 3 (gateway feature) + Task 4 (line). RADP-full-replay → Task 2 (done). cold-restart → Task 6. abort → Task 5. Metrics (TTR/correctness/goodput) → `BaselineResult`, populated by every line. Single mid-chain SIGKILL → shared injection. Fleet → Task 8. B2 absorbed (full-replay), B3 deferred — neither appears as a task. ✓
 
-**Placeholder scan:** No "TBD/handle edge cases/similar to Task N". Two explicitly-flagged runtime confirmations (StreamingToken field name in T3S4; B0 abort mechanism in T4S4) are verification steps with the exact file:line to check, not placeholders.
+**Placeholder scan:** Task 3 Step 3b requires the full method body (no `...`). The flagged runtime confirmations (mirror populated in-process — Step 0; StreamingToken field — Task 5; B0 abort mechanism — Task 5) are verification steps with exact file:line, not placeholders.
 
-**Type consistency:** `BaselineResult` fields identical across all `run_*`. `chain_config` returns `(device_ids, placement, recovery, victim)` consumed consistently. `run_all` returns `{"lines": [...], "b3_redundant_fits_4gb": bool}` matching the T6 test. `resolve_excluding(dead, survivors)` signature matches T5 test.
+**Type consistency:** `BaselineResult` fields unchanged across all lines. `recovery_mode: str = "full_replay"` added to `RequestGateway` and threaded through `_drive_inplace`. `_recover_surgical` returns the same `(Stage, Any)` tuple as `_recover_from_chain_failure`. `run_all` returns `{"lines":[...]}` matching the Task 7 test.
 
-**Known simplification (fleet-deferred):** in-process B3 ≡ RADP (same replay path), so B3's in-process line is intentionally omitted; its signal is the feasibility calc + fleet TTR. In-process cold-restart uses a contiguous re-split, not the DP; the DP re-solve cost is a fleet measurement. Both are stated at their tasks.
+**Chief risk (called out):** Task 3 depends on the worker mirror being populated in-process (Step 0 gate). If it is not, Task 3 is BLOCKED and surgical recovery can only be validated on the fleet — escalate before building on an empty mirror.
