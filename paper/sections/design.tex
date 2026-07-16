@@ -150,14 +150,21 @@ $R$ has already performed, so attribution is correct under any
 heartbeat/trailer race.
 
 \textbf{Full chain replay.} On confirmed failure the coordinator
-(i) evicts the failed step's mirror entry, (ii) rewires the chain
-by substituting $R(d_{\mathrm{dead}})$ as the new owner of the
-failed stage's layers, and (iii) replays the surviving upstream
-chain head's input forward through the new topology. Surviving
-upstream workers had already advanced their KV cache by one step
-on the failed attempt --- a naive retry would double-count their
-position --- so the replay walks back the upstream KV by one step
-before pushing the activation forward. The end result is a
+(i) promotes $R(d_{\mathrm{dead}})$ and rewires the chain so the
+backup owns the dead stage's layers, (ii) evicts \emph{every}
+surviving worker's KV cache for the request, and (iii) replays the
+request from position~0 through the rewired chain, re-feeding the
+mirrored input history end-to-end so each stage rebuilds its KV
+from scratch. The full rebuild --- rather than a single-stage
+retry onto the backup --- is what keeps the result deterministic:
+async chain forwarding lets surviving upstream workers advance
+their KV by one step before the failure propagates back, so
+retrying only the backup would double-count that position. The
+cost is $O(\mathrm{positions} \times \mathrm{stages})$ replay RPCs,
+which is acceptable under the single-fault correctness guarantee
+but grows with how deep into generation the failure lands; a
+surgical alternative that rebuilds only the backup is left to
+future work (\S\ref{sec:discussion}). The end result is a
 deterministic rebuild: 60/60 tokens delivered with no client-
 visible error (\S\ref{sec:eval:recovery}).
 

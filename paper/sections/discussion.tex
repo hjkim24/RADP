@@ -40,7 +40,20 @@ implementation choice.
 single-backup table; cascade failures (two workers
 $\leq T_R$ apart) fall back to a degraded chain. The natural
 extension $R{:}\,D{\to}\,\mathrm{List}[D]$ extends
-Eq.~\ref{eq:dp} cleanly but tightens Eq.~\ref{eq:mem}. The
+Eq.~\ref{eq:dp} cleanly but tightens Eq.~\ref{eq:mem}.
+Recovery also over-rebuilds: on a single fault \sys{} evicts every
+surviving KV cache and replays the request from position~0
+($O(\mathrm{positions}\times\mathrm{stages})$,
+\S\ref{sec:design:mirror}), because worker-to-worker chain
+forwarding entangles the surviving workers' KV advance with the
+failed step. Client-orchestrated designs that drive each stage
+independently (e.g.\ Petals~\cite{borzunov2023distributed}) rebuild
+only the replacement server from a client-side cache --- an
+$O(\mathrm{positions})$ per-stage replay; porting that surgical
+rollback (roll surviving KV back one step, rebuild only the
+promoted backup) to the chain needs per-worker advance-state
+tracking, which we leave to future work.
+The
 sharded-safetensors loader already handles Llama-3.2-1B;
 pushing into 7B INT4 is bounded by Nano memory rather than
 software. At OPT-350M scale both CUDA devices are launch-bound,
