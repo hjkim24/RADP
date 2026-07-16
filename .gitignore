@@ -51,3 +51,7 @@ experiments/REPORT.html
 
 # PPT Slides
 ppt/
+
+# Reference paper PDFs — local corpus only; catalog .md files ARE tracked.
+# (Public repo: avoid bloat + copyrighted-PDF redistribution.)
+paper/refs/*.pdf
