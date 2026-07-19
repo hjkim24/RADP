@@ -119,6 +119,47 @@ class WorkerClient:
         if not resp.ok:
             raise RuntimeError(f"LoadHead failed on {self.address}: {resp.error}")
 
+    def fetch_kv(
+        self,
+        *,
+        request_id: RequestId,
+        start_layer: int,
+        end_layer: int,
+        up_to_position: int,
+    ) -> tuple[bytes, int]:
+        """Pull a stage's raw KV bytes (positions 0..up_to_position) off a
+        worker — used at failure time to rebuild a promoted backup's cache
+        without a full re-prefill (parity recovery)."""
+        req = radp_pb2.FetchKVRequest(
+            request_id=int(request_id),
+            start_layer=start_layer,
+            end_layer=end_layer,
+            up_to_position=up_to_position,
+        )
+        resp = self._require_stub().FetchKV(req)
+        return bytes(resp.kv_bytes), int(resp.num_positions)
+
+    def load_kv(
+        self,
+        *,
+        request_id: RequestId,
+        start_layer: int,
+        end_layer: int,
+        kv_bytes: bytes,
+        num_positions: int,
+    ) -> None:
+        """Install raw KV bytes (as returned by fetch_kv) into a worker's
+        DynamicCache for this (request, stage) — the write side of parity
+        recovery's failure-time rebuild."""
+        req = radp_pb2.LoadKVRequest(
+            request_id=int(request_id),
+            start_layer=start_layer,
+            end_layer=end_layer,
+            kv_bytes=kv_bytes,
+            num_positions=num_positions,
+        )
+        self._require_stub().LoadKV(req)
+
     def set_next_hop(
         self,
         *,

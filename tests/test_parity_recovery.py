@@ -260,3 +260,40 @@ def test_worker_no_kv_push_when_replay_only(monkeypatch):
         None,
     )
     assert mirror.kv_calls == []
+
+
+# --- Task 5: coordinator wiring (gateway.record_kv -> ParityCache) ---------
+#
+# RequestGateway.__init__ calls load_model(), so this can't live in the
+# pure-logic tests/test_parity_cache.py (no torch there) -- it belongs here,
+# slow-marked, run under .venv-py39.
+#
+# CONTROLLER REFINEMENT: the head stage (placement[0], start_layer==1) is
+# coord-sourced and never ships KV (see test_worker_no_kv_push_on_head_stage
+# above). Only non-head stages contribute to parity, so
+# ParityCache.num_stages must be len(placement) - 1, NOT len(placement).
+# With a 3-stage placement (1 head + 2 non-head), num_stages == 2.
+def test_gateway_record_kv_feeds_parity():
+    from radp.coordinator.gateway import RequestGateway
+    from radp.common.types import Stage, LayerIdx, DeviceId
+
+    gw = RequestGateway(
+        placement=[Stage(LayerIdx(1), LayerIdx(4), DeviceId("head")),
+                   Stage(LayerIdx(5), LayerIdx(8), DeviceId("b")),
+                   Stage(LayerIdx(9), LayerIdx(12), DeviceId("c"))],
+        recovery={},
+        # RequestGateway.__init__ requires an address for every placement
+        # device (raises ValueError otherwise); channels are opened lazily
+        # so these never actually get dialed in this test.
+        worker_addresses={
+            DeviceId("head"): "localhost:0",
+            DeviceId("b"): "localhost:0",
+            DeviceId("c"): "localhost:0",
+        },
+        model_id=MODEL,
+    )
+    assert gw.parity_cache.num_stages == 2          # non-head count = len(placement)-1
+    gw.record_kv(RequestId(1), 5, 8, 0, bytes([1, 2]))   # non-head stage b
+    gw.record_kv(RequestId(1), 9, 12, 0, bytes([3, 4]))  # non-head stage c
+    assert gw.parity_cache.is_complete(RequestId(1), 0)
+    assert gw.parity_cache.get_parity(RequestId(1), 0) == bytes([1 ^ 3, 2 ^ 4])

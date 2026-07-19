@@ -46,6 +46,7 @@ from radp.common.types import (
     StageTiming,
 )
 from radp.coordinator.activation_cache import ActivationCache
+from radp.coordinator.parity_cache import ParityCache
 from radp.coordinator.recovery_plan import build_execution_plan
 from radp.coordinator.sampling import sample_next_token
 
@@ -134,6 +135,14 @@ class RequestGateway:
         )
 
         self.cache = ActivationCache(max_bytes=activation_cache_bytes)
+        # Parity (RAID-5-style) KV recovery: the head stage (placement[0],
+        # start_layer==1) is coord-sourced and never ships KV (see
+        # radp/worker/server.py RunStage's head-skip), so only the
+        # non-head stages ever contribute a column. num_stages must be
+        # len(placement) - 1 — using len(placement) would make
+        # is_complete() unreachable (one stage would never contribute),
+        # silently disabling parity recovery.
+        self.parity_cache = ParityCache(num_stages=max(len(placement) - 1, 0))
         self._request_counter = itertools.count(start=1)
         self._requests: dict[RequestId, _RequestState] = {}
 
@@ -244,6 +253,22 @@ class RequestGateway:
             with self._mirror_lock:
                 self._mirror_count += 1
                 self._mirror_bytes += len(activation)
+
+    def record_kv(
+        self,
+        request_id: int,
+        start_layer: int,
+        end_layer: int,
+        position: int,
+        kv_bytes: bytes,
+    ) -> None:
+        """Feed a worker-shipped KV column into the parity cache (MirrorKV)."""
+        self.parity_cache.xor_in(
+            RequestId(request_id),
+            (int(start_layer), int(end_layer)),
+            int(position),
+            kv_bytes,
+        )
 
     def mirror_stats(self) -> dict[str, int]:
         """Lifetime ingress counters + current cache state. Diagnostic only."""

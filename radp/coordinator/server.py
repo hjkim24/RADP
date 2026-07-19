@@ -38,6 +38,7 @@ from radp.common.types import (
     LayerIdx,
     Placement,
     RecoveryTable,
+    RequestId,
     Stage,
 )
 from radp.coordinator.failure_detector import FailureDetector, HeartbeatRecord
@@ -254,6 +255,21 @@ class _CoordinatorServicer(radp_pb2_grpc.CoordinatorServiceServicer):  # type: i
             activation=bytes(request.activation),
         )
         return radp_pb2.MirrorActivationResponse(ok=True)
+
+    def MirrorKV(self, request: Any, context: grpc.ServicerContext) -> Any:
+        gateway = self._server.gateway
+        if gateway is None:
+            # Same startup race as MirrorActivation — no in-flight request
+            # to attach the KV column to yet, so drop it silently.
+            return radp_pb2.MirrorKVResponse()
+        gateway.record_kv(
+            RequestId(request.request_id),
+            request.start_layer,
+            request.end_layer,
+            request.position,
+            bytes(request.kv_bytes),
+        )
+        return radp_pb2.MirrorKVResponse()
 
     def ResultReady(self, request: Any, context: grpc.ServicerContext) -> Any:
         """EXP-D3 Phase F: chain tail wakes the gateway's per-(request,
