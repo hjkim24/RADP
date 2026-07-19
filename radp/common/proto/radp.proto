@@ -49,6 +49,18 @@ service WorkerService {
   // next_token_id directly instead of the final hidden activation —
   // removing coord from the per-token critical path.
   rpc LoadHead (LoadHeadRequest) returns (LoadHeadResponse);
+
+  // --- KV recovery (parity) -------------------------------------------------
+
+  // Coordinator asks a worker to hand back its raw KV cache bytes for a
+  // (request, stage range) up to a given position — used to rehydrate a
+  // recovery peer without a full-prefix replay.
+  rpc FetchKV (FetchKVRequest) returns (FetchKVResponse);
+
+  // Coordinator pushes previously-fetched (or mirrored) KV cache bytes into
+  // a worker's cache for a (request, stage range) — the write-side
+  // counterpart of FetchKV, used to rehydrate a newly-promoted backup.
+  rpc LoadKV (LoadKVRequest) returns (LoadKVResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +89,13 @@ service CoordinatorService {
   // pipeline that made each in-flight stream occupy every chain stage's
   // thread simultaneously.
   rpc ResultReady (ResultReadyRequest) returns (ResultReadyResponse);
+
+  // KV recovery (parity) — worker ships a copy of its raw KV cache bytes
+  // for (request_id, stage range) to the coord asynchronously, mirroring
+  // MirrorActivation's role but for KV state instead of the input
+  // activation. Lets the coord rehydrate a recovery peer's cache directly
+  // instead of a full-prefix replay.
+  rpc MirrorKV (MirrorKVRequest) returns (MirrorKVResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +288,39 @@ message MirrorActivationRequest {
 message MirrorActivationResponse {
   bool ok = 1;
 }
+
+// --- KV recovery (parity) ---------------------------------------------------
+
+message MirrorKVRequest {
+  int32 request_id  = 1;
+  int32 start_layer = 2;
+  int32 end_layer   = 3;
+  int32 position    = 4;
+  bytes kv_bytes    = 5;   // raw fp16 column bytes (K then V per layer)
+  bool  is_prefill  = 6;
+  int32 num_positions = 7; // positions covered by kv_bytes (1 for decode; prompt_len for prefill)
+}
+message MirrorKVResponse {}
+
+message FetchKVRequest {
+  int32 request_id     = 1;
+  int32 start_layer    = 2;
+  int32 end_layer      = 3;
+  int32 up_to_position = 4;  // inclusive
+}
+message FetchKVResponse {
+  bytes kv_bytes     = 1;    // raw fp16, positions 0..up_to_position
+  int32 num_positions = 2;
+}
+
+message LoadKVRequest {
+  int32 request_id   = 1;
+  int32 start_layer  = 2;
+  int32 end_layer    = 3;
+  bytes kv_bytes     = 4;
+  int32 num_positions = 5;
+}
+message LoadKVResponse {}
 
 message ResultReadyRequest {
   int32 request_id     = 1;
