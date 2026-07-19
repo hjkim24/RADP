@@ -55,3 +55,21 @@ def test_evict_request_frees_bytes():
     pc.xor_in(_rid(1), (1, 2), 0, bytes(100))
     pc.evict_request(_rid(1))
     assert pc.get_parity(_rid(1), 0) is None
+
+
+def test_sole_request_not_evicted_even_over_cap():
+    """Single in-flight request is never evicted; its parity is actively used."""
+    # Small max_bytes to force over-cap with a single column
+    pc = ParityCache(num_stages=1, max_bytes=50)
+
+    # Add column to req1 that exceeds max_bytes (100 > 50)
+    pc.xor_in(_rid(1), (1, 2), 0, bytes(100))
+    # Despite being over cap, sole request must NOT be evicted (parity needed)
+    assert pc.get_parity(_rid(1), 0) is not None
+
+    # Now add a second request that also exceeds cap
+    pc.xor_in(_rid(2), (3, 4), 0, bytes(100))
+    # Request 1 should now be evicted (LRU, and 2+ requests allows eviction)
+    assert pc.get_parity(_rid(1), 0) is None
+    # Request 2 should remain (newest)
+    assert pc.get_parity(_rid(2), 0) is not None

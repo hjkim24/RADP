@@ -79,6 +79,10 @@ class ParityCache:
                 self._bytes_used -= sum(e.parity.size for e in positions.values())
 
     def _evict_if_needed_locked(self) -> None:
+        # Never evict the sole in-flight request: xor_in() calls move_to_end(),
+        # making it both oldest and newest if alone. Evicting it would destroy
+        # the parity just added (and actively maintained for recovery), with no
+        # byte savings. Once a second request arrives, normal LRU eviction resumes.
         while self._bytes_used > self.max_bytes and len(self._by_request) > 1:
             _, positions = self._by_request.popitem(last=False)  # oldest request
             self._bytes_used -= sum(e.parity.size for e in positions.values())
