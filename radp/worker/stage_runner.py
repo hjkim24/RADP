@@ -15,7 +15,9 @@ modules (e.g., LLaMA's ``rotary_emb``) once per model load.
 from __future__ import annotations
 
 import threading
+from typing import Any
 
+import numpy as np
 import torch
 from torch import nn
 from transformers import AutoConfig, DynamicCache
@@ -34,6 +36,14 @@ log = get_logger(__name__)
 
 StageKey = tuple[int, int]
 CacheKey = tuple[RequestId, StageKey]
+
+# Parity KV helpers (2026-07-20-parity-recovery): raw-bytes <-> DynamicCache
+# layout is dtype-driven off the runner's configured `self.dtype`, never
+# hardcoded fp16 — the round-trip test runs float32, the fleet runs float16.
+_NP_DTYPE_MAP: dict[str, type] = {
+    "float32": np.float32,
+    "float16": np.float16,
+}
 
 
 class StageRunner:
@@ -56,6 +66,8 @@ class StageRunner:
         self._backup_for: dict[StageKey, DeviceId] = {}
         self._promoted: set[StageKey] = set()
         self._kv_cache: dict[CacheKey, DynamicCache] = {}
+        self._kv_shape_cache: tuple[int, int, type] | None = None
+        self._config: Any | None = None
         self._arch: ModelArchitecture | None = None
         self._aux: dict[str, nn.Module] = {}
         # EXP-D3 Phase 1b: chain-tail head deployment. When a worker is the
@@ -184,6 +196,66 @@ class StageRunner:
                       self.device_id, request_id, len(keys))
 
     # ------------------------------------------------------------------
+    # Parity KV helpers (raw bytes <-> DynamicCache; no forward pass)
+    # ------------------------------------------------------------------
+    def extract_kv_column(
+        self, request_id: RequestId, *, start: LayerIdx, end: LayerIdx, position: int,
+    ) -> bytes:
+        """This stage's K,V at one position: per layer, K bytes then V bytes,
+        CPU-contiguous, in the runner's configured dtype."""
+        with self._lock:
+            cache = self._require_kv_cache(request_id, start, end)
+            parts: list[bytes] = []
+            for layer_idx in self._stage_layer_indices(start, end):
+                k = cache.key_cache[layer_idx][:, :, position : position + 1, :]
+                v = cache.value_cache[layer_idx][:, :, position : position + 1, :]
+                parts.append(k.cpu().contiguous().numpy().tobytes())
+                parts.append(v.cpu().contiguous().numpy().tobytes())
+            return b"".join(parts)
+
+    def export_kv(self, request_id: RequestId, *, start: LayerIdx, end: LayerIdx) -> bytes:
+        """This stage's full K,V (all positions), same per-layer K-then-V layout
+        as `extract_kv_column`."""
+        with self._lock:
+            cache = self._require_kv_cache(request_id, start, end)
+            parts: list[bytes] = []
+            for layer_idx in self._stage_layer_indices(start, end):
+                parts.append(cache.key_cache[layer_idx].cpu().contiguous().numpy().tobytes())
+                parts.append(cache.value_cache[layer_idx].cpu().contiguous().numpy().tobytes())
+            return b"".join(parts)
+
+    def install_kv(
+        self,
+        request_id: RequestId,
+        *,
+        start: LayerIdx,
+        end: LayerIdx,
+        kv_bytes: bytes,
+        num_positions: int,
+    ) -> None:
+        """Rebuild a DynamicCache for (request_id, (start,end)) from raw bytes
+        produced by `export_kv`/reconstructed via parity XOR. No forward pass.
+        Overwrites any existing cache for this key."""
+        n_heads, head_dim, np_dtype = self._kv_shape()
+        per_tensor = n_heads * int(num_positions) * head_dim
+        buf = np.frombuffer(kv_bytes, dtype=np_dtype)
+        cache = DynamicCache()
+        offset = 0
+        with self._lock:
+            for layer_idx in self._stage_layer_indices(start, end):
+                k_arr = buf[offset : offset + per_tensor].reshape(1, n_heads, num_positions, head_dim)
+                offset += per_tensor
+                v_arr = buf[offset : offset + per_tensor].reshape(1, n_heads, num_positions, head_dim)
+                offset += per_tensor
+                # .copy() detaches from the read-only `buf` view so the cache
+                # owns writable storage (DynamicCache.update may later `cat`
+                # onto these tensors during decode).
+                k = torch.from_numpy(k_arr.copy()).to(self.torch_device)
+                v = torch.from_numpy(v_arr.copy()).to(self.torch_device)
+                cache.update(k, v, layer_idx)
+            self._kv_cache[(request_id, (int(start), int(end)))] = cache
+
+    # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
     def run(
@@ -292,9 +364,44 @@ class StageRunner:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+    def _stage_layer_indices(self, start: LayerIdx, end: LayerIdx) -> list[int]:
+        """0-based GLOBAL layer indices owned by this stage: start-1 .. end-1
+        (matches the `first_layer_idx = int(start) - 1` convention in `run()`
+        and the `global_idx - 1` block layer_idx in `load_stage_blocks`)."""
+        return list(range(int(start) - 1, int(end)))
+
+    def _require_kv_cache(self, request_id: RequestId, start: LayerIdx, end: LayerIdx) -> DynamicCache:
+        cache = self._kv_cache.get((request_id, (int(start), int(end))))
+        if cache is None:
+            raise RuntimeError(
+                f"worker={self.device_id} no KV cache for request={request_id} "
+                f"layers[{start}..{end}]"
+            )
+        return cache
+
+    def _kv_shape(self) -> tuple[int, int, type]:
+        """(n_heads, head_dim, numpy dtype) for this stage's KV tensors,
+        cached. dtype-driven off `self.dtype` (never hardcoded fp16); shapes
+        read from the pinned model's config."""
+        if self._kv_shape_cache is None:
+            if self.dtype not in _NP_DTYPE_MAP:
+                raise ValueError(
+                    f"worker={self.device_id} dtype {self.dtype!r} has no raw-bytes "
+                    f"KV mapping; choose from {sorted(_NP_DTYPE_MAP)}"
+                )
+            assert self._config is not None, "load_primary/load_backup must be called first"
+            config = self._config
+            n_heads = getattr(config, "num_key_value_heads", None) or config.num_attention_heads
+            head_dim = getattr(config, "head_dim", None) or (
+                config.hidden_size // config.num_attention_heads
+            )
+            self._kv_shape_cache = (int(n_heads), int(head_dim), _NP_DTYPE_MAP[self.dtype])
+        return self._kv_shape_cache
+
     def _ensure_model(self, model_id: str) -> None:
         if self._model_id is None:
             config = AutoConfig.from_pretrained(model_id)
+            self._config = config
             self._arch = get_architecture(config.model_type)
             self._aux = self._arch.make_aux(
                 config, dtype=DTYPE_MAP[self.dtype], device=self.torch_device
