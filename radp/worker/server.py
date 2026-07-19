@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import threading
 import time
 from concurrent import futures
@@ -71,12 +72,17 @@ class _CoordDispatcher:
         position: int,
         activation: bytes,
         is_prefill: bool,
-    ) -> None:
+    ) -> Any:
+        """Returns the submitted Future (or None if the executor is shut
+        down) so callers that need the push to have *landed* — e.g. the
+        fault injector forcing the surgical branch — can block on it.
+        """
         with contextlib.suppress(RuntimeError):
-            self._mirror_exec.submit(
+            return self._mirror_exec.submit(
                 self._send_mirror,
                 request_id, start_layer, end_layer, position, activation, is_prefill,
             )
+        return None
 
     def _send_mirror(
         self,
@@ -153,6 +159,51 @@ class _CoordDispatcher:
 # Backward-compat alias — keeps the public symbol name workers used to
 # import as ``_MirrorDispatcher`` (e.g. via tests).
 _MirrorDispatcher = _CoordDispatcher
+
+
+# --- Fleet fault injection (test-only) -----------------------------------
+# Reproduces on the real fleet the in-process B1 injector: a *compute-time*
+# crash (mid-forward raise), deliberately timed to land AFTER this position's
+# input-mirror push has reached the coord, so recovery takes the surgical
+# branch deterministically (a raw SIGKILL races the fire-and-forget mirror).
+#
+# Completely inert unless the worker is started with RADP_FAULT_INJECTION set
+# — normal deployments pay nothing and can't be crashed by a stray file. When
+# enabled, the target is read per-RunStage from a small JSON file, so a sweep
+# can retarget the position without restarting the worker:
+#   {"start": 16, "end": 17, "position": 8}
+# Fires once (removes the file), matching the single-fault recovery model.
+_FAULT_SPEC_PATH = os.environ.get("RADP_FAULT_SPEC", "/tmp/radp_fault.json")
+
+
+def _maybe_inject_fault(
+    device_id: DeviceId, request: Any, replay_only: bool, mirror_future: Any
+) -> None:
+    if replay_only or not os.environ.get("RADP_FAULT_INJECTION"):
+        return
+    try:
+        with open(_FAULT_SPEC_PATH) as f:
+            spec = json.load(f)
+    except (FileNotFoundError, ValueError):
+        return
+    if (
+        int(request.start_layer) == int(spec["start"])
+        and int(request.end_layer) == int(spec["end"])
+        and int(request.position) == int(spec["position"])
+    ):
+        # Block until THIS position's mirror has actually landed at the coord,
+        # so get_history is a contiguous prefix through `position` and the
+        # gateway stays on the surgical branch (len(history) > position).
+        if mirror_future is not None:
+            with contextlib.suppress(Exception):
+                mirror_future.result(timeout=5.0)
+        with contextlib.suppress(OSError):
+            os.remove(_FAULT_SPEC_PATH)  # fire once
+        raise RuntimeError(
+            f"injected compute-time crash: worker={device_id} "
+            f"stage[{request.start_layer}..{request.end_layer}] "
+            f"pos={request.position}"
+        )
 
 
 class _AsyncChainDispatcher:
@@ -337,12 +388,13 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
         # leaves the coord with enough history to replay onto the recovery
         # peer. Skip on (a) the first stage — coord *is* the source — and
         # (b) replay calls — those activations ALREADY came from the cache.
+        mirror_future = None
         if (
             self._mirror is not None
             and int(request.start_layer) > 1
             and not replay_only
         ):
-            self._mirror.submit_mirror(
+            mirror_future = self._mirror.submit_mirror(
                 request_id=int(request.request_id),
                 start_layer=int(request.start_layer),
                 end_layer=int(request.end_layer),
@@ -350,6 +402,9 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
                 activation=bytes(request.activation),
                 is_prefill=bool(request.is_prefill),
             )
+        # Test-only: crash here (after the mirror push) if armed for this
+        # (stage, position) — see _maybe_inject_fault. No-op otherwise.
+        _maybe_inject_fault(self._runner.device_id, request, replay_only, mirror_future)
         # Phase F: serialize concurrent async-mode steps for the same
         # request so they can't race on the same DynamicCache. Sync chain
         # is naturally serial via nested responses, so we only pay this

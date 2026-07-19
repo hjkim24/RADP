@@ -15,6 +15,7 @@ Two startup modes, selected by `CoordinatorConfig.schedule_mode`:
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from concurrent import futures
@@ -494,6 +495,7 @@ class CoordinatorServer:
                         "Cannot build gateway: placement is empty. "
                         "Call auto_schedule() first in auto mode."
                     )
+                recovery_mode = os.environ.get("RADP_RECOVERY_MODE", "full_replay")
                 self.gateway = RequestGateway(
                     placement=self.placement,
                     recovery=self.recovery,
@@ -502,7 +504,9 @@ class CoordinatorServer:
                     torch_device=self.config.torch_device,
                     dtype=self.config.dtype,
                     chain_mode=self.config.chain_mode,
+                    recovery_mode=recovery_mode,
                 )
+                log.info("gateway recovery_mode=%s", recovery_mode)
             return self.gateway
 
     def start(self) -> None:
