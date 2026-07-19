@@ -2055,6 +2055,22 @@ full-replay는 position마다 체인 전체 재-forward(~150 ms ≈ decode 1스�
 
 **의도된 한계**: fleet는 실험 후 비기본 상태(sync chain + surgical drop-in + 워커 fault env) — 원상복구는 별도. B2(no-mirror)/B3(redundant-hosting) fleet 라인 미측정. async detection 비용(30s)은 별개 축으로 아직 정량화 안 함.
 
+## Phase B1-FLEET.2 — parity를 3번째 recovery line으로 fleet 드라이버 확장 (2026-07-20)
+
+**목표**: 위 B1-FLEET 스윕(full_replay/surgical)에 이미 구현돼 있던 `gateway._recover_parity`(zero-forward XOR reconstruct) 분기를 fleet 드라이버 `--modes`에 3번째 옵션으로 연결하고, TTR(P) 그림도 3-line으로 확장.
+
+**구현**:
+- [experiments/b1_ft_fleet.py](experiments/b1_ft_fleet.py) — `set_worker_parity(on)`: 워커 전체(`ansible workers`)에 `radp-worker.service.d/parity.conf`(`RADP_PARITY=1`) 배치/제거 + 재시작. `run()`에서 `"parity" in modes`면 mode 루프 전에 1회 호출(healthy-reference 재스케줄보다도 먼저).
+- **필수 controller 추가 (parity-branch 검증)**: `gateway._recover_parity`는 parity를 신뢰 못 하는 6가지 게이트(dead stage가 head / non-head survivor 없음 / FetchKV 실패 / KV geometry mismatch / parity cache incomplete / mirrored input 없음) 각각에서 조용히 `_recover_surgical`로 폴백한다 — 즉 parity 트라이얼이 실제로는 surgical 경로를 탄 채 parity로 오라벨될 수 있음. 이를 잡기 위해 `fetch_coordinator_log()`(트라이얼 시작 = 코디네이터 재시작 이후 journalctl, `restart_coordinator_and_wait`와 동일한 ssh 패턴 재사용)로 로그를 가져와 `_parity_branch_ran(log_text)` — gateway.py가 실제 zero-forward 경로에서만 찍는 `"PARITY reconstruct:"` 마커(gateway.py의 `log.warning("request=%d PARITY reconstruct: backup %s stage[%d..%d] KV slots=%d (zero-forward XOR), then run pos %d live", ...)`) 존재 여부로 판정. 트라이얼 row에 `parity_branch_ran`/`parity_branch_log` 기록, `mode=="parity"`일 때만 validity에 `and parity_branch_ran` 추가 — fit 필터와 로그 출력(`FELL BACK TO SURGICAL` 플래그) 모두 반영. full_replay/surgical 트라이얼은 이 체크를 아예 타지 않음(순수 additive).
+- [paper/figures/make_recovery_ttr.py](paper/figures/make_recovery_ttr.py) — `STYLE["parity"]` 추가(`PALETTE["tertiary"]`, marker `"^"`), 유효 포인트 없는 모드는 `if not xs: continue`로 건너뜀(fit-lookup 전에도 가드 추가) — 기존 full_replay/surgical 렌더링·slope-ratio callout은 불변.
+
+**검증 결과**: 이 세션에는 실 fleet가 없어 스윕은 미실행(Task 브리핑에 예정된 순서: 그대로). 대신 —
+- `tests/test_b1_ft_fleet.py`(신규, non-slow) 4개: `_parity_branch_ran`을 실제 마커 포함 로그(True) / fallback-only 로그(True 아님) / 빈 문자열 / 잡음 속 마커로 검증.
+- `.venv/bin/python -m pytest tests/ -m 'not slow' -q` 전체 그린 (118 tests, exit 0).
+- `make_recovery_ttr.py`를 오늘의 실제(parity 키 없는) `experiments/results/b1_ft_fleet.json`에 대해 실행 → 에러 없이 완주(parity 스킵 가드 확인), 생성된 바이너리는 커밋 전 되돌림(진짜 parity 데이터 나오기 전까지 그림은 2-line 유지).
+
+**의도된 한계**: 브리핑 Step 3(`--modes parity --positions 8` 1-trial 스모크, `fired/index_ok/seq_match` 확인)은 실 fleet 필요 — 아직 미실행. `set_worker_parity(False)`(워커 원상복구)는 스윕 종료 시 자동 호출하지 않음(명시적 별도 restore 단계로 남김, 브리핑 지시).
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).
