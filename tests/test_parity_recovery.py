@@ -297,3 +297,188 @@ def test_gateway_record_kv_feeds_parity():
     gw.record_kv(RequestId(1), 9, 12, 0, bytes([3, 4]))  # non-head stage c
     assert gw.parity_cache.is_complete(RequestId(1), 0)
     assert gw.parity_cache.get_parity(RequestId(1), 0) == bytes([1 ^ 3, 2 ^ 4])
+
+
+# --- Task 6: end-to-end zero-forward parity KV reconstruction --------------
+import logging
+import time
+
+import numpy as np
+import torch
+
+from experiments._harness import (
+    deploy,
+    in_process_cluster_with_mirror,
+    wire_chain,
+)
+from radp.common.types import Stage as _Stage
+from radp.coordinator.gateway import RequestGateway
+
+
+def _cfg():
+    ids = ["worker-a", "worker-b", "worker-c"]
+    placement = [
+        _Stage(LayerIdx(1), LayerIdx(4), DeviceId("worker-a")),
+        _Stage(LayerIdx(5), LayerIdx(8), DeviceId("worker-b")),
+        _Stage(LayerIdx(9), LayerIdx(12), DeviceId("worker-c")),
+    ]
+    recovery = {
+        DeviceId("worker-a"): DeviceId("worker-b"),
+        DeviceId("worker-b"): DeviceId("worker-c"),
+        DeviceId("worker-c"): DeviceId("worker-a"),
+    }
+    return ids, placement, recovery
+
+
+def _healthy_reference(prompt, n):
+    ids, placement, recovery = _cfg()
+    with in_process_cluster_with_mirror(ids) as (addrs, servers, attach):
+        deploy(addrs, placement, model_id=MODEL, recovery=recovery)
+        wire_chain(addrs, placement)
+        gw = RequestGateway(
+            placement=placement, recovery=recovery,
+            worker_addresses=addrs, model_id=MODEL,
+        )
+        attach(gw)
+        ref = list(gw.generate(prompt, max_tokens=n))
+        gw.close()
+    return ref
+
+
+def _kv_layers(buf, n_layers, n_heads, head_dim, np_dtype):
+    """Split layer-major export_kv bytes into per-layer (K, V) numpy arrays."""
+    arr = np.frombuffer(buf, dtype=np_dtype)
+    N = arr.size // (n_layers * 2 * n_heads * head_dim)
+    arr = arr.reshape(n_layers, 2, n_heads, N, head_dim)
+    return [(arr[li, 0], arr[li, 1]) for li in range(n_layers)]
+
+
+def test_parity_recovery_matches_reference(monkeypatch, caplog):
+    """Zero-forward parity recovery of a mid-chain interior-stage crash.
+
+    Gates: (a) the PARITY branch runs and never falls back to surgical;
+    (b) the reconstructed backup KV is bit-identical to the victim's, per
+    layer for K and V; (c) the recovered sequence equals the wired reference.
+    """
+    from radp.coordinator.gateway import RequestGateway
+
+    monkeypatch.setenv("RADP_PARITY", "1")
+    prompt, n, kill_at = "The quick brown fox", 12, 4
+    dead_key = (5, 8)
+    reference = _healthy_reference(prompt, n)
+
+    ids, placement, recovery = _cfg()
+    with in_process_cluster_with_mirror(ids) as (addrs, servers, attach):
+        deploy(addrs, placement, model_id=MODEL, recovery=recovery)
+        wire_chain(addrs, placement)
+        gw = RequestGateway(
+            placement=placement, recovery=recovery,
+            worker_addresses=addrs, model_id=MODEL,
+            recovery_mode="parity",
+        )
+        attach(gw)
+        gw.generate(prompt, max_tokens=2)  # warmup BEFORE installing the fault
+
+        # Spy: parity must NOT fall back to surgical.
+        surgical_calls = {"n": 0}
+        orig_surgical = gw._recover_surgical
+
+        def spy_surgical(*a, **k):
+            surgical_calls["n"] += 1
+            return orig_surgical(*a, **k)
+
+        gw._recover_surgical = spy_surgical
+
+        # Capture the KV bytes the gateway installs onto the promoted backup.
+        c_runner = servers[DeviceId("worker-c")].runner
+        orig_install = c_runner.install_kv
+        installed: dict = {}
+
+        def spy_install(request_id, *, start, end, kv_bytes, num_positions):
+            if (int(start), int(end)) == dead_key:
+                installed["bytes"] = bytes(kv_bytes)
+                installed["N"] = int(num_positions)
+            return orig_install(
+                request_id, start=start, end=end,
+                kv_bytes=kv_bytes, num_positions=num_positions,
+            )
+
+        c_runner.install_kv = spy_install
+
+        rid = gw.new_request_id()
+        b_runner = servers[DeviceId("worker-b")].runner
+        orig_run = b_runner.run
+        state = {"calls": 0, "tripped": False}
+        victim: dict = {}
+
+        def flaky_run(request_id, activation_blob, *, start, end, is_prefill):
+            if int(request_id) == int(rid) and (int(start), int(end)) == dead_key:
+                state["calls"] += 1  # call k -> position k-1 (prefill = pos 0)
+                if state["calls"] - 1 == kill_at and not state["tripped"]:
+                    state["tripped"] = True
+                    # Snapshot the victim's KV (slots 0..N-1) BEFORE crashing.
+                    victim["N"] = b_runner.kv_seq_len(
+                        rid, start=LayerIdx(5), end=LayerIdx(8)
+                    )
+                    victim["bytes"] = b_runner.export_kv(
+                        rid, start=LayerIdx(5), end=LayerIdx(8)
+                    )
+                    # Wait until BOTH the input mirror for pos kill_at AND the
+                    # parity for every slot 0..N-1 have landed, so recovery
+                    # takes the PARITY branch (not the fallback), then crash.
+                    deadline = time.time() + 8.0
+                    while time.time() < deadline and not (
+                        len(gw.cache.get_history(rid, dead_key)) > kill_at
+                        and all(
+                            gw.parity_cache.is_complete(rid, s)
+                            for s in range(victim["N"])
+                        )
+                    ):
+                        time.sleep(0.01)
+                    raise RuntimeError(
+                        "simulated worker-b mid-stage crash after mirror+kv"
+                    )
+            return orig_run(
+                request_id, activation_blob, start=start, end=end,
+                is_prefill=is_prefill,
+            )
+
+        b_runner.run = flaky_run
+
+        with caplog.at_level(logging.WARNING, logger="radp.coordinator.gateway"):
+            gw._prefill(rid, prompt)
+            for _ in range(1, n):
+                gw._decode_step(rid)
+        recovered = list(gw._requests[rid].generated_token_ids)
+        gw._evict_everywhere(rid)
+        n_heads, head_dim, np_dtype, _ = gw._kv_dims()
+        gw.close()
+
+    # (a) fault fired, PARITY branch ran, surgical fallback did NOT.
+    assert state["tripped"], "fault never injected — recovery path not exercised"
+    assert "PARITY reconstruct" in caplog.text, (
+        "parity branch did not run — recovery took another path:\n" + caplog.text
+    )
+    assert surgical_calls["n"] == 0, (
+        "parity fell back to surgical instead of reconstructing:\n" + caplog.text
+    )
+    assert "bytes" in installed, "gateway never installed reconstructed KV"
+
+    # (b) reconstructed KV bit-identical to victim's original (per layer, K & V).
+    assert installed["N"] == victim["N"], (
+        f"slot count mismatch: installed={installed['N']} victim={victim['N']}"
+    )
+    n_layers = dead_key[1] - dead_key[0] + 1
+    recon_layers = _kv_layers(installed["bytes"], n_layers, n_heads, head_dim, np_dtype)
+    vic_layers = _kv_layers(victim["bytes"], n_layers, n_heads, head_dim, np_dtype)
+    for li, ((rk, rv), (vk, vv)) in enumerate(zip(recon_layers, vic_layers)):
+        assert torch.equal(
+            torch.from_numpy(rk.copy()), torch.from_numpy(vk.copy())
+        ), f"reconstructed K != victim K at layer {li}"
+        assert torch.equal(
+            torch.from_numpy(rv.copy()), torch.from_numpy(vv.copy())
+        ), f"reconstructed V != victim V at layer {li}"
+
+    # (c) recovered sequence == healthy wired reference.
+    assert len(recovered) == n
+    assert recovered == reference, f"recovered={recovered}\nreference={reference}"

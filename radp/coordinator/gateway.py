@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import grpc
+import numpy as np
 import torch
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 
@@ -100,9 +101,9 @@ class RequestGateway:
         async_chain_timeout_seconds: float = 30.0,
         recovery_mode: str = "full_replay",
     ) -> None:
-        if recovery_mode not in {"full_replay", "surgical"}:
+        if recovery_mode not in {"full_replay", "surgical", "parity"}:
             raise ValueError(
-                f"recovery_mode must be 'full_replay' or 'surgical', "
+                f"recovery_mode must be 'full_replay', 'surgical' or 'parity', "
                 f"got {recovery_mode!r}"
             )
         self.recovery_mode = recovery_mode
@@ -688,6 +689,10 @@ class RequestGateway:
         ONLY the promoted backup — see :meth:`_recover_surgical`. The
         default ("full_replay") keeps the behaviour documented above.
         """
+        if self.recovery_mode == "parity":
+            return self._recover_parity(
+                request_id, head_stage, error, current_position
+            )
         if self.recovery_mode == "surgical":
             return self._recover_surgical(
                 request_id, head_stage, error, current_position
@@ -874,6 +879,288 @@ class RequestGateway:
             position=current_position, replay_only=False,
         )
         return backup_stage, last_resp
+
+    def _recover_parity(
+        self,
+        request_id: RequestId,
+        head_stage: Stage,
+        error: grpc.RpcError,
+        current_position: int,
+    ) -> tuple[Stage, Any]:
+        """Zero-forward parity recovery — reconstruct the dead stage's KV by
+        byte-XOR of the surviving non-head stages' intact KV with the
+        maintained parity blob, install it onto the promoted backup, and run
+        only the failed position live. No model forward pass rebuilds the KV.
+
+        Falls back to :meth:`_recover_surgical` (which itself ladders to full
+        replay) whenever parity can't be trusted — never emits a wrong token:
+          * the dead stage is the head (coord-sourced, not in the parity
+            group);
+          * a FetchKV RPC fails, or a survivor's KV byte-count doesn't match
+            the expected slot geometry;
+          * parity is incomplete for any needed slot (an in-flight KV push
+            hasn't landed yet);
+          * the mirrored dead-stage input for the failed position is missing.
+
+        LAYOUT: the parity blob and the workers' MirrorKV columns are
+        SLOT-major (per absolute KV-slot, layers within a slot);
+        ``export_kv``/``install_kv`` are LAYER-major (per layer, all
+        positions). :meth:`_xor_reconstruct_kv` reconciles the two.
+
+        Cost: O(survivors) FetchKV + one LoadKV + one live position — no
+        per-position replay. See design spec §10 (parity).
+        """
+        dead_stage = self._attribute_chain_failure(head_stage, error)
+        # Head is coord-sourced and never ships KV — not in the parity group.
+        if int(dead_stage.start_layer) == 1:
+            log.info(
+                "request=%d parity: dead stage is the head; deferring to surgical",
+                request_id,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+        if dead_stage.device not in self._dead:
+            log.warning(
+                "request=%d parity recovery: chain failure attributed to "
+                "%s[%d..%d] (head was %s)",
+                request_id, dead_stage.device,
+                dead_stage.start_layer, dead_stage.end_layer, head_stage.device,
+            )
+            self.mark_dead(dead_stage.device)
+        dead_key = (int(dead_stage.start_layer), int(dead_stage.end_layer))
+
+        # Survivors = current-plan NON-HEAD stages that are neither the dead
+        # stage's range nor the promoted backup's — the ORIGINAL alive
+        # non-head stages, whose KV for this request is still intact. (After
+        # mark_dead the plan already substitutes the backup into dead_key, so
+        # excluding dead_key leaves exactly those survivors.)
+        survivors = [
+            s for s in self.current_plan()
+            if int(s.start_layer) > 1
+            and (int(s.start_layer), int(s.end_layer)) != dead_key
+        ]
+        if not survivors:
+            log.warning(
+                "request=%d parity: no non-head survivors; fallback to surgical",
+                request_id,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+
+        n_heads, head_dim, np_dtype, itemsize = self._kv_dims()
+
+        # Fetch every survivor's LAYER-major KV up front (before promote/rewire
+        # — survivors don't move, so a fallback here stays pristine). Any RPC
+        # failure or geometry mismatch → surgical.
+        try:
+            surv_kv: list[tuple[Stage, bytes]] = []
+            for s in survivors:
+                buf, _ = self._fetch_stage_kv(request_id, s, current_position)
+                surv_kv.append((s, buf))
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "request=%d parity survivor FetchKV failed; fallback to surgical",
+                request_id,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+
+        # N (absolute KV-slot count) is derived from a survivor's byte length —
+        # FetchKV's num_positions only echoes the request. All non-head stages
+        # advance together in the sync chain, so every survivor must expose the
+        # same N; a mismatch means we can't trust the geometry → surgical.
+        probe_stage, probe_bytes = surv_kv[0]
+        probe_layers = int(probe_stage.end_layer) - int(probe_stage.start_layer) + 1
+        bytes_per_slot = probe_layers * 2 * n_heads * head_dim * itemsize
+        if bytes_per_slot == 0 or len(probe_bytes) % bytes_per_slot != 0:
+            log.warning(
+                "request=%d parity: survivor %s KV size %d not a multiple of "
+                "slot size %d; fallback to surgical",
+                request_id, probe_stage.device, len(probe_bytes), bytes_per_slot,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+        n_slots = len(probe_bytes) // bytes_per_slot
+        for s, buf in surv_kv:
+            n_l = int(s.end_layer) - int(s.start_layer) + 1
+            if len(buf) != n_l * 2 * n_heads * n_slots * head_dim * itemsize:
+                log.warning(
+                    "request=%d parity: survivor %s KV geometry mismatch; "
+                    "fallback to surgical", request_id, s.device,
+                )
+                return self._recover_surgical(
+                    request_id, head_stage, error, current_position
+                )
+
+        # Completeness gate: every slot must have all non-head contributors.
+        for slot in range(n_slots):
+            if not self.parity_cache.is_complete(request_id, slot):
+                log.warning(
+                    "request=%d parity incomplete at slot %d/%d; "
+                    "fallback to surgical", request_id, slot, n_slots,
+                )
+                return self._recover_surgical(
+                    request_id, head_stage, error, current_position
+                )
+
+        # Need the mirrored dead-stage input for the failed position to run it
+        # live (the chain head already advanced to P; we do NOT re-run it).
+        history = self.cache.get_history(request_id, dead_key)
+        if len(history) <= current_position:
+            log.warning(
+                "request=%d parity: mirror history len=%d <= failed pos %d; "
+                "fallback to surgical", request_id, len(history), current_position,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+
+        # Promote backup + rewire (identical prefix to surgical).
+        backup_dev = self.recovery.get(dead_stage.device)
+        if backup_dev is None:
+            raise RuntimeError(
+                f"no recovery entry for dead device {dead_stage.device}"
+            )
+        backup_addr = self.worker_addresses.get(backup_dev)
+        if backup_addr is None:
+            raise RuntimeError(f"recovery device {backup_dev} has no address")
+        try:
+            with WorkerClient(backup_addr) as client:
+                client.promote_backup(for_device_id=dead_stage.device)
+        except Exception:
+            log.exception(
+                "request=%d promote_backup on %s failed", request_id, backup_dev
+            )
+            raise
+        self._rewire_chain()
+
+        # Reconstruct the dead stage's LAYER-major KV via slot-wise XOR.
+        dead_kv_bytes = self._xor_reconstruct_kv(
+            request_id, dead_key, surv_kv, n_slots,
+            n_heads=n_heads, head_dim=head_dim,
+            np_dtype=np_dtype, itemsize=itemsize,
+        )
+
+        backup_stage = next(
+            (s for s in self.current_plan()
+             if (int(s.start_layer), int(s.end_layer)) == dead_key),
+            None,
+        )
+        if backup_stage is None:
+            raise RuntimeError(
+                f"layer range {dead_key} not present in post-recovery plan"
+            )
+
+        log.warning(
+            "request=%d PARITY reconstruct: backup %s stage[%d..%d] KV "
+            "slots=%d (zero-forward XOR), then run pos %d live",
+            request_id, backup_stage.device, *dead_key, n_slots, current_position,
+        )
+        with WorkerClient(self.worker_addresses[backup_stage.device]) as client:
+            client.load_kv(
+                request_id=request_id,
+                start_layer=dead_key[0], end_layer=dead_key[1],
+                kv_bytes=dead_kv_bytes, num_positions=n_slots,
+            )
+
+        # Run the failed position live: feed the mirrored dead-stage input at P
+        # into the backup and forward downstream — yields the recovered token.
+        last_resp = self._invoke(
+            backup_stage, request_id, history[current_position],
+            is_prefill=(current_position == 0),
+            position=current_position, replay_only=False,
+        )
+        return backup_stage, last_resp
+
+    def _kv_dims(self) -> tuple[int, int, Any, int]:
+        """(n_heads, head_dim, numpy dtype, itemsize) for this model's KV
+        tensors — mirrors StageRunner._kv_shape so reconstructed bytes match
+        the workers' export/install layout exactly."""
+        config = self.handle.model.config
+        n_heads = (
+            getattr(config, "num_key_value_heads", None)
+            or config.num_attention_heads
+        )
+        head_dim = getattr(config, "head_dim", None) or (
+            config.hidden_size // config.num_attention_heads
+        )
+        np_dtype = {"float32": np.float32, "float16": np.float16}[self.dtype]
+        return int(n_heads), int(head_dim), np_dtype, int(np.dtype(np_dtype).itemsize)
+
+    def _fetch_stage_kv(
+        self, request_id: RequestId, stage: Stage, up_to_position: int
+    ) -> tuple[bytes, int]:
+        """Pull one stage's LAYER-major ``export_kv`` bytes off its worker."""
+        with WorkerClient(self.worker_addresses[stage.device]) as client:
+            return client.fetch_kv(
+                request_id=request_id,
+                start_layer=int(stage.start_layer),
+                end_layer=int(stage.end_layer),
+                up_to_position=int(up_to_position),
+            )
+
+    def _xor_reconstruct_kv(
+        self,
+        request_id: RequestId,
+        dead_key: tuple[int, int],
+        surv_kv: list[tuple[Stage, bytes]],
+        n_slots: int,
+        *,
+        n_heads: int,
+        head_dim: int,
+        np_dtype: Any,
+        itemsize: int,
+    ) -> bytes:
+        """Reconstruct the dead stage's LAYER-major KV bytes.
+
+        Each survivor's LAYER-major ``export_kv`` buffer reshapes to
+        ``(n_layers, 2, n_heads, N, head_dim)``; moving the slot axis to the
+        front (transpose ``(3, 0, 1, 2, 4)``) gives per-slot columns whose
+        byte layout is exactly what ``extract_kv_column`` pushed into the
+        parity blob. Per slot we XOR the survivors' columns into a copy of the
+        parity blob (uint8, zero-padded to the widest column) and slice out the
+        dead stage's own column. Reassembling slots and inverting the transpose
+        (``(1, 2, 3, 0, 4)``) yields LAYER-major bytes for ``install_kv``.
+
+        The transpose axis order is pinned by the bit-exact end-to-end test.
+        """
+        n_dead_layers = dead_key[1] - dead_key[0] + 1
+        dead_slot_bytes = n_dead_layers * 2 * n_heads * head_dim * itemsize
+
+        # Survivor LAYER-major -> per-slot uint8 rows [slot][column bytes].
+        surv_rows: list[np.ndarray] = []
+        for stage, buf in surv_kv:
+            n_l = int(stage.end_layer) - int(stage.start_layer) + 1
+            arr = np.frombuffer(buf, dtype=np_dtype).reshape(
+                n_l, 2, n_heads, n_slots, head_dim
+            )
+            slot_major = np.ascontiguousarray(np.transpose(arr, (3, 0, 1, 2, 4)))
+            surv_rows.append(slot_major.reshape(n_slots, -1).view(np.uint8))
+
+        dead_slots = np.empty((n_slots, dead_slot_bytes), dtype=np.uint8)
+        for slot in range(n_slots):
+            parity = self.parity_cache.get_parity(request_id, slot)
+            if parity is None:  # guarded by the completeness gate; defensive
+                raise RuntimeError(
+                    f"request={request_id} parity missing for slot {slot}"
+                )
+            acc = np.frombuffer(parity, dtype=np.uint8).copy()
+            for rows in surv_rows:
+                col = rows[slot]
+                acc[: col.size] ^= col
+            dead_slots[slot] = acc[:dead_slot_bytes]
+
+        dead_slot_major = dead_slots.view(np_dtype).reshape(
+            n_slots, n_dead_layers, 2, n_heads, head_dim
+        )
+        dead_layer_major = np.ascontiguousarray(
+            np.transpose(dead_slot_major, (1, 2, 3, 0, 4))
+        )
+        return dead_layer_major.tobytes()
 
     def _replay_through_chain(
         self,
