@@ -255,6 +255,15 @@ class StageRunner:
                 cache.update(k, v, layer_idx)
             self._kv_cache[(request_id, (int(start), int(end)))] = cache
 
+    def kv_seq_len(self, request_id: RequestId, *, start: LayerIdx, end: LayerIdx) -> int:
+        """This stage's current DynamicCache seq length for `request_id`
+        (number of KV slots filled so far), or 0 if no cache exists yet."""
+        with self._lock:
+            cache = self._kv_cache.get((request_id, (int(start), int(end))))
+            if cache is None:
+                return 0
+            return int(cache.get_seq_length(layer_idx=int(start) - 1))
+
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------

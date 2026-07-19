@@ -109,6 +109,52 @@ class _CoordDispatcher:
                 request_id, start_layer, end_layer, position, e,
             )
 
+    # --- Parity KV push (worker -> coord, RADP_PARITY-gated) ---------------
+    def submit_kv(
+        self,
+        *,
+        request_id: int,
+        start_layer: int,
+        end_layer: int,
+        position: int,
+        kv_bytes: bytes,
+        is_prefill: bool,
+        num_positions: int,
+    ) -> Any:
+        with contextlib.suppress(RuntimeError):
+            return self._mirror_exec.submit(
+                self._send_kv,
+                request_id, start_layer, end_layer, position,
+                kv_bytes, is_prefill, num_positions,
+            )
+        return None
+
+    def _send_kv(
+        self,
+        request_id: int,
+        start_layer: int,
+        end_layer: int,
+        position: int,
+        kv_bytes: bytes,
+        is_prefill: bool,
+        num_positions: int,
+    ) -> None:
+        try:
+            self._stub.MirrorKV(radp_pb2.MirrorKVRequest(
+                request_id=request_id,
+                start_layer=start_layer,
+                end_layer=end_layer,
+                position=position,
+                kv_bytes=kv_bytes,
+                is_prefill=is_prefill,
+                num_positions=num_positions,
+            ), timeout=5.0)
+        except Exception as e:  # noqa: BLE001
+            log.debug(
+                "MirrorKV push req=%d stage[%d..%d] pos=%d failed (%s); ignored",
+                request_id, start_layer, end_layer, position, e,
+            )
+
     # --- Phase F ResultReady (async chain return channel) ------------------
     def submit_result(
         self,
@@ -423,6 +469,42 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             if request_lock is not None:
                 request_lock.release()
 
+    def _maybe_push_parity_kv(self, request: Any, replay_only: bool) -> None:
+        """Parity KV push (Task 4): after a non-head stage runs, ship each
+        newly-added absolute KV slot to the coord for XOR'ing into the
+        parity blob. Gated on RADP_PARITY so the default path pays nothing.
+        The head (start_layer == 1) is coord-sourced and never ships KV;
+        replay_only calls only rebuild the local cache, they don't produce
+        new generation output, so they're excluded too."""
+        if (
+            not os.environ.get("RADP_PARITY")
+            or int(request.start_layer) <= 1
+            or replay_only
+            or self._mirror is None
+        ):
+            return
+        request_id = RequestId(request.request_id)
+        start = LayerIdx(request.start_layer)
+        end = LayerIdx(request.end_layer)
+        seq_len = self._runner.kv_seq_len(request_id, start=start, end=end)
+        new_slots = range(seq_len) if request.is_prefill else [seq_len - 1]
+        for s in new_slots:
+            if s < 0:
+                continue
+            with contextlib.suppress(Exception):
+                col = self._runner.extract_kv_column(
+                    request_id, start=start, end=end, position=s,
+                )
+                self._mirror.submit_kv(
+                    request_id=int(request.request_id),
+                    start_layer=int(request.start_layer),
+                    end_layer=int(request.end_layer),
+                    position=s,
+                    kv_bytes=col,
+                    is_prefill=bool(request.is_prefill),
+                    num_positions=1,
+                )
+
     def _dispatch_run_stage(
         self,
         request: Any,
@@ -444,6 +526,7 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
                 end=LayerIdx(request.end_layer),
                 is_prefill=request.is_prefill,
             )
+            self._maybe_push_parity_kv(request, replay_only)
             if async_chain and self._coord is not None:
                 # Phase F: chain tail wakes the gateway's future directly
                 # over a separate RPC instead of letting the nested
@@ -472,6 +555,7 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             end=LayerIdx(request.end_layer),
             is_prefill=request.is_prefill,
         )
+        self._maybe_push_parity_kv(request, replay_only)
         # EXP-D3 Phase 1a chain forwarding — if a next hop is registered for
         # this stage, propagate the result downstream synchronously and
         # return whatever the chain tail produced. With no next hop
@@ -549,6 +633,29 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             )
             raise  # unreachable, but keeps the type checker happy
         return forwarded
+
+    # --- KV recovery (parity): thin pass-throughs to Task 2's StageRunner
+    # helpers. Layer-major layout, no slot-major conversion here — the
+    # gateway (Task 6) owns all reconstruction-layout logic.
+    def FetchKV(self, request: Any, context: grpc.ServicerContext) -> Any:
+        kv = self._runner.export_kv(
+            RequestId(request.request_id),
+            start=LayerIdx(request.start_layer),
+            end=LayerIdx(request.end_layer),
+        )
+        return radp_pb2.FetchKVResponse(
+            kv_bytes=kv, num_positions=int(request.up_to_position) + 1,
+        )
+
+    def LoadKV(self, request: Any, context: grpc.ServicerContext) -> Any:
+        self._runner.install_kv(
+            RequestId(request.request_id),
+            start=LayerIdx(request.start_layer),
+            end=LayerIdx(request.end_layer),
+            kv_bytes=bytes(request.kv_bytes),
+            num_positions=int(request.num_positions),
+        )
+        return radp_pb2.LoadKVResponse()
 
     def EvictRequest(self, request: Any, context: grpc.ServicerContext) -> Any:
         self._runner.evict_request(RequestId(request.request_id))
