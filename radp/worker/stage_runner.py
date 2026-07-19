@@ -215,7 +215,13 @@ class StageRunner:
 
     def export_kv(self, request_id: RequestId, *, start: LayerIdx, end: LayerIdx) -> bytes:
         """This stage's full K,V (all positions), same per-layer K-then-V layout
-        as `extract_kv_column`."""
+        as `extract_kv_column`.
+
+        NOTE: always returns the FULL cache — there is no `up_to_position`
+        parameter here, unlike the FetchKV RPC that wraps this (whose
+        `num_positions` response field is just a request echo, not derived
+        from this method). Callers must derive the true slot count N from
+        `len(returned_bytes)`, not from any echoed request field."""
         with self._lock:
             cache = self._require_kv_cache(request_id, start, end)
             parts: list[bytes] = []
@@ -239,10 +245,25 @@ class StageRunner:
         n_heads, head_dim, np_dtype = self._kv_shape()
         per_tensor = n_heads * int(num_positions) * head_dim
         buf = np.frombuffer(kv_bytes, dtype=np_dtype)
+        layer_indices = self._stage_layer_indices(start, end)
+        # Size guard: `expected` mirrors the per-layer K+V reshape below
+        # exactly (n_layers x 2 x n_heads x num_positions x head_dim). A
+        # mismatch here used to silently truncate (extra bytes ignored) or
+        # surface as a cryptic numpy reshape error deep in the loop; fail
+        # loudly and precisely instead.
+        expected = len(layer_indices) * 2 * per_tensor
+        if buf.size != expected:
+            raise ValueError(
+                f"worker={self.device_id} install_kv size mismatch for "
+                f"request={request_id} layers[{start}..{end}]: got {buf.size} "
+                f"elements, expected {expected} (n_layers={len(layer_indices)} "
+                f"x 2 x n_heads={n_heads} x num_positions={num_positions} "
+                f"x head_dim={head_dim})"
+            )
         cache = DynamicCache()
         offset = 0
         with self._lock:
-            for layer_idx in self._stage_layer_indices(start, end):
+            for layer_idx in layer_indices:
                 k_arr = buf[offset : offset + per_tensor].reshape(1, n_heads, num_positions, head_dim)
                 offset += per_tensor
                 v_arr = buf[offset : offset + per_tensor].reshape(1, n_heads, num_positions, head_dim)

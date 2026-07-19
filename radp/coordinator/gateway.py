@@ -902,6 +902,22 @@ class RequestGateway:
             hasn't landed yet);
           * the mirrored dead-stage input for the failed position is missing.
 
+        Scope (topology, honest limit): this zero-forward path reconstructs
+        the dead stage's KV ONLY when the dead stage is the FIRST non-head
+        stage on the chain — i.e. it has no upstream non-head survivor. For
+        any OTHER victim, an upstream non-head survivor has already advanced
+        to position P+1 (its forward for the failed position P completed
+        before the chain reached the dead stage) while the downstream
+        survivors are still at P — that geometry mismatch trips the
+        size/completeness gates above, so recovery SAFELY falls back to
+        surgical rather than ever emitting a wrong token. Reconstructing an
+        arbitrary (non-first) victim — slicing the upstream survivors' extra
+        position back off to realign everyone to N slots — is future work,
+        not implemented here. Separately: a crash at position 0 (prefill)
+        has no prior KV to zero-forward reconstruct from, so it degenerates
+        to running prefill live (an actual forward pass), not a zero-forward
+        one.
+
         LAYOUT: the parity blob and the workers' MirrorKV columns are
         SLOT-major (per absolute KV-slot, layers within a slot);
         ``export_kv``/``install_kv`` are LAYER-major (per layer, all
@@ -1409,6 +1425,7 @@ class RequestGateway:
     def _evict_everywhere(self, request_id: RequestId) -> None:
         """Best-effort: ask every (currently-alive) worker to drop this request's cache."""
         self.cache.evict_request(request_id)
+        self.parity_cache.evict_request(request_id)
         for device_id in self.worker_addresses:
             if device_id in self._dead:
                 continue

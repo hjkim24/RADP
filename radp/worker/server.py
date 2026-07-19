@@ -492,7 +492,7 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
         for s in new_slots:
             if s < 0:
                 continue
-            with contextlib.suppress(Exception):
+            try:
                 col = self._runner.extract_kv_column(
                     request_id, start=start, end=end, position=s,
                 )
@@ -504,6 +504,12 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
                     kv_bytes=col,
                     is_prefill=bool(request.is_prefill),
                     num_positions=1,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.debug(
+                    "parity KV push req=%d stage[%d..%d] pos=%d failed (%s); ignored",
+                    int(request.request_id), int(request.start_layer),
+                    int(request.end_layer), s, e,
                 )
 
     def _dispatch_run_stage(
@@ -639,6 +645,11 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
     # helpers. Layer-major layout, no slot-major conversion here — the
     # gateway (Task 6) owns all reconstruction-layout logic.
     def FetchKV(self, request: Any, context: grpc.ServicerContext) -> Any:
+        # export_kv always returns the FULL cache regardless of
+        # up_to_position (see its docstring). `num_positions` below is a
+        # REQUEST ECHO (up_to_position + 1), NOT the true slot count —
+        # callers (the gateway parity path) must derive the real N from
+        # len(kv_bytes), not trust this field.
         kv = self._runner.export_kv(
             RequestId(request.request_id),
             start=LayerIdx(request.start_layer),

@@ -168,6 +168,12 @@ fallback. Parity is strictly the *fast path*; correctness never depends on it.
 - **Single fault only** (RAID-5 = one block loss). Concurrent multi-stage
   failure → parity infeasible = documented limit (matches R's single-backup
   assumption). Reed-Solomon multi-fault = future work.
+- **First-non-head-victim only.** Zero-forward reconstruction fires only when
+  the dead stage has no upstream non-head survivor. For any other victim, an
+  upstream non-head survivor has already advanced to P+1 while downstream
+  survivors sit at P — the geometry mismatch trips the gate and recovery
+  safely falls back to surgical (never a wrong token). Arbitrary-victim
+  reconstruction (slicing upstream survivors back to N slots) is future work.
 - Padding-skew inefficiency accepted (reframed as ψ+R coupling angle).
 - Continuous KV-shipping network tax is **measured/reported, not optimized**.
 - `FetchKV` pulls survivors' full KV at failure — O(P × (N−1)) network, the
