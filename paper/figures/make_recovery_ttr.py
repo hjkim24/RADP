@@ -29,6 +29,7 @@ fits = d["fits"]
 STYLE = {
     "full_replay": (PALETTE["secondary"], "o", "full-replay (evict all, replay whole chain)"),
     "surgical":    (PALETTE["primary"],   "s", "surgical (rebuild only dead stage's backup)"),
+    "parity":      (PALETTE["tertiary"],  "^", "parity (XOR-reconstruct, zero recompute)"),
 }
 
 fig, ax = plt.subplots(figsize=(5.0, 3.2))
@@ -36,12 +37,17 @@ fig, ax = plt.subplots(figsize=(5.0, 3.2))
 xline = np.linspace(0, 34, 50)
 for mode, (color, marker, label) in STYLE.items():
     pts = [(t["position"], t["ttr_seconds"]) for t in trials
-           if t["mode"] == mode and t["fired"] and t["index_ok"] and t["sequence_match"]]
+           if t["mode"] == mode and t["fired"] and t["index_ok"] and t["sequence_match"]
+           and (mode != "parity" or t.get("parity_branch_ran"))]
     xs = [p for p, _ in pts]
     ys = [y for _, y in pts]
+    if not xs:
+        continue
     ax.plot(xs, ys, marker=marker, linestyle="none", color=color, markersize=5,
             label=label, zorder=3)
-    f = fits[mode]
+    f = fits.get(mode)
+    if not f or f["n_points"] < 2:
+        continue
     ax.plot(xline, f["intercept"] + f["slope"] * xline, linestyle="--",
             color=color, linewidth=1.0, alpha=0.8, zorder=2)
     # slope annotation

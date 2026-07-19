@@ -54,6 +54,9 @@ _DEFAULT_COORD_SSH = "isp@115.145.158.253"
 _DEFAULT_SSH_KEY = "~/.ssh/hjkim24-isp"
 _INVENTORY = str(Path(__file__).resolve().parent.parent / "deploy" / "inventory.ini")
 _DROPIN = "/etc/systemd/system/radp-coordinator.service.d/recovery.conf"
+_WORKER_DROPIN_DIR = "/etc/systemd/system/radp-worker.service.d"
+_WORKER_DROPIN = f"{_WORKER_DROPIN_DIR}/parity.conf"
+_PARITY_LOG_MARKER = "PARITY reconstruct:"
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +79,28 @@ def set_recovery_mode(coord_host: str, mode: str) -> None:
         f"content='[Service]\nEnvironment=RADP_RECOVERY_MODE={mode}\n' dest={_DROPIN}",
     )
     log.info("recovery_mode drop-in set to %s", mode)
+
+
+def set_worker_parity(on: bool) -> None:
+    """Write/remove the worker RADP_PARITY=1 systemd drop-in on ALL workers
+    and restart them. Unlike the per-trial coordinator recovery-mode
+    drop-in, this must be armed ONCE up front (before any trial) since
+    parity needs the workers shipping KV columns for the whole sweep."""
+    if on:
+        _ansible("workers", "-b", "-m", "file", "-a",
+                 f"path={_WORKER_DROPIN_DIR} state=directory")
+        _ansible(
+            "workers", "-b", "-m", "copy", "-a",
+            f"content='[Service]\nEnvironment=RADP_PARITY=1\n' dest={_WORKER_DROPIN}",
+        )
+    else:
+        _ansible("workers", "-b", "-m", "file", "-a",
+                 f"path={_WORKER_DROPIN} state=absent")
+    _ansible(
+        "workers", "-b", "-m", "systemd", "-a",
+        "name=radp-worker state=restarted daemon_reload=yes",
+    )
+    log.info("worker RADP_PARITY drop-in %s", "armed" if on else "removed")
 
 
 def restart_coordinator_and_wait(
@@ -122,6 +147,38 @@ def fault_fired(victim_host: str) -> bool:
     return '"exists": false' in cp.stdout
 
 
+def fetch_coordinator_log(coord_ssh: str, ssh_key: str) -> str:
+    """Fetch the coordinator's journal since its last restart. Every trial
+    (see ``run_trial``) restarts the coordinator before its one request, so
+    "since last restart" == "since this trial started". Reuses the exact
+    ssh invocation style from ``restart_coordinator_and_wait``."""
+    probe = (
+        'START=$(systemctl show radp-coordinator -p ActiveEnterTimestamp --value); '
+        'journalctl -u radp-coordinator --no-pager --since "$START" 2>/dev/null'
+    )
+    cp = subprocess.run(
+        ["ssh", "-i", ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+         "-o", "StrictHostKeyChecking=no", coord_ssh, probe],
+        capture_output=True, text=True, timeout=30,
+    )
+    return cp.stdout
+
+
+def _parity_branch_ran(log_text: str) -> bool:
+    """True iff the gateway's real zero-forward parity path fired.
+
+    ``gateway._recover_parity`` ladders to ``_recover_surgical`` on every
+    "can't trust parity" gate (dead stage is head, no survivors, FetchKV
+    failure, geometry mismatch, incomplete parity cache, missing mirrored
+    input) and only reaches the XOR-reconstruct itself past all of them —
+    at which point it logs exactly one ``log.warning`` containing this
+    marker (see gateway.py's ``_recover_parity``, the "PARITY reconstruct:"
+    line). Its absence means the trial silently fell back to surgical.
+    Pure string predicate — no SSH — so it's unit-testable directly.
+    """
+    return _PARITY_LOG_MARKER in log_text
+
+
 # ---------------------------------------------------------------------------
 # Trial
 # ---------------------------------------------------------------------------
@@ -162,6 +219,19 @@ def run_trial(
     expected_idx = position - 1
     seq_match = (reference is None) or (rec["decoded_text"] == reference)
 
+    # Parity-only: verify the gateway actually took the zero-forward XOR
+    # path rather than silently falling back to surgical (see
+    # `_parity_branch_ran`). Never checked for full_replay/surgical trials.
+    parity_branch_ran: bool | None = None
+    parity_branch_log: str | None = None
+    if mode == "parity":
+        coord_log = fetch_coordinator_log(coord_ssh, ssh_key)
+        parity_branch_log = next(
+            (line for line in coord_log.splitlines() if _PARITY_LOG_MARKER in line),
+            None,
+        )
+        parity_branch_ran = parity_branch_log is not None
+
     row = {
         "mode": mode,
         "position": position,
@@ -171,15 +241,24 @@ def run_trial(
         "fired": fired,
         "index_ok": ttr_idx == expected_idx,
         "sequence_match": seq_match,
+        "parity_branch_ran": parity_branch_ran,
+        "parity_branch_log": parity_branch_log,
         "text_tokens": rec["text_tokens"],
         "reset_wall_seconds": reset_wall,
         "tbt_seconds_each": [round(x, 4) for x in tbt],
         "decoded_text": rec["decoded_text"],
     }
     valid = fired and row["index_ok"] and seq_match
+    note = ""
+    if mode == "parity":
+        valid = valid and bool(parity_branch_ran)
+        note = "  parity_branch=%s%s" % (
+            parity_branch_ran,
+            "" if parity_branch_ran else " (FELL BACK TO SURGICAL)",
+        )
     log.info(
-        "%-11s P=%-2d  TTR=%.3fs  idx=%d/%d  fired=%s seq_match=%s  %s",
-        mode, position, ttr, ttr_idx, expected_idx, fired, seq_match,
+        "%-11s P=%-2d  TTR=%.3fs  idx=%d/%d  fired=%s seq_match=%s%s  %s",
+        mode, position, ttr, ttr_idx, expected_idx, fired, seq_match, note,
         "OK" if valid else "!! INVALID",
     )
     return row
@@ -193,6 +272,14 @@ def run(
     def stub_factory() -> Any:
         ch = grpc.insecure_channel(coord, options=_GRPC_OPTIONS)
         return radp_pb2_grpc.CoordinatorServiceStub(ch)
+
+    # Parity needs the workers shipping KV columns for the ENTIRE sweep, not
+    # just parity-mode trials — arm it once up front, before any coordinator
+    # reschedule (including the healthy-reference one below), so it's never
+    # racing a trial. Not auto-disabled at the end: cleanup is a separate,
+    # explicit restore step.
+    if "parity" in modes:
+        set_worker_parity(True)
 
     # Healthy reference (no fault armed): the plan is fresh after the restart
     # inside the first mode's first trial anyway, but we want the reference in
@@ -214,11 +301,14 @@ def run(
                 coord_host=coord_host, coord_ssh=coord_ssh, ssh_key=ssh_key,
             ))
 
-    # Linear fits over VALID trials only.
+    # Linear fits over VALID trials only. For "parity", validity additionally
+    # requires the zero-forward XOR branch to have actually fired — a trial
+    # that silently fell back to surgical must NOT contaminate the parity fit.
     fits: dict[str, Any] = {}
     for mode in modes:
         pts = [(t["position"], t["ttr_seconds"]) for t in trials
-               if t["mode"] == mode and t["fired"] and t["index_ok"] and t["sequence_match"]]
+               if t["mode"] == mode and t["fired"] and t["index_ok"] and t["sequence_match"]
+               and (mode != "parity" or t["parity_branch_ran"])]
         if len(pts) >= 2:
             f = _linfit([p for p, _ in pts], [y for _, y in pts])
             fits[mode] = {**f, "n_points": len(pts)}
