@@ -223,7 +223,7 @@ _FAULT_SPEC_PATH = os.environ.get("RADP_FAULT_SPEC", "/tmp/radp_fault.json")
 
 
 def _maybe_inject_fault(
-    device_id: DeviceId, request: Any, replay_only: bool, mirror_future: Any
+    runner: Any, request: Any, replay_only: bool, mirror_future: Any
 ) -> None:
     if replay_only or not os.environ.get("RADP_FAULT_INJECTION"):
         return
@@ -245,6 +245,7 @@ def _maybe_inject_fault(
                 mirror_future.result(timeout=5.0)
         with contextlib.suppress(OSError):
             os.remove(_FAULT_SPEC_PATH)  # fire once
+        device_id = getattr(runner, "device_id", "?")
         raise RuntimeError(
             f"injected compute-time crash: worker={device_id} "
             f"stage[{request.start_layer}..{request.end_layer}] "
@@ -450,7 +451,7 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             )
         # Test-only: crash here (after the mirror push) if armed for this
         # (stage, position) — see _maybe_inject_fault. No-op otherwise.
-        _maybe_inject_fault(self._runner.device_id, request, replay_only, mirror_future)
+        _maybe_inject_fault(self._runner, request, replay_only, mirror_future)
         # Phase F: serialize concurrent async-mode steps for the same
         # request so they can't race on the same DynamicCache. Sync chain
         # is naturally serial via nested responses, so we only pay this
