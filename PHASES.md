@@ -2025,6 +2025,36 @@ replay 22 positions through chain head on-2[1..9]      ← 새 chain head (헤�
 
 ---
 
+## Phase B1-FLEET — surgical vs full-replay recovery TTR(P) 실 fleet 측정 (advisor-pivot FT, 2026-07-19)
+
+**목표**: advisor 피드백(FT를 메인 축, 공정 세팅)에 따라, in-process B1에서 확인된 surgical↔full-replay 격차를 **실 OPT-350M 5-stage 이종 fleet**에서 재현하고 실패 깊이 P에 대한 TTR(P) 곡선을 실측.
+
+**구현**:
+- [radp/coordinator/server.py](radp/coordinator/server.py) — `RADP_RECOVERY_MODE` env → `RequestGateway(recovery_mode=...)` wiring. 지금까지 surgical은 in-process 테스트에서만 도달 가능(서버는 항상 full_replay)했음.
+- [radp/worker/server.py](radp/worker/server.py) — opt-in(`RADP_FAULT_INJECTION`) compute-time crash 훅. `/tmp/radp_fault.json`의 `{stage,position}` 매칭 시, 해당 position의 mirror push가 coord에 도착(future 블록)한 뒤 raise → surgical 분기 결정론적 트리거. 평소엔 완전 inert. `submit_mirror`가 future 반환하도록 확장.
+- [experiments/b1_ft_fleet.py](experiments/b1_ft_fleet.py) — fleet TTR(P) 스윕 드라이버. mode별 coordinator drop-in 설정, P마다 [재시작으로 plan 리셋 → arm → 1요청 → recovery-step wall 추출 + sequence-match], 선형 fit + 비교 JSON 생성.
+- [paper/figures/make_recovery_ttr.py](paper/figures/make_recovery_ttr.py) — `fig_recovery_ttr.{pdf,png}` (TTR vs P, 두 모드 fit).
+
+**찾아낸 것 (방법론적)**: fleet 기본 `chain_mode: async`에선 interior 워커 compute-time crash가 fire-and-forget이라 동기 전파 안 됨 → gateway 30s per-request 타임아웃 → trailer 없이 head로 오귀속(31s). recovery **work**은 두 모드 동일, 차이는 detection latency뿐 → 메커니즘 비교는 **sync chain**으로 측정(in-process와 동일 세팅). 또한 오래 떠있던 coordinator는 보드 outage 시 dead 마킹을 영구 유지(자동 un-mark 없음) → outage 후 coordinator 재시작 필요.
+
+**검증 결과** (10/10 트라이얼 valid: fired✓, spike index=P−1✓, 출력=healthy 레퍼런스 일치✓):
+
+| P | full-replay | surgical | 우위 |
+|---|---|---|---|
+| 4 | 0.897 s | 0.299 s | 3.0× |
+| 8 | 1.510 s | 0.366 s | 4.1× |
+| 16 | 2.834 s | 0.486 s | 5.8× |
+| 24 | 3.928 s | 0.608 s | 6.5× |
+| 32 | 5.056 s | 0.711 s | 7.1× |
+
+```
+full-replay: TTR(P) = 345 ms + 148.8 ms·P
+surgical:    TTR(P) = 246 ms +  14.8 ms·P    → slope 10.1×
+```
+full-replay는 position마다 체인 전체 재-forward(~150 ms ≈ decode 1스텝), surgical은 죽은 stage backup만(~15 ms). in-process opt-125m slope 비율 2.8× → fleet 10.1× (실 network hop + 24층이 증폭). in-process 회귀(b1/surgical/mirror suite) 통과 유지. REPORT §B1-FLEET, 결과 `experiments/results/b1_ft_fleet.json`.
+
+**의도된 한계**: fleet는 실험 후 비기본 상태(sync chain + surgical drop-in + 워커 fault env) — 원상복구는 별도. B2(no-mirror)/B3(redundant-hosting) fleet 라인 미측정. async detection 비용(30s)은 별개 축으로 아직 정량화 안 함.
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).

@@ -1,0 +1,68 @@
+"""Figure: recovery time vs failure depth (TTR(P)) on the live fleet.
+
+surgical vs full-replay recovery, OPT-350M, sync chain, 5-stage heterogeneous
+Jetson fleet (ao-2 head, on-1/on-6/ao-1 interior, on-2 tail). One chain-interior
+compute-time crash injected at decode position P; y = the recovery step's wall.
+
+Data: experiments/results/b1_ft_fleet.json (experiments.b1_ft_fleet sweep).
+The linear fits show full-replay pays ~one full chain forward per replayed
+position (~150 ms, ≈ steady decode step) while surgical pays only the dead
+stage's fraction (~15 ms), a ~10x slope gap that widens with failure depth.
+"""
+from __future__ import annotations
+import json
+import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _common import save, PALETTE  # noqa: E402
+
+RESULTS = Path(__file__).parent.parent.parent / "experiments" / "results"
+
+d = json.load(open(RESULTS / "b1_ft_fleet.json"))
+trials = d["trials"]
+fits = d["fits"]
+
+STYLE = {
+    "full_replay": (PALETTE["secondary"], "o", "full-replay (evict all, replay whole chain)"),
+    "surgical":    (PALETTE["primary"],   "s", "surgical (rebuild only dead stage's backup)"),
+}
+
+fig, ax = plt.subplots(figsize=(5.0, 3.2))
+
+xline = np.linspace(0, 34, 50)
+for mode, (color, marker, label) in STYLE.items():
+    pts = [(t["position"], t["ttr_seconds"]) for t in trials
+           if t["mode"] == mode and t["fired"] and t["index_ok"] and t["sequence_match"]]
+    xs = [p for p, _ in pts]
+    ys = [y for _, y in pts]
+    ax.plot(xs, ys, marker=marker, linestyle="none", color=color, markersize=5,
+            label=label, zorder=3)
+    f = fits[mode]
+    ax.plot(xline, f["intercept"] + f["slope"] * xline, linestyle="--",
+            color=color, linewidth=1.0, alpha=0.8, zorder=2)
+    # slope annotation
+    ax.annotate(
+        f"{f['slope']*1e3:.0f} ms / pos",
+        xy=(34, f["intercept"] + f["slope"] * 34),
+        xytext=(-2, 3), textcoords="offset points",
+        ha="right", va="bottom", color=color, fontsize=7,
+    )
+
+ax.set_xlabel("failure depth  P  (decode position at crash)")
+ax.set_ylabel("recovery time  TTR  (s)")
+ax.set_xlim(0, 36)
+ax.set_ylim(0, None)
+ax.grid(True, linewidth=0.3, alpha=0.4)
+ax.legend(loc="upper left", frameon=False)
+
+# slope-ratio callout
+ratio = fits["full_replay"]["slope"] / fits["surgical"]["slope"]
+ax.text(0.97, 0.05, f"slope ratio  {ratio:.1f}x", transform=ax.transAxes,
+        ha="right", va="bottom", fontsize=8, style="italic", color=PALETTE["muted"])
+
+fig.tight_layout()
+save(fig, "fig_recovery_ttr")

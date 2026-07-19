@@ -366,6 +366,36 @@ Total: 28 measurement points, L > T at every one.
 
 ---
 
+## B1-FLEET — surgical vs full-replay recovery TTR(P) (실 OPT-350M, advisor-pivot FT 실험)
+
+**동기 (2026-07-19).** advisor 피드백(FT를 메인 축으로, 공정 세팅)에 따라, 기존의 "복구 없음(abort)" 대비 자명한 비교를 넘어 **실제 복구 전략끼리** 같은 fleet·model·주입으로 비교. in-process B1(§`b1_ft_baselines`, opt-125m)에서 확인된 surgical↔full-replay 격차를 **실 OPT-350M 하드웨어**에서 재현·측정.
+
+**세팅.** 라이브 5-stage 이종 체인 (DP auto-placement): `ao-2[1..15]` (head, AGX) → `on-1[16..17]` → `on-6[18..19]` → `ao-1[20..23]` → `on-2[24]` (tail). Victim = chain-interior `on-1[16..17]`, backup `on-6`. 주입 = worker-side **compute-time crash** (`RADP_FAULT_INJECTION` + `/tmp/radp_fault.json`): victim이 position P의 input-mirror push가 coord에 도착한 뒤 raise → surgical 분기를 결정론적으로 트리거 (SIGKILL 아님 — spec §10 fault-model). recovery_mode는 coordinator env(`RADP_RECOVERY_MODE`)로 토글. Driver: `experiments/b1_ft_fleet.py` (P마다 coordinator 재시작으로 plan 리셋 → arm → 1요청 → recovery-step wall 추출 + sequence-match). 결과 10/10 트라이얼 모두 valid (fired✓, spike index = P−1✓, 출력 = healthy 레퍼런스 일치✓).
+
+**⚠️ sync chain 필수 (방법론적 발견).** fleet 기본 `chain_mode: async`에선 interior 워커의 compute-time crash가 fire-and-forget 포워딩이라 동기 전파 안 됨 → gateway per-request **30s 타임아웃** → trailer 없이 **head로 오귀속**(측정: 31s, ao-2 dead). recovery **work**(surgical vs full)는 두 모드 동일하고 차이는 **detection latency**뿐(async 30s는 두 모드 공통 = 별개 축). 그래서 메커니즘 비교는 in-process와 동일하게 **sync chain**으로 측정. async detection 비용은 정직하게 별개로 기술.
+
+**결과 (TTR(P), OPT-350M, sync chain, `b1_ft_fleet.json`).**
+
+| P (실패 깊이) | full-replay | surgical | surgical 우위 |
+|---|---|---|---|
+| 4 | 0.897 s | 0.299 s | 3.0× |
+| 8 | 1.510 s | 0.366 s | 4.1× |
+| 16 | 2.834 s | 0.486 s | 5.8× |
+| 24 | 3.928 s | 0.608 s | 6.5× |
+| 32 | 5.056 s | 0.711 s | **7.1×** |
+
+선형 fit:
+```
+full-replay: TTR(P) = 345 ms + 148.8 ms · P
+surgical:    TTR(P) = 246 ms +  14.8 ms · P     → slope 비율 10.1×
+```
+
+**해석.** full-replay는 replay하는 position마다 **체인 전체(24층·5디바이스·4 network hop)를 재-forward** → per-position 148.8 ms ≈ 정상 decode 1스텝(~150 ms). surgical은 **죽은 stage의 backup(`on-6`, 2층·Nano 1대, replay_only, 포워딩 없음)만** 재구축 → per-position 14.8 ms ≈ full의 1/10. recompute 비중: full-replay는 P=32에서 **93%**(4.76 s), surgical 66%(0.47 s) — surgical이 없애는 게 정확히 그 recompute. **in-process opt-125m의 slope 비율(2.8×, 3 stage·4층·localhost)보다 fleet가 훨씬 큼(10.1×)** — 실 network hop + 깊은 모델이 full-replay의 per-position 비용을 증폭. 즉 microbenchmark는 surgical의 실-하드웨어 우위를 **과소평가**했음.
+
+그림: [`fig_recovery_ttr`](../paper/figures/fig_recovery_ttr.pdf) (`make_recovery_ttr.py`). 출처: [`b1_ft_fleet.json`](results/b1_ft_fleet.json). in-process 대응: [`b1_analysis.json`](results/b1_analysis.json).
+
+---
+
 ## 11. 핵심 발견 정리 (페이퍼)
 
 1. **DP는 정상 운영에서 이김 — compute 이기종성이 유의미할 때.** OPT-125M 동질 Nano fleet (§3.3)에선 4 placement가 TBT ±3% 안에서 tie. OPT-350M 3-tier fleet (§4)에선 ours가 greedy 대비 **TBT -6.5%**, **처리량 +8.3%**, 조건당 n=300 샘플.
@@ -388,6 +418,8 @@ Total: 28 measurement points, L > T at every one.
 8. **OPT-350M의 `project_in`과 safetensors prefix layout이 둘 다 함정** — 두 가지 실제 fix 가 필요했음 (`934ea27`, `246a02b`). loader를 다른 아키텍처로 확장하려는 사람을 위한 flag.
 
 9. **Profiler 가 hidden bug 두 개** (D2.2 §5): tokenizer padding silent no-op + CUDA async timing → AGX vs Nano gap 이 ~0 로 가려졌었음. Commit 382739b 의 fix 가 D2.3+ 의 모든 측정의 전제조건.
+
+10. **Surgical 복구가 실 하드웨어에서 full-replay 대비 slope 10.1× (advisor-pivot FT 헤드라인, §B1-FLEET).** 실 OPT-350M 5-stage fleet, 같은 compute-time 주입으로 recovery_mode만 토글: full-replay는 position마다 체인 전체 재-forward(~150 ms/pos ≈ decode 1스텝), surgical은 죽은 stage backup만 재구축(~15 ms/pos). P=32에서 5.06 s→0.71 s (7.1×), 모든 토큰 보존. FT를 "복구 없음" 대비가 아니라 **실 복구 전략끼리** 공정 비교한 첫 결과.
 
 ---
 
