@@ -98,6 +98,32 @@ def save_slide(fig: plt.Figure, name: str) -> None:
     print(f"  wrote {png.name} + {pdf.name}")
 
 
+def panel(fig: plt.Figure, rect, xlim=(0, 10), ylim=(0, 10),
+          title: str = "", right: str = "") -> plt.Axes:
+    """도형용 빈 축. rect 는 figure 좌표 (left, bottom, width, height).
+
+    설명 텍스트를 그림 영역 안에 떠다니게 두면 도형이 조금만 움직여도 겹친다.
+    패널마다 자기 영역을 갖고, 제목은 좌/우 title 로 붙여 자리를 예약한다.
+    """
+    ax = fig.add_axes(rect)
+    ax.set_xlim(*xlim); ax.set_ylim(*ylim); ax.axis("off")
+    if title:
+        ax.set_title(title, loc="left", fontsize=13, color=BODY,
+                     fontweight="bold", pad=6)
+    if right:
+        ax.set_title(right, loc="right", fontsize=11, color=BODY, pad=6)
+    return ax
+
+
+def note(ax: plt.Axes, x: float, y: float, text: str, width: int = 34,
+         size: float = 11, color=BODY, ha="left", va="center", bold=False):
+    """줄바꿈을 손으로 넣지 않는다. width(글자 수) 기준으로 자동 접는다."""
+    import textwrap
+    return ax.text(x, y, textwrap.fill(text, width), ha=ha, va=va,
+                   fontsize=size, color=color, linespacing=1.45,
+                   fontweight="bold" if bold else "normal")
+
+
 def strip_chrome(ax: plt.Axes) -> None:
     """Remove what a slide doesn't need: top/right spines, heavy grid.
 
