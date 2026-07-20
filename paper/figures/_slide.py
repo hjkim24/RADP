@@ -44,7 +44,16 @@ SLIDE_FULL = (7.4, 4.6)    # P2 그림 우선: 우측 대형 영역
 SLIDE_HALF = (5.9, 4.4)    # P3 2단 비교: 좌/우 각각
 SLIDE_WIDE = (12.05, 3.6)  # 가로로 넓게 쓸 때
 
+# 한글 라벨이 tofu 로 깨지지 않게: matplotlib 기본 DejaVu Sans 에는 한글이 없다.
+# 설치된 것 중 첫 번째를 쓰고, 라틴 문자는 뒤의 폰트로 폴백한다.
+_KR = [f for f in ("Apple SD Gothic Neo", "Noto Sans KR", "AppleGothic",
+                   "NanumBarunGothic")
+       if f in {x.name for x in mpl.font_manager.fontManager.ttflist}]
+
 mpl.rcParams.update({
+    "font.family": "sans-serif",
+    "font.sans-serif": _KR + ["DejaVu Sans"],
+    "axes.unicode_minus": False,     # 한글 폰트에서 마이너스 기호 깨짐 방지
     "font.size": 13,
     "axes.labelsize": 14,
     "axes.titlesize": 14,
