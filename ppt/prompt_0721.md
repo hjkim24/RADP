@@ -121,6 +121,7 @@ full-replay `321.6 + 163.01·P` / surgical `223.9 + 17.53·P` / parity `245.5 + 
 ### 다음 1주 (P5, 3줄)
 
 - B2 (no-mirror) / B3 (redundant-hosting) 라인 같은 fleet 측정
+- surgical 복구 KV를 원본과 바이트 비교 — 동일 티어 vs 이종 티어 (백로그 B4)
 - KV shipping의 정상 운영 네트워크 비용 정량화
 - 위 결과로 TII 원고 FT 절 재작성
 

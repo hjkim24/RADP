@@ -440,17 +440,32 @@ parity:      245.5 ms +   1.43 ms · P
 ```
 → **parity의 기울기는 victim 위치와도 무관**(첫 0.87 / 중간 1.43 ms·P⁻¹, 둘 다 ≈0). 정상 decode 스텝(median) 대비 복구 스텝 비율로 보면 더 선명하다: **parity는 P·위치와 무관하게 항상 1.6–1.9×**(정상 토큰 2개어치), surgical은 1.9→5.0×, full-replay는 6.0→34.4×로 깊이에 따라 증가.
 
-**복구 결과의 강도가 다르다 (성능이 아닌 정합성 축).**
+**복구 결과의 강도가 다르다 (성능이 아닌 정합성 축) — 단, 아직 논증이지 측정이 아님.**
 parity 복구에는 **부동소수 연산이 하나도 없다** — raw 바이트 uint8 XOR 뿐이고 완전 가역이므로,
 복원되는 것은 죽은 워커가 실제로 들고 있던 **바로 그 바이트**다. `tests/test_parity_recovery.py`
 가 이를 layer별 K·V로 **bit-identical** 단언한다. 반면 surgical은 미러 입력을 **backup 워커에서
-다시 forward** 하므로 수학적으로 동치인 재계산값이며, 연산 하드웨어가 다르면 마지막 비트까지
-같다는 보장이 없다(이종 fleet에서 backup이 다른 티어일 수 있음). surgical 테스트에 bit-identical
-단언이 없는 것은 이 때문이다. full-replay는 생존자 KV까지 evict 후 재계산하므로 가장 많이 흔든다.
+다시 forward** 하므로 수학적으로 동치인 재계산값이며, 커널 리덕션 순서·FMA 유무·누적 정밀도·
+연산 경로(CUDA vs CPU BLAS)가 다르면 비트가 어긋날 수 있다. full-replay는 생존자 KV까지 evict 후
+재계산하므로 가장 많이 흔든다.
 
-**단, 실측에서 관측된 발산은 없다**: 15/15 트라이얼 모두 `sequence_match=True`로 세 방식이 healthy
-레퍼런스와 동일한 토큰을 냈다. 따라서 이것은 *보장의 강도* 차이지 surgical이 오답을 낸다는 주장이
-아니다. paper에서는 "재계산 0"을 성능 클레임으로만 쓰지 말고 **수치 재현성 클레임**으로도 쓸 것.
+세부 구조상 stage의 **첫 layer**는 KV가 미러 입력의 선형 사영이라 position끼리 독립이지만,
+**그 뒤 layer**는 입력이 앞 layer의 attention 출력이라 과거 KV의 오차가 섞여 들어올 수 있다
+(우리 배치에서는 `ao-1[20..23]`이 4 layer로 가장 취약, `on-2[24]`가 1 layer로 가장 안전).
+반대로 victim과 backup이 **같은 기종**이면(실측 조건: `on-1`→`on-6`, 둘 다 Orin Nano CUDA)
+같은 커널·같은 빌드라 bit-identical일 가능성이 높다.
+
+**측정한 적 없음을 명시한다.** surgical 복구 후 KV를 원본과 바이트 비교한 실험은 아직 없다.
+확인된 것은 (a) parity가 bit-identical이라는 테스트 단언, (b) 실측 15/15 트라이얼 모두
+`sequence_match=True`(토큰 출력 일치)뿐이다. 따라서 현재 이 항목은 **보장의 강도** 차이에 대한
+논증이며, surgical이 오답을 낸다는 주장이 아니다. paper에 정합성 클레임으로 쓰려면 아래
+백로그 항목을 먼저 측정할 것.
+
+**백로그 B4 — surgical KV 정합성 측정 (다음 1주).** victim 사망 직전 KV를 `export_kv`로 확보하고,
+surgical 복구 후 backup의 KV를 `fetch_kv`로 뽑아 바이트 비교. 기록할 값: 불일치 원소 비율,
+최대 절대오차, 최대 ULP 차. **두 조건으로 돌린다** — (i) 동일 티어(`on-1`→`on-6`, CUDA→CUDA),
+(ii) 이종 티어(`on-1`→CPU 워커). 이래야 "이종성이 정합성에 미치는 영향"이 숫자로 나오고,
+§B1-PARITY의 "재계산 0 = 수치 재현성" 주장이 논증에서 측정으로 승격된다. 기존 하네스에
+`fetch_kv`가 이미 있으므로 드라이버 추가만 필요.
 
 **정직한 한계 (paper에 그대로 기술).**
 - **마지막 stage(tail) victim은 여전히 surgical 폴백.** downstream 생존자가 없어 `min()`이 과대추정되고 completeness 게이트가 걸린다. 이를 덮으려면 `count−1` 규칙이 필요한데 **과소추정 시 아무 게이트도 못 잡아** 잘린 KV를 설치할 위험이 있어, 미검증 규칙을 넣는 대신 폴백으로 남겼다(테스트로 잠금: 폴백하며 출력은 레퍼런스와 일치). fleet 기준 `on-1`·`on-6`·`ao-1`은 parity, tail `on-2`만 폴백.
@@ -531,6 +546,7 @@ EXP-D2 (D1 fix 이후 첫 측정) 의 일부 placement 도 D2.2 의 profiler fix
 | DP cost-function 격차 | ours의 라이브 TBT 우위가 예측에 적게 카운트됨 | marginal-layer / transition-overhead 항 추가, 백로그 A6 |
 | Async chain failure attribution은 trailer 못 씀 | Heartbeat path (5s timeout) 만 fallback. 최대 5s in-flight 손실 가능 | trailer 를 별도 RPC 로 reverse-channel — 백로그 |
 | Single-GPU CUDA stream 직렬화 | 동시 요청이 worker 안에서 GPU stream 으로 직렬. Per-worker batching 미구현 | Batched inference (Static cache + KV concat) — 백로그 |
+| surgical 복구 KV의 비트 정합성 미측정 | "재계산 0 = 수치 재현성" 주장을 논증으로만 쓰고 있음 | 백로그 B4 (동일 티어 vs 이종 티어 바이트 비교) |
 | 다중 동시 장애 회복 미테스트 | R(j) 가 단일 backup — concurrent fault 시 R cascade 가능성 | 백로그 A2 (R을 list-of-backups로 확장) |
 | Nano 운영 안정성 (D3 Phase 2/3/F 측정 중) | on-1, on-2 의 SSH banner timeout / heartbeat silence 가 측정 노이즈 원인 | 디스크 정리 (오늘 on-1 -8.5G) + 장기적으로 SWAP 정책 검토 |
 
