@@ -2071,6 +2071,37 @@ full-replay는 position마다 체인 전체 재-forward(~150 ms ≈ decode 1스�
 
 **의도된 한계**: 브리핑 Step 3(`--modes parity --positions 8` 1-trial 스모크, `fired/index_ok/seq_match` 확인)은 실 fleet 필요 — 아직 미실행. `set_worker_parity(False)`(워커 원상복구)는 스윕 종료 시 자동 호출하지 않음(명시적 별도 restore 단계로 남김, 브리핑 지시).
 
+## Phase B1-PARITY — cross-stage XOR parity 복구 실 fleet 실측 (2026-07-20)
+
+**목표**: surgical(≈Petals 입력-재생 계열)과 근본적으로 다른 **재계산 0** 복구 계열을 구현하고 실 OPT-350M fleet에서 3번째 라인으로 측정. (Phase B1-FLEET.2가 예고한 스윕의 실행 결과 — 그 항목의 "스윕 미실행"은 본 Phase로 해소.)
+
+**구현** (spec/plan `docs/superpowers/{specs,plans}/2026-07-20-parity-recovery*`, SDD 7 태스크):
+- [radp/coordinator/parity_cache.py](radp/coordinator/parity_cache.py) — `ParityCache`: 단일 parity blob P를 stage 컬럼 XOR로 누적, max-stage zero-pad, `(stage,pos)` dedup, 전 stage 기여 시에만 `is_complete`.
+- [radp/worker/stage_runner.py](radp/worker/stage_runner.py) — `extract_kv_column`/`export_kv`/`install_kv` (DynamicCache ↔ raw dtype 바이트, forward 0) + `kv_seq_len`.
+- [radp/common/proto/radp.proto](radp/common/proto/radp.proto) — `MirrorKV`(worker→coord) / `FetchKV`,`LoadKV`(coord→worker).
+- [radp/worker/server.py](radp/worker/server.py) — `RADP_PARITY` gated per-slot KV push(local-run·tail 양 경로) + FetchKV/LoadKV 핸들러.
+- [radp/coordinator/gateway.py](radp/coordinator/gateway.py) — `recovery_mode="parity"` + `_recover_parity`: 생존자 KV ⊕ P → 죽은 stage KV 비트 복원 → LoadKV 설치 → 실패 position만 라이브. 레이아웃 정합 `(3,0,1,2,4)`/`(1,2,3,0,4)`.
+- [experiments/b1_ft_fleet.py](experiments/b1_ft_fleet.py) — parity 라인 + `set_worker_parity` + **`parity_branch_ran` 검증**.
+
+**검증 결과** (15/15 valid, parity 5/5 `parity_branch_ran=True`):
+
+| P | full-replay | surgical | parity |
+|---|---|---|---|
+| 4 | 0.973 s | 0.316 s | 0.298 s |
+| 8 | 1.670 s | 0.373 s | 0.282 s |
+| 16 | 2.882 s | 0.515 s | 0.293 s |
+| 24 | 4.200 s | 0.638 s | 0.304 s |
+| 32 | 5.621 s | 0.767 s | 0.316 s |
+
+```
+full-replay: 308.6 ms + 164.32 ms·P
+surgical:    249.4 ms +  16.21 ms·P
+parity:      284.1 ms +   0.87 ms·P   → surgical 대비 19×, full-replay 대비 188× 완만
+```
+in-process는 bit-exact(복원 KV가 원본과 `torch.equal`) + sequence-match로 별도 증명. 테스트 fast 118 / slow 19 green.
+
+**의도된 한계**: ① **첫 interior victim 한정** — upstream non-head 생존자가 있으면 slot geometry 불일치로 **안전하게 surgical 폴백**(틀린 토큰 없음); 임의 victim은 future work ② 정상 운영 중 KV shipping 네트워크 세금 미최적화·미정량화 ③ 단일 장애(RAID-5) ④ prefill(pos 0) 장애는 라이브 prefill로 축퇴.
+
 ## 알려진 한계 (현재)
 
 - **동시 다중 장애 대응** (plan.md §7.2): R(j)가 단일 백업. 후보 리스트로 확장 가능. 에지 디바이스 메모리 제약상 보류 (사용자 결정, 2026-05-20).

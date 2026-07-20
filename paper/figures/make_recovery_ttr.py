@@ -22,7 +22,7 @@ from _common import save, PALETTE  # noqa: E402
 
 RESULTS = Path(__file__).parent.parent.parent / "experiments" / "results"
 
-d = json.load(open(RESULTS / "b1_ft_fleet.json"))
+d = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
 trials = d["trials"]
 fits = d["fits"]
 
@@ -51,8 +51,9 @@ for mode, (color, marker, label) in STYLE.items():
     ax.plot(xline, f["intercept"] + f["slope"] * xline, linestyle="--",
             color=color, linewidth=1.0, alpha=0.8, zorder=2)
     # slope annotation
+    slope_ms = f["slope"] * 1e3
     ax.annotate(
-        f"{f['slope']*1e3:.0f} ms / pos",
+        f"{slope_ms:.1f} ms / pos" if slope_ms < 10 else f"{slope_ms:.0f} ms / pos",
         xy=(34, f["intercept"] + f["slope"] * 34),
         xytext=(-2, 3), textcoords="offset points",
         ha="right", va="bottom", color=color, fontsize=7,
@@ -66,9 +67,16 @@ ax.grid(True, linewidth=0.3, alpha=0.4)
 ax.legend(loc="upper left", frameon=False)
 
 # slope-ratio callout
-ratio = fits["full_replay"]["slope"] / fits["surgical"]["slope"]
-ax.text(0.97, 0.05, f"slope ratio  {ratio:.1f}x", transform=ax.transAxes,
-        ha="right", va="bottom", fontsize=8, style="italic", color=PALETTE["muted"])
+# Parity-focused callout: its slope is what "zero recompute" buys.
+if "parity" in fits and fits["parity"].get("n_points", 0) >= 2:
+    vs_surg = fits["surgical"]["slope"] / fits["parity"]["slope"]
+    vs_full = fits["full_replay"]["slope"] / fits["parity"]["slope"]
+    note = (f"parity slope is {vs_surg:.0f}x flatter\n"
+            f"than surgical, {vs_full:.0f}x than full-replay")
+else:
+    note = f"slope ratio  {fits['full_replay']['slope'] / fits['surgical']['slope']:.1f}x"
+ax.text(0.04, 0.72, note, transform=ax.transAxes,
+        ha="left", va="top", fontsize=7.5, style="italic", color=PALETTE["muted"])
 
 fig.tight_layout()
 save(fig, "fig_recovery_ttr")

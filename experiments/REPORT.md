@@ -396,6 +396,43 @@ surgical:    TTR(P) = 246 ms +  14.8 ms · P     → slope 비율 10.1×
 
 ---
 
+## B1-PARITY — cross-stage XOR parity: 재계산 0인 3번째 복구 계열 (실 fleet, 2026-07-20)
+
+**동기.** surgical은 빠르지만 **Petals와 같은 계열**(입력 캐시 → 대체 노드에 재생)이라 차별성이 약했음. parity는 **모델 forward를 전혀 하지 않고** 죽은 stage의 KV를 복원하는 3번째 계열 — 파이프라인 KV에 대한 RAID-5 유비. GhostServe(MLSys'26)가 cross-node pipeline parity를 명시적 future work로 남긴 그 자리.
+
+**메커니즘.** 정상 운영 중 **non-head stage들이** 각자 새로 생긴 **KV slot 컬럼**을 coordinator로 흘려보냄(`MirrorKV`, fire-and-forget). coordinator는 이를 **단 하나의 parity blob P**로 XOR 누적(`ParityCache`, max-stage로 zero-pad, stage별 중복은 dedup, 전 stage 기여 시에만 `complete`). stage 장애 시: 생존 non-head stage들의 KV를 `FetchKV`로 회수 → **바이트 XOR로 `P`와 결합해 죽은 stage의 KV를 비트 단위로 복원** → `LoadKV`로 승격된 backup에 직접 설치(forward 0) → 실패한 position만 라이브 실행. 레이아웃은 SLOT-major(parity/MirrorKV) ↔ LAYER-major(export/install)를 축 치환 `(3,0,1,2,4)`/`(1,2,3,0,4)`로 정합.
+
+**세팅.** §B1-FLEET와 **동일**한 fleet·victim·주입(sync chain, compute-time crash on `on-1[16..17]`, backup `on-6`). 추가로 워커 `RADP_PARITY=1`(KV shipping), coordinator `RADP_RECOVERY_MODE=parity`.
+
+**⚠️ 측정 신뢰성 장치.** parity의 모든 게이트는 실패 시 **조용히 surgical로 폴백**한다(정확성 보장). 그래서 폴백한 트라이얼의 TTR을 parity로 오표기할 위험이 있음 → 드라이버가 coordinator 로그의 `"PARITY reconstruct:"` 마커(6개 폴백 게이트를 모두 통과해야만 찍힘)를 확인해 **`parity_branch_ran`**을 기록하고, 이게 False면 트라이얼을 무효 처리·fit에서 제외. **본 스윕은 parity 5/5 모두 True**, 전체 15/15 valid.
+
+**결과 (TTR(P), OPT-350M, sync chain, `b1_ft_fleet_parity.json`).**
+
+| P | full-replay | surgical | **parity** |
+|---|---|---|---|
+| 4 | 0.973 s | 0.316 s | **0.298 s** |
+| 8 | 1.670 s | 0.373 s | **0.282 s** |
+| 16 | 2.882 s | 0.515 s | **0.293 s** |
+| 24 | 4.200 s | 0.638 s | **0.304 s** |
+| 32 | 5.621 s | 0.767 s | **0.316 s** |
+
+```
+full-replay: TTR(P) = 308.6 ms + 164.32 ms · P
+surgical:    TTR(P) = 249.4 ms +  16.21 ms · P
+parity:      TTR(P) = 284.1 ms +   0.87 ms · P     ← 기울기 ≈ 0
+```
+
+**해석.** parity의 기울기 **0.87 ms/position은 사실상 0** — surgical 대비 **19×**, full-replay 대비 **188×** 완만. 실패 깊이가 8배(P=4→32) 깊어져도 TTR은 0.298→0.316 s로 **+6%**만 증가(같은 구간에서 surgical 2.4×, full-replay 5.8× 증가). 이것이 "재계산 0" 클레임의 직접 측정: parity는 position마다 모델을 다시 돌리지 않고 **이미 가진 데이터의 전송+XOR**만 하므로 비용이 깊이에 비례하지 않는다. 그 결과 parity의 TTR은 이제 **세 계열이 공유하는 고정 오버헤드**(backup 승격 + 체인 rewire, 절편 ~284 ms)가 91%를 차지 — 복구 비용의 병목이 "재계산"에서 "재구성 이외의 관리 작업"으로 옮겨감.
+
+**정직한 한계 (paper에 그대로 기술).**
+- **첫 interior victim에 한정.** 현재 프로토타입은 죽은 stage에 **upstream non-head 생존자가 없을 때**만 재계산-0 복원을 수행한다(sync chain에서 upstream 생존자는 P+1 slot, downstream은 P slot이라 geometry가 어긋남). 그 외 victim은 **안전하게 surgical로 폴백**(틀린 토큰 없음). 본 측정의 victim `on-1`이 정확히 첫 interior stage. 임의 victim(upstream 생존자를 N slot으로 잘라내기)은 future work.
+- **정상 운영 중 연속 네트워크 세금**(KV 컬럼 shipping)을 지불한다. 본 실험은 이 비용을 기술만 하고 최적화·정량화하지 않았다.
+- 단일 장애 전용(RAID-5). prefill(position 0) 장애는 라이브 prefill로 축퇴 = 재계산-0 아님.
+
+그림: [`fig_recovery_ttr`](../paper/figures/fig_recovery_ttr.pdf) (3-선). 출처: [`b1_ft_fleet_parity.json`](results/b1_ft_fleet_parity.json), 스모크 [`b1_ft_fleet_parity_smoke.json`](results/b1_ft_fleet_parity_smoke.json). 설계/계획: `docs/superpowers/{specs,plans}/2026-07-20-parity-recovery*`.
+
+---
+
 ## 11. 핵심 발견 정리 (페이퍼)
 
 1. **DP는 정상 운영에서 이김 — compute 이기종성이 유의미할 때.** OPT-125M 동질 Nano fleet (§3.3)에선 4 placement가 TBT ±3% 안에서 tie. OPT-350M 3-tier fleet (§4)에선 ours가 greedy 대비 **TBT -6.5%**, **처리량 +8.3%**, 조건당 n=300 샘플.
@@ -418,6 +455,8 @@ surgical:    TTR(P) = 246 ms +  14.8 ms · P     → slope 비율 10.1×
 8. **OPT-350M의 `project_in`과 safetensors prefix layout이 둘 다 함정** — 두 가지 실제 fix 가 필요했음 (`934ea27`, `246a02b`). loader를 다른 아키텍처로 확장하려는 사람을 위한 flag.
 
 9. **Profiler 가 hidden bug 두 개** (D2.2 §5): tokenizer padding silent no-op + CUDA async timing → AGX vs Nano gap 이 ~0 로 가려졌었음. Commit 382739b 의 fix 가 D2.3+ 의 모든 측정의 전제조건.
+
+11. **Cross-stage XOR parity = 재계산 0인 3번째 복구 계열, 실 하드웨어에서 기울기 ≈ 0 (§B1-PARITY).** 같은 fleet·victim·주입에서 `TTR(P) = 284 ms + 0.87 ms·P` — surgical(16.21) 대비 **19×**, full-replay(164.32) 대비 **188×** 완만. P를 8배 늘려도 TTR +6%. 복구 비용이 "재계산"이 아니라 **공유 고정 오버헤드(승격+rewire ~284 ms)**에 지배됨. 입력 재생 계열(surgical/Petals)과 근본적으로 다른 메커니즘이며, 측정은 `parity_branch_ran` 로그 검증으로 surgical 폴백 오표기를 배제(5/5 진짜 parity). 한계: 첫 interior victim 한정(그 외 안전 폴백), 정상 운영 중 KV shipping 네트워크 세금.
 
 10. **Surgical 복구가 실 하드웨어에서 full-replay 대비 slope 10.1× (advisor-pivot FT 헤드라인, §B1-FLEET).** 실 OPT-350M 5-stage fleet, 같은 compute-time 주입으로 recovery_mode만 토글: full-replay는 position마다 체인 전체 재-forward(~150 ms/pos ≈ decode 1스텝), surgical은 죽은 stage backup만 재구축(~15 ms/pos). P=32에서 5.06 s→0.71 s (7.1×), 모든 토큰 보존. FT를 "복구 없음" 대비가 아니라 **실 복구 전략끼리** 공정 비교한 첫 결과.
 
