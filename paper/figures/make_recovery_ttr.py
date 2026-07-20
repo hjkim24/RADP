@@ -1,4 +1,4 @@
-"""Figure: recovery time vs failure depth (TTR(P)) on the live fleet.
+"""Figure: recovery time vs failure position (TTR(P)) on the live fleet.
 
 surgical vs full-replay recovery, OPT-350M, sync chain, 5-stage heterogeneous
 Jetson fleet (ao-2 head, on-1/on-6/ao-1 interior, on-2 tail). One chain-interior
@@ -7,7 +7,7 @@ compute-time crash injected at decode position P; y = the recovery step's wall.
 Data: experiments/results/b1_ft_fleet.json (experiments.b1_ft_fleet sweep).
 The linear fits show full-replay pays ~one full chain forward per replayed
 position (~150 ms, ≈ steady decode step) while surgical pays only the dead
-stage's fraction (~15 ms), a ~10x slope gap that widens with failure depth.
+stage's fraction (~15 ms), a ~10x slope gap that widens with failure position.
 """
 from __future__ import annotations
 import json
@@ -60,7 +60,7 @@ for mode, (color, marker, label) in STYLE.items():
         ha="right", va="bottom", color=color, fontsize=7,
     )
 
-ax.set_xlabel("failure depth  P  (decode position at crash)")
+ax.set_xlabel("failure position  P  (tokens generated before the crash)")
 ax.set_ylabel("recovery time  TTR  (s)")
 ax.set_xlim(0, 36)
 ax.set_ylim(0, None)

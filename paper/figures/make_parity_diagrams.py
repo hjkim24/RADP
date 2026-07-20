@@ -166,7 +166,7 @@ def recovery_families(only_existing: bool = False):
 
     새 기술을 소개하는 발표에서는 기존 방식의 한계를 먼저 세워야 원리 설명이
     읽힌다. 같은 그림을 두 번 쓰되 앞에서는 parity 를 감춰, 청중이 "둘 다
-    재계산이라 깊이를 탄다" 를 먼저 받아들이게 한다.
+    재계산이라 늦게 죽을수록 비싸다" 를 먼저 받아들이게 한다.
     """
     fig = plt.figure(figsize=SLIDE_FULL)
     ax = panel(fig, [0.02, 0.11, 0.96, 0.80], (0, 10),
@@ -213,7 +213,7 @@ def recovery_families(only_existing: bool = False):
 
     ax = panel(fig, [0.02, 0.0, 0.96, 0.10], (0, 10), (0, 1))
     ax.text(0.05, 0.5,
-            "both re-run the dead stage — cost scales with failure depth"
+            "both re-run the dead stage — cost scales with how far in it died"
             if only_existing
             else "parity solves for the dead stage instead of re-running it",
             fontsize=13, color=BODY, va="center")

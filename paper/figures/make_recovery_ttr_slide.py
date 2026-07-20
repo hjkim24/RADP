@@ -2,6 +2,11 @@
 
 Same data as `make_recovery_ttr.py`, built at slide scale with the deck palette.
 
+**"position", not "depth".** P is how far into the generation the crash
+happened — the token index the victim died on — not how deep in the pipeline the
+victim sat. We vary the victim's chain position separately, so the two must not
+share a word.
+
 **Log y-axis on purpose.** On a linear axis full-replay reaches 6 s and squashes
 surgical and parity into the bottom 5% of the plot — the very contrast the
 figure exists to show. Log keeps a flat line flat (parity's ~0 slope still reads
@@ -72,7 +77,7 @@ for mode, (color, marker, label) in STYLE.items():
                 va="center", ha="left", fontsize=12.5, color=color,
                 fontweight="bold", linespacing=1.4, annotation_clip=False)
 
-ax.set_xlabel("failure depth  P")
+ax.set_xlabel("failure position  P   (tokens generated before the crash)")
 ax.set_ylabel("recovery time (s, log)")
 ax.set_yscale("log")
 ax.set_xlim(0, 36)
