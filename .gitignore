@@ -55,6 +55,10 @@ experiments/REPORT.html
 # (디렉터리 자체를 제외하면 하위 파일을 되살릴 수 없으므로 `ppt/*` 형태를 쓴다.)
 ppt/*
 !ppt/DESIGN_SYSTEM.md
+# 주간 프롬프트는 추적한다. 매주 어떤 수치와 주장을 슬라이드에 올렸는지가
+# 여기 남고, 나중에 페이퍼 근거를 되짚을 때 덱보다 이쪽이 검색된다.
+# (덱 .pptx 자체는 대용량이라 계속 제외)
+!ppt/prompt_*.md
 !ppt/template/
 ppt/template/*
 !ppt/template/radp-progress-template.pptx
