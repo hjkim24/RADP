@@ -46,7 +46,7 @@ xline = np.linspace(0, 36, 60)
 
 # 정상 decode 스텝 = 절대 기준. 로그축이 차이를 과장하지 않게 붙잡아 준다.
 ax.axhline(median_step, color=BODY, linewidth=1.1, linestyle=":", zorder=1)
-ax.annotate(f"정상 decode 스텝  {median_step * 1e3:.0f} ms",
+ax.annotate(f"normal decode step  {median_step * 1e3:.0f} ms",
             xy=(0.4, median_step), xytext=(0, -6), textcoords="offset points",
             va="top", ha="left", fontsize=11, color=BODY)
 

@@ -26,8 +26,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _slide import (BODY, SLIDE_FULL, SLIDE_WIDE, SUBJECT,  # noqa: E402
-                    note, panel, save_slide)
+from _slide import (BODY, SLIDE_BAND, SLIDE_FULL, SLIDE_WIDE,  # noqa: E402
+                    SUBJECT, note, panel, save_slide)
 
 DEAD = SUBJECT["full_replay"]      # 죽은 노드
 OK = "#B8C0C0"                     # 평상시 노드
@@ -52,65 +52,109 @@ def arrow(ax, x1, y1, x2, y2, color=BODY, lw=1.4, ls="-"):
 
 # ---------------------------------------------------------------- 1. mechanism
 NAMES = ["head", "A", "B", "C"]
-XS = [0.30 + i * 2.45 for i in range(4)]     # head 0.30 / A 2.75 / B 5.20 / C 7.65
-BW, BH = 2.10, 0.90
-BAR_X, BAR_W = XS[1], XS[3] + BW - XS[1]     # parity 막대는 non-head만 덮는다
-Y_NODE, Y_BAR = 0.55, 2.35
+BW, BH = 1.55, 0.72
 
 
-def _chain(ax, dead_idx=None):
-    for i, (x, n) in enumerate(zip(XS, NAMES)):
+def _chain(ax, xs, y, dead_idx=None, fs=11.5):
+    for i, (x, n) in enumerate(zip(xs, NAMES)):
         dead = (i == dead_idx)
-        box(ax, x, Y_NODE, BW, BH, n,
+        box(ax, x, y, BW, BH, n,
             face=DEAD if dead else (HEAD if i == 0 else OK),
-            text="white" if dead else BODY, fs=13, bold=dead or i > 0)
+            text="white" if dead else BODY, fs=fs, bold=dead or i > 0)
         if i < 3:
-            arrow(ax, x + BW, Y_NODE + BH / 2, XS[i + 1], Y_NODE + BH / 2, lw=1.2)
-
-
-def _bar(ax):
-    box(ax, BAR_X, Y_BAR, BAR_W, 0.85, "parity  1장  (P)", face=PAR,
-        text="white", fs=14, bold=True)
+            arrow(ax, x + BW, y + BH / 2, xs[i + 1], y + BH / 2, lw=1.1)
 
 
 def parity_mechanism():
-    """정상 운영(위) / 장애 복원(아래). 두 패널이 각자 축을 갖는다."""
-    fig = plt.figure(figsize=SLIDE_FULL)
-    LIM = (-0.2, 10.2), (-0.45, 3.45)
+    """Three panels: what is stored, how the XOR works, how recovery inverts it.
 
-    # ── 위: 정상 운영 ─────────────────────────────────────────────
-    ax = panel(fig, [0.02, 0.545, 0.96, 0.375], *LIM,
-               title="정상 운영", right="저장량은 stage 수와 무관하게 KV 1개분")
-    _bar(ax); _chain(ax)
+    The earlier version showed the flow but never said what a "KV column" is or
+    what the XOR actually operates on, which is the part an audience seeing this
+    for the first time needs most. Panel 2 carries that: byte-wise XOR over
+    zero-padded columns, one blob regardless of stage count.
+    """
+    fig = plt.figure(figsize=SLIDE_BAND)
+    XS = [0.25 + i * 1.95 for i in range(4)]
+    Y_NODE, Y_BAR = 0.35, 2.05
+
+    # ── ① steady state ────────────────────────────────────────────
+    ax = panel(fig, [0.015, 0.10, 0.315, 0.80], (-0.1, 8.0), (-0.55, 3.30),
+               title="① Steady state")
+    box(ax, XS[1], Y_BAR, XS[3] + BW - XS[1], 0.70, "parity blob  P",
+        face=PAR, text="white", fs=12, bold=True)
+    _chain(ax, XS, Y_NODE)
     for x in XS[1:]:
         arrow(ax, x + BW / 2, Y_NODE + BH, x + BW / 2, Y_BAR,
-              color=PAR, lw=1.5, ls=(0, (4, 2)))
-    ax.annotate("KV 컬럼\n올림", xy=(XS[1] + BW / 2, (Y_NODE + BH + Y_BAR) / 2),
-                xytext=(-24, 0), textcoords="offset points", ha="right",
-                va="center", fontsize=11.5, color=PAR, linespacing=1.4)
-    note(ax, XS[0], Y_NODE - 0.28, "head는 coordinator가 소스 → parity 그룹 제외",
-         width=48, size=11, va="top")
+              color=PAR, lw=1.4, ls=(0, (4, 2)))
+    ax.annotate("each non-head\nstage ships its\nKV column",
+                xy=(XS[1] + BW / 2, (Y_NODE + BH + Y_BAR) / 2), xytext=(-12, 0),
+                textcoords="offset points", ha="right", va="center",
+                fontsize=10.5, color=PAR, linespacing=1.4)
+    ax.text(XS[0], Y_NODE - 0.30, "head is coordinator-sourced —\nnot in the parity group",
+            fontsize=10, color=BODY, va="top", linespacing=1.4)
+    ax.text(0, 3.05, "one blob, not one copy per stage",
+            fontsize=11, color=PAR, fontweight="bold")
 
-    # ── 아래: 장애 복원 ───────────────────────────────────────────
-    ax = panel(fig, [0.02, 0.115, 0.96, 0.375], *LIM,
-               title="장애 복원", right="모델 forward 0회")
-    _bar(ax); _chain(ax, dead_idx=2)
-    for i in (1, 3):                                   # 생존자는 KV를 내어주고
+    # ── ② what the XOR operates on ────────────────────────────────
+    ax = panel(fig, [0.355, 0.10, 0.29, 0.80], (0, 10), (-0.55, 3.30),
+               title="② Byte-wise XOR")
+    CW, CG, CH = 1.02, 0.10, 0.52
+    X0 = 2.35
+    rows = [("KV_A", ["a0", "a1", "a2", "a3"], OK),
+            ("KV_B", ["b0", "b1", "b2", "0"], OK),
+            ("KV_C", ["c0", "c1", "c2", "c3"], OK)]
+    for r, (name, cells, face) in enumerate(rows):
+        y = 2.30 - r * 0.66
+        if r:                                   # 행 사이에 연산자를 둔다
+            ax.text(X0 - 0.62, y + CH + 0.07, "⊕", ha="center", va="center",
+                    fontsize=13, color=PAR, fontweight="bold")
+        ax.text(X0 - 0.18, y + CH / 2, name, ha="right", va="center",
+                fontsize=11, color=BODY)
+        for c, val in enumerate(cells):
+            pad = (val == "0")
+            box(ax, X0 + c * (CW + CG), y, CW, CH, val,
+                face="#EDEFEF" if pad else face,
+                text="#9AA3A3" if pad else BODY, fs=10.5)
+    ax.text(X0 + 4 * (CW + CG) - CG + 0.12, 2.30 - 0.66 + CH / 2,
+            "zero-pad", ha="left", va="center", fontsize=10, color="#9AA3A3")
+    ax.plot([X0 - 0.05, X0 + 4 * (CW + CG) - CG + 0.05], [0.72, 0.72],
+            color=BODY, linewidth=1.1)
+    for c, val in enumerate(["p0", "p1", "p2", "p3"]):
+        box(ax, X0 + c * (CW + CG), 0.06, CW, CH, val, face=PAR,
+            text="white", fs=10.5, bold=True)
+    ax.text(X0 - 0.18, 0.06 + CH / 2, "P", ha="right", va="center",
+            fontsize=11, color=PAR, fontweight="bold")
+    ax.text(X0, -0.30, "one column per position, per stage",
+            fontsize=10, color=BODY, va="top")
+    ax.text(0, 3.05, "raw bytes — works for any dtype",
+            fontsize=11, color=PAR, fontweight="bold")
+
+    # ── ③ recovery ────────────────────────────────────────────────
+    ax = panel(fig, [0.675, 0.10, 0.315, 0.80], (-0.1, 8.0), (-0.55, 3.30),
+               title="③ Recovery", right="zero forward passes")
+    box(ax, XS[1], Y_BAR, XS[3] + BW - XS[1], 0.70, "parity blob  P",
+        face=PAR, text="white", fs=12, bold=True)
+    _chain(ax, XS, Y_NODE, dead_idx=2)
+    for i in (1, 3):
         arrow(ax, XS[i] + BW / 2, Y_NODE + BH, XS[i] + BW / 2, Y_BAR,
-              color=BODY, lw=1.2, ls=(0, (4, 2)))
+              color=BODY, lw=1.1, ls=(0, (4, 2)))
     arrow(ax, XS[2] + BW / 2, Y_BAR, XS[2] + BW / 2, Y_NODE + BH,
-          color=PAR, lw=2.8)                           # P에서 죽은 노드로 역산
-    ax.annotate("역산", xy=(XS[2] + BW / 2, (Y_NODE + BH + Y_BAR) / 2),
-                xytext=(12, 0), textcoords="offset points", ha="left",
-                va="center", fontsize=12, color=PAR, fontweight="bold")
-    ax.annotate("죽음", xy=(XS[2] + BW / 2, Y_NODE), xytext=(0, -8),
+          color=PAR, lw=2.6)
+    ax.annotate("solve", xy=(XS[2] + BW / 2, (Y_NODE + BH + Y_BAR) / 2),
+                xytext=(9, 0), textcoords="offset points", ha="left",
+                va="center", fontsize=11, color=PAR, fontweight="bold")
+    ax.annotate("dead", xy=(XS[2] + BW / 2, Y_NODE), xytext=(0, -7),
                 textcoords="offset points", ha="center", va="top",
-                fontsize=11.5, color=DEAD, fontweight="bold")
+                fontsize=10.5, color=DEAD, fontweight="bold")
+    ax.text(0, 3.05, "survivors give back what they still hold",
+            fontsize=11, color=BODY)
 
-    # ── 결론: 자기 영역을 갖는다 ──────────────────────────────────
-    ax = panel(fig, [0.02, 0.0, 0.96, 0.105], (0, 10), (0, 1))
-    ax.text(5, 0.5, "생존자 KV   ⊕   P   =   B의 KV", ha="center", va="center",
-            fontsize=15, color=BODY, fontweight="bold")
+    # ── the two equations carry the whole idea ────────────────────
+    ax = panel(fig, [0.015, 0.0, 0.975, 0.095], (0, 10), (0, 1))
+    ax.text(2.45, 0.5, "P  =  KV_A  ⊕  KV_B  ⊕  KV_C", ha="center",
+            va="center", fontsize=14, color=BODY, fontweight="bold")
+    ax.text(7.35, 0.5, "KV_B  =  KV_A  ⊕  KV_C  ⊕  P", ha="center",
+            va="center", fontsize=14, color=PAR, fontweight="bold")
 
     save_slide(fig, "fig_parity_mechanism")
     plt.close(fig)
@@ -127,7 +171,7 @@ def recovery_families(only_existing: bool = False):
     fig = plt.figure(figsize=SLIDE_FULL)
     ax = panel(fig, [0.02, 0.11, 0.96, 0.80], (0, 10),
                (0.55, 3.15) if only_existing else (0, 3.6),
-               title="색칠 = 다시 계산하는 구간", right="position 1개당 비용")
+               title="filled = recomputed", right="cost per position")
 
     rows = [
         ("full-replay", SUBJECT["full_replay"], [0, 1, 2, 3, 4], "164 ms"),
@@ -161,7 +205,7 @@ def recovery_families(only_existing: bool = False):
 
     # 죽은 노드 표식은 첫 행 윗변에 붙인다 (행 수가 바뀌어도 따라오게)
     top_row = 2.42 - (0.51 if only_existing else 0) + RH
-    ax.annotate("죽은 노드", xy=(cx(DEAD_IDX) + CW / 2, top_row), xytext=(0, 16),
+    ax.annotate("dead stage", xy=(cx(DEAD_IDX) + CW / 2, top_row), xytext=(0, 16),
                 textcoords="offset points", ha="center", va="bottom",
                 fontsize=11.5, color=DEAD, fontweight="bold",
                 arrowprops=dict(arrowstyle="-|>", color=DEAD, lw=1.5,
@@ -169,8 +213,9 @@ def recovery_families(only_existing: bool = False):
 
     ax = panel(fig, [0.02, 0.0, 0.96, 0.10], (0, 10), (0, 1))
     ax.text(0.05, 0.5,
-            "둘 다 죽은 노드를 다시 돌림 → 깊이에 비례" if only_existing
-            else "parity는 죽은 노드를 다시 돌리지 않고 parity에서 역산함",
+            "both re-run the dead stage — cost scales with failure depth"
+            if only_existing
+            else "parity solves for the dead stage instead of re-running it",
             fontsize=13, color=BODY, va="center")
 
     save_slide(fig, "fig_recovery_families_before" if only_existing
@@ -184,31 +229,31 @@ def generalization():
 
     # ── (a) slot alignment ────────────────────────────────────────
     ax = panel(fig, [0.015, 0.22, 0.45, 0.62], (0, 10), (0.45, 4.3),
-               title="① 앞선 노드가 한 칸 더 감")
+               title="① Upstream survivors run one slot ahead")
     SX, SW, SGAP, SH = 3.55, 0.52, 0.10, 0.62
-    rows = [("upstream 생존자", 9, SUR), ("victim", 8, DEAD),
-            ("downstream 생존자", 8, OK)]
+    rows = [("upstream survivor", 9, SUR), ("victim", 8, DEAD),
+            ("downstream survivor", 8, OK)]
     for i, (name, n, color) in enumerate(rows):
         y = 3.05 - i * 1.05
         ax.text(0.05, y + SH / 2, name, fontsize=11.5, color=BODY, va="center")
         for k in range(n):
             box(ax, SX + k * (SW + SGAP), y, SW, SH, "", face=color)
-        ax.text(9.95, y + SH / 2, f"{n} slot", ha="right", va="center",
+        ax.text(9.95, y + SH / 2, f"{n} slots", ha="right", va="center",
                 fontsize=12, color=BODY, fontweight="bold")
 
     cut = SX + 8 * (SW + SGAP) - SGAP / 2      # 8칸째 뒤 = 자르는 지점
     ax.plot([cut, cut], [0.55, 3.95], color=BODY, linestyle=":", linewidth=1.6)
-    ax.annotate("min = 8에서 자름", xy=(cut, 3.95), xytext=(0, 6),
+    ax.annotate("trim to min = 8", xy=(cut, 3.95), xytext=(0, 6),
                 textcoords="offset points", ha="center", va="bottom",
                 fontsize=11.5, color=BODY, fontweight="bold")
 
     ax = panel(fig, [0.015, 0.02, 0.45, 0.16], (0, 10), (0, 1))
-    note(ax, 0.05, 0.5, "잘라 맞추면 첫 워커 외 임의 위치 복원됨",
-         width=60, size=12)
+    note(ax, 0.05, 0.5, "Any interior victim recovers, not just the first one",
+         width=64, size=12)
 
     # ── (b) trailer overwrite ─────────────────────────────────────
     ax = panel(fig, [0.535, 0.22, 0.45, 0.62], (0, 10), (0.45, 4.3),
-               title="② 누가 죽었는지가 덮어써짐")
+               title="② The failure marker was being overwritten")
     chain = ["entry", "hop", "dead"]
     CX, CW2, CH = 0.30, 2.60, 0.95
     STEP = 3.35
@@ -228,16 +273,16 @@ def generalization():
                 arrowprops=dict(arrowstyle="-|>", color=DEAD, lw=2.0,
                                 shrinkA=0, shrinkB=0))
     ax.text(CX + 1.5 * STEP + CW2 / 2, y_back - 0.42,
-            "장애 표식이 자기 다음 홉으로 덮어써짐",
+            "each hop overwrote the marker with its own next hop",
             ha="center", va="center", fontsize=11.5, color=DEAD)
     ax.text(CX + 1.5 * STEP + CW2 / 2, y_back - 1.02,
-            "→ 멀쩡한 hop이 범인으로 몰려 죽음",
+            "→ a live hop got blamed and killed",
             ha="center", va="center", fontsize=12.5, color=DEAD,
             fontweight="bold")
 
     ax = panel(fig, [0.535, 0.02, 0.45, 0.16], (0, 10), (0, 1))
-    note(ax, 0.05, 0.5, "노드 3개일 땐 홉이 하나뿐이라 구조적으로 드러날 수 없던 버그",
-         width=60, size=12)
+    note(ax, 0.05, 0.5, "Invisible on a 3-node chain — only one hop exists "
+         "to be blamed", width=64, size=12)
 
     save_slide(fig, "fig_generalization")
     plt.close(fig)
