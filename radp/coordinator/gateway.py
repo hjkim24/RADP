@@ -921,7 +921,17 @@ class RequestGateway:
             falls back to surgical;
           * a crash at position 0 (prefill) has no prior KV to zero-forward
             reconstruct from, so it degenerates to running prefill live (an
-            actual forward pass), not a zero-forward one.
+            actual forward pass), not a zero-forward one;
+          * "any non-head victim" above assumes :meth:`_attribute_chain_failure`
+            names the true victim, which needs the intermediate hop that
+            first sees the RpcError to reach its ``except`` handler and
+            relay the trailer. That holds for a fail-fast downstream
+            failure (the successor errors immediately). It does NOT hold
+            for a victim that HANGS 2+ hops down: every hop shares nearly
+            the same ``timeout=10.0``, so the entry hop's own deadline can
+            trip first and it blames its own (alive) next hop instead —
+            fixing that needs inner hops to carry shorter deadlines than
+            outer ones (future work).
 
         LAYOUT: the parity blob and the workers' MirrorKV columns are
         SLOT-major (per absolute KV-slot, layers within a slot);
@@ -1012,6 +1022,20 @@ class RequestGateway:
                     request_id, head_stage, error, current_position
                 )
             slot_counts.append(len(buf) // bytes_per_slot)
+        if max(slot_counts) - min(slot_counts) > 1:
+            # Only the upstream +1 skew is legal (upstream stages completed
+            # position P, downstream ones never received it). A wider spread
+            # means a survivor returned a short/stale buffer — reconstructing
+            # from it would install a truncated KV and silently emit wrong
+            # tokens. Fall back.
+            log.warning(
+                "request=%d parity: survivor slot-count spread %d exceeds the "
+                "legal upstream +1 skew (counts=%s); fallback to surgical",
+                request_id, max(slot_counts) - min(slot_counts), slot_counts,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
         n_slots = min(slot_counts)
         if n_slots == 0:
             log.warning(

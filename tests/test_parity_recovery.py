@@ -527,3 +527,95 @@ def test_parity_recovery_middle_victim(monkeypatch, caplog):
     _assert_parity_recovery(
         monkeypatch, caplog, cfg=_cfg4, victim_dev="worker-c", backup_dev="worker-d"
     )
+
+
+def test_parity_recovery_last_stage_victim_falls_back(monkeypatch, caplog):
+    """LAST non-head victim (worker-d in _cfg4): every non-head survivor
+    (worker-b, worker-c) is UPSTREAM and already appended the failed
+    position's KV, so both carry one slot MORE than the victim ever will —
+    there is no downstream non-head survivor to supply the shared-prefix
+    slot. The completeness gate for that extra shared slot finds the
+    victim's own contribution missing and safely falls back to surgical,
+    exactly as documented in ``_recover_parity``'s docstring and PHASES.md
+    Phase B1-PARITY.2. This locks that documented claim with an assertion
+    instead of just prose: recovery must still reach the reference output,
+    proving the fallback never emits a wrong token."""
+    from radp.coordinator.gateway import RequestGateway
+
+    monkeypatch.setenv("RADP_PARITY", "1")
+    prompt, n, kill_at = "The quick brown fox", 12, 4
+    victim_dev = "worker-d"  # recovery maps it to worker-a (unused directly —
+    # the fallback path promotes/rewires internally; we only assert its outcome)
+    reference = _healthy_reference(prompt, n, _cfg4)
+
+    ids, placement, recovery = _cfg4()
+    victim_stage = next(s for s in placement if s.device == DeviceId(victim_dev))
+    dead_key = (int(victim_stage.start_layer), int(victim_stage.end_layer))
+    with in_process_cluster_with_mirror(ids) as (addrs, servers, attach):
+        deploy(addrs, placement, model_id=MODEL, recovery=recovery)
+        wire_chain(addrs, placement)
+        gw = RequestGateway(
+            placement=placement, recovery=recovery,
+            worker_addresses=addrs, model_id=MODEL,
+            recovery_mode="parity",
+        )
+        attach(gw)
+        gw.generate(prompt, max_tokens=2)  # warmup BEFORE installing the fault
+
+        # Spy: must fall back to surgical (never reconstruct via parity).
+        surgical_calls = {"n": 0}
+        orig_surgical = gw._recover_surgical
+
+        def spy_surgical(*a, **k):
+            surgical_calls["n"] += 1
+            return orig_surgical(*a, **k)
+
+        gw._recover_surgical = spy_surgical
+
+        rid = gw.new_request_id()
+        d_runner = servers[DeviceId(victim_dev)].runner
+        orig_run = d_runner.run
+        state = {"calls": 0, "tripped": False}
+
+        def flaky_run(request_id, activation_blob, *, start, end, is_prefill):
+            if int(request_id) == int(rid) and (int(start), int(end)) == dead_key:
+                state["calls"] += 1  # call k -> position k-1 (prefill = pos 0)
+                if state["calls"] - 1 == kill_at and not state["tripped"]:
+                    state["tripped"] = True
+                    # Wait for the mirrored input for pos kill_at to land so
+                    # recovery has what it needs regardless of which path it
+                    # takes, then crash.
+                    deadline = time.time() + 8.0
+                    while time.time() < deadline and not (
+                        len(gw.cache.get_history(rid, dead_key)) > kill_at
+                    ):
+                        time.sleep(0.01)
+                    raise RuntimeError(
+                        f"simulated {victim_dev} mid-stage crash after mirror+kv"
+                    )
+            return orig_run(
+                request_id, activation_blob, start=start, end=end,
+                is_prefill=is_prefill,
+            )
+
+        d_runner.run = flaky_run
+
+        with caplog.at_level(logging.WARNING, logger="radp.coordinator.gateway"):
+            gw._prefill(rid, prompt)
+            for _ in range(1, n):
+                gw._decode_step(rid)
+        recovered = list(gw._requests[rid].generated_token_ids)
+        gw._evict_everywhere(rid)
+        gw.close()
+
+    assert state["tripped"], "fault never injected — recovery path not exercised"
+    assert surgical_calls["n"] >= 1, (
+        "last-stage victim has no downstream non-head survivor and must "
+        "fall back to surgical:\n" + caplog.text
+    )
+    assert "PARITY reconstruct" not in caplog.text, (
+        "parity reconstruct ran for a last-stage victim — should have "
+        "fallen back to surgical instead:\n" + caplog.text
+    )
+    assert len(recovered) == n
+    assert recovered == reference, f"recovered={recovered}\nreference={reference}"

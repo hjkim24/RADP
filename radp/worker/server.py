@@ -648,7 +648,7 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             ))
             context.abort(
                 grpc.StatusCode.UNAVAILABLE,
-                f"chain downstream {next_start}..{next_end} unreachable",
+                f"chain downstream {failed_start}..{failed_end} unreachable",
             )
             raise  # unreachable, but keeps the type checker happy
         return forwarded
