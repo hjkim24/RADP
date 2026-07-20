@@ -27,15 +27,22 @@ import matplotlib.pyplot as plt
 FIG_DIR = Path(__file__).parent
 
 # --- deck palette (ppt/DESIGN_SYSTEM.md §4) --------------------------------
+# 테마 accent 팔레트가 아니라 *덱이 실제로 쓰는* 색이다. 원본 템플릿
+# 색 조사: fill 202843 ×22 (섹션 밴드 + 표 헤더), text FF0000 ×22 (강조),
+# text 0070C0 ×15 (워크스트림 제목). 그림이 이 세 색 밖으로 나가면
+# 슬라이드와 다른 문서처럼 보인다.
 BODY = "#404040"      # dk1     — text, axes, ticks
-ACCENT = "#0070C0"    # accent3 — title emphasis
-GRID = "#E5E8E8"      # lt2
+NAVY = "#202843"      # 섹션 밴드 / 표 헤더 배경 (구조색)
+ACCENT = "#0070C0"    # 워크스트림 제목 = 덱의 강조 파랑
+ALERT = "#FF0000"     # 덱의 강조 빨강 (상태 / 비용)
+GRID = "#E5E8E8"
 
 # Same subject → same color every week. Do not reassign casually.
+# 색이 곧 논지다: 빨강 = 제일 비싼 것, 파랑(덱 강조색) = 이번 주 성과.
 SUBJECT = {
-    "full_replay": "#CB3E3A",   # accent6
-    "surgical":    "#F08F1E",   # accent5
-    "parity":      "#77B142",   # accent1
+    "full_replay": ALERT,    # 비싼 쪽에 시선이 먼저 가야 대비가 산다
+    "surgical":    NAVY,     # 중간, 구조색
+    "parity":      ACCENT,   # 덱이 제목에 쓰는 강조 파랑 = 결론
     "baseline":    "#808080",
 }
 
