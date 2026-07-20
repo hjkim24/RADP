@@ -51,9 +51,23 @@ GhostServe:
 방금 만든 슬라이드로 올라갔으므로 그대로 두면 같은 말이 두 번 나온다.
 나머지 불릿은 손대지 마라.
 
+## 작업 3 — 마지막 Reference 슬라이드
+
+자리표시자 `[1] Author, "Title," Venue, Year.` 를 아래로 교체한다. IEEE 스타일, 12pt.
+
+```
+[1] S. Jayakody, Y. Zhao, C. Nehate, and J. Wang, "GhostServe: A lightweight
+    checkpointing system in the shadow for fault-tolerant LLM serving," in Proc.
+    Conf. Machine Learning and Systems (MLSys), 2026. [Online]. Available:
+    arXiv:2605.00831
+```
+
+한 줄로 이어 쓰되 폭이 모자라면 자연스럽게 접어라. 항목 번호 `[1]` 은 유지한다.
+
 ## 끝나고 확인할 것
 
 - 슬라이드가 정확히 **1장 늘었는지** (장단점 표가 두 개가 되지 않았는지)
 - 새 슬라이드에 쪽번호가 있는지
+- Reference 슬라이드에 GhostServe 인용이 들어갔는지
 - 새로 쓴 문장이 음슴체·명사 종결인지, 영단어 뒤 조사가 붙어 있는지
   (`GhostServe 가` ✗ → `GhostServe가` ✓)

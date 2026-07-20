@@ -110,6 +110,19 @@ parity 가 이기는 그림만 남아 있다.
 - `• prefill(position 0) 장애는 재계산 0 아님`
 - 선행연구 항목은 **삭제한다** — 6번 슬라이드로 올라갔으므로 여기 두면 중복임
 
+## 작업 6 — 마지막 Reference 슬라이드
+
+자리표시자 `[1] Author, "Title," Venue, Year.` 를 아래로 교체한다. IEEE 스타일, 12pt.
+
+```
+[1] S. Jayakody, Y. Zhao, C. Nehate, and J. Wang, "GhostServe: A lightweight
+    checkpointing system in the shadow for fault-tolerant LLM serving," in Proc.
+    Conf. Machine Learning and Systems (MLSys), 2026. [Online]. Available:
+    arXiv:2605.00831
+```
+
+한 줄로 이어 쓰되 폭이 모자라면 자연스럽게 접어라. 항목 번호 `[1]` 은 유지한다.
+
 ## 끝나고 확인할 것
 
 - §2 가 7장이다 (§1 상한 6장을 1장 넘김). 새 기술을 처음 들이는 주라 원리·선행연구·
@@ -117,4 +130,5 @@ parity 가 이기는 그림만 남아 있다.
   슬라이드를 임의로 지우지 마라
 - 쪽번호가 전 장에 있는지
 - 새로 넣은 표에 PowerPoint 기본 표 스타일의 밴딩이 살아나지 않았는지
+- Reference 슬라이드에 GhostServe 인용이 들어갔는지
 - 새로 쓴 문장이 음슴체·명사 종결인지, 영단어 뒤 조사가 붙어 있는지
