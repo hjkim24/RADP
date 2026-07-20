@@ -117,9 +117,16 @@ def parity_mechanism():
 
 
 # ----------------------------------------------------------------- 2. families
-def recovery_families():
+def recovery_families(only_existing: bool = False):
+    """only_existing=True 면 parity 행을 뺀다.
+
+    새 기술을 소개하는 발표에서는 기존 방식의 한계를 먼저 세워야 원리 설명이
+    읽힌다. 같은 그림을 두 번 쓰되 앞에서는 parity 를 감춰, 청중이 "둘 다
+    재계산이라 깊이를 탄다" 를 먼저 받아들이게 한다.
+    """
     fig = plt.figure(figsize=SLIDE_FULL)
-    ax = panel(fig, [0.02, 0.11, 0.96, 0.80], (0, 10), (0, 3.6),
+    ax = panel(fig, [0.02, 0.11, 0.96, 0.80], (0, 10),
+               (0.55, 3.15) if only_existing else (0, 3.6),
                title="색칠 = 다시 계산하는 구간", right="position 1개당 비용")
 
     rows = [
@@ -127,6 +134,8 @@ def recovery_families():
         ("surgical",    SUBJECT["surgical"],    [2],             "16 ms"),
         ("parity",      SUBJECT["parity"],      [],              "0.87 ms"),
     ]
+    if only_existing:
+        rows = rows[:2]
     names = ["head", "A", "B", "C", "tail"]
     DEAD_IDX = 2                            # 세 행 모두 같은 장애(B)를 비교한다
     X0, CW, GAP, RH = 2.25, 1.18, 0.16, 0.78
@@ -135,7 +144,7 @@ def recovery_families():
         return X0 + i * (CW + GAP)
 
     for r, (title, color, recompute, cost) in enumerate(rows):
-        y = 2.42 - r * 1.02
+        y = 2.42 - r * 1.02 - (0.51 if only_existing else 0)   # 2행이면 세로 중앙
         ax.text(0.05, y + RH / 2, title, fontsize=13.5, color=color,
                 fontweight="bold", va="center")
         for i, n in enumerate(names):
@@ -150,18 +159,22 @@ def recovery_families():
         ax.text(9.95, y + RH / 2, cost, ha="right", va="center",
                 fontsize=14, color=color, fontweight="bold")
 
-    # 죽은 노드 표식은 열에 붙인다 (좌표를 외우지 않게)
-    ax.annotate("죽은 노드", xy=(cx(DEAD_IDX) + CW / 2, 3.20), xytext=(0, 16),
+    # 죽은 노드 표식은 첫 행 윗변에 붙인다 (행 수가 바뀌어도 따라오게)
+    top_row = 2.42 - (0.51 if only_existing else 0) + RH
+    ax.annotate("죽은 노드", xy=(cx(DEAD_IDX) + CW / 2, top_row), xytext=(0, 16),
                 textcoords="offset points", ha="center", va="bottom",
                 fontsize=11.5, color=DEAD, fontweight="bold",
                 arrowprops=dict(arrowstyle="-|>", color=DEAD, lw=1.5,
                                 shrinkA=2, shrinkB=0))
 
     ax = panel(fig, [0.02, 0.0, 0.96, 0.10], (0, 10), (0, 1))
-    ax.text(0.05, 0.5, "parity는 죽은 노드를 다시 돌리지 않고 parity에서 역산함",
+    ax.text(0.05, 0.5,
+            "둘 다 죽은 노드를 다시 돌림 → 깊이에 비례" if only_existing
+            else "parity는 죽은 노드를 다시 돌리지 않고 parity에서 역산함",
             fontsize=13, color=BODY, va="center")
 
-    save_slide(fig, "fig_recovery_families")
+    save_slide(fig, "fig_recovery_families_before" if only_existing
+               else "fig_recovery_families")
     plt.close(fig)
 
 
@@ -232,5 +245,6 @@ def generalization():
 
 if __name__ == "__main__":
     parity_mechanism()
+    recovery_families(only_existing=True)
     recovery_families()
     generalization()
