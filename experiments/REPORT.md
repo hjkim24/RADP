@@ -440,6 +440,18 @@ parity:      245.5 ms +   1.43 ms · P
 ```
 → **parity의 기울기는 victim 위치와도 무관**(첫 0.87 / 중간 1.43 ms·P⁻¹, 둘 다 ≈0). 정상 decode 스텝(median) 대비 복구 스텝 비율로 보면 더 선명하다: **parity는 P·위치와 무관하게 항상 1.6–1.9×**(정상 토큰 2개어치), surgical은 1.9→5.0×, full-replay는 6.0→34.4×로 깊이에 따라 증가.
 
+**복구 결과의 강도가 다르다 (성능이 아닌 정합성 축).**
+parity 복구에는 **부동소수 연산이 하나도 없다** — raw 바이트 uint8 XOR 뿐이고 완전 가역이므로,
+복원되는 것은 죽은 워커가 실제로 들고 있던 **바로 그 바이트**다. `tests/test_parity_recovery.py`
+가 이를 layer별 K·V로 **bit-identical** 단언한다. 반면 surgical은 미러 입력을 **backup 워커에서
+다시 forward** 하므로 수학적으로 동치인 재계산값이며, 연산 하드웨어가 다르면 마지막 비트까지
+같다는 보장이 없다(이종 fleet에서 backup이 다른 티어일 수 있음). surgical 테스트에 bit-identical
+단언이 없는 것은 이 때문이다. full-replay는 생존자 KV까지 evict 후 재계산하므로 가장 많이 흔든다.
+
+**단, 실측에서 관측된 발산은 없다**: 15/15 트라이얼 모두 `sequence_match=True`로 세 방식이 healthy
+레퍼런스와 동일한 토큰을 냈다. 따라서 이것은 *보장의 강도* 차이지 surgical이 오답을 낸다는 주장이
+아니다. paper에서는 "재계산 0"을 성능 클레임으로만 쓰지 말고 **수치 재현성 클레임**으로도 쓸 것.
+
 **정직한 한계 (paper에 그대로 기술).**
 - **마지막 stage(tail) victim은 여전히 surgical 폴백.** downstream 생존자가 없어 `min()`이 과대추정되고 completeness 게이트가 걸린다. 이를 덮으려면 `count−1` 규칙이 필요한데 **과소추정 시 아무 게이트도 못 잡아** 잘린 KV를 설치할 위험이 있어, 미검증 규칙을 넣는 대신 폴백으로 남겼다(테스트로 잠금: 폴백하며 출력은 레퍼런스와 일치). fleet 기준 `on-1`·`on-6`·`ao-1`은 parity, tail `on-2`만 폴백.
 - **trailer relay는 fail-fast 장애 기준.** victim이 2 hop 이상 아래에서 **hang**하면 바깥 hop의 deadline이 먼저 터져 여전히 오귀속될 수 있다(선재 문제; 안쪽 hop에 더 짧은 deadline이 필요).
