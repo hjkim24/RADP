@@ -21,10 +21,11 @@ parity 가 이기는 그림만 남아 있다.
 |---|---|
 | 4 · 3종 비교 | **4 · 기존 2종의 한계** (그림 교체) |
 | 5 · parity 원리 | **5 · parity 원리** (그림 교체 + 전폭 배치) |
-| — | **6 · 장단점 표** (신설) |
-| 6 · 일반화 | 7 · 일반화 (그대로 밀림) |
-| 7 · TTR | 8 · TTR |
-| 8 · 수치표 | 9 · 수치표 |
+| — | **6 · 선행연구 GhostServe 대비** (신설) |
+| — | **7 · 장단점 표** (신설) |
+| 6 · 일반화 | 8 · 일반화 (그대로 밀림) |
+| 7 · TTR | 9 · TTR |
+| 8 · 수치표 | 10 · 수치표 |
 
 ## 작업 1 — 4번 슬라이드
 
@@ -48,9 +49,42 @@ parity 가 이기는 그림만 남아 있다.
 - 그림 아래 한 줄(16pt): `저장량은 stage 수와 무관하게 KV 1개분 (RAID-5)`
 - 캡션(12pt): `① 무엇을 저장하는지 ② XOR이 바이트 단위 ③ 역산`
 
-## 작업 3 — 6번에 장단점 슬라이드 신설 (P4 표 패턴)
+## 작업 3 — 6번에 선행연구 대비 슬라이드 신설
 
-5번 뒤에 새 슬라이드를 넣는다. 밴드 `2. Progress last week`, 워크스트림 `1. RADP`.
+원리 바로 뒤에 둔다. parity 가 우리 아이디어인 것처럼 들리면 질의응답에서
+"그거 GhostServe 아니냐" 가 나오고, 그때 답하는 것보다 먼저 말하는 편이 낫다.
+
+밴드 `2. Progress last week`, 워크스트림 `1. RADP`.
+
+- 소제목(굵게): `b-2. 선행연구 — 기법은 GhostServe, 레짐이 우리 것`
+- 시각물: `paper/figures/fig_ghostserve_delta.png` — **11.73 in 전폭**,
+  L 0.63 T 2.55, 배율 100%. 좌측 라벨 붙이지 마라
+- 그림 위 한 줄(16pt): `KV erasure coding 자체는 GhostServe(MLSys '26)가 먼저 함`
+- 그림 아래 표 대신 캡션(12pt):
+  `차이: 코딩 그룹 = 한 노드 안 TP shard → 노드 간 pipeline stage / parity 보관 = host RAM 1TB → coordinator`
+
+**아래 사실만 쓴다. 여기 없는 비교를 지어내지 마라** (근거: `paper/refs/PAPERS.md` GhostServe 항목):
+
+- GhostServe 의 코딩 그룹 = **한 노드 안의 tensor-parallel shard**(같은 요청 KV 를 든 N GPU)
+- parity 를 **호스트 RAM 으로 offload**, fused CUDA 커널로 encode/decode
+- 8:2 erasure coding → **동시 GPU 장애 2대**까지 허용
+- 복구는 하이브리드 — 앞쪽 chunk 는 재계산, 나머지는 parity 디코드
+- 실험 환경 H200×8 NVLink Gen4, 1TB DDR5
+- 논문이 스스로 **"primarily designed for intra-node serving, particularly for
+  tensor parallelism"** 이라 밝히고 cross-node/pipeline 은 future work 로 남김
+
+우리 쪽:
+
+- 코딩 그룹 = **노드 간 pipeline stage**, parity 는 **coordinator**(Jetson AGX Xavier)
+- XOR 단독 → **단일 장애 전용**. 대신 재계산 하이브리드 없이 **순수 디코드**
+- Ethernet 로 연결된 Jetson 5-stage 이종 체인. **여분 노드도, offload 할 호스트 RAM 도 없음**
+
+→ 슬라이드 마지막 줄(16pt 굵게):
+`기여는 기법 발명이 아니라 논문이 스스로 남긴 공백으로 옮겨 측정한 것`
+
+## 작업 4 — 7번에 장단점 슬라이드 신설 (P4 표 패턴)
+
+6번 뒤에 새 슬라이드를 넣는다. 밴드 `2. Progress last week`, 워크스트림 `1. RADP`.
 
 - 소제목(굵게): `c. 공짜 아님 — 3종 장단점`
 - 표 (L0.63 T1.75 W12.05, 6행 4열, 헤더 `202843` 흰 글자, 본문 `E8EAF0`/`F6F7F9` 교대):
@@ -67,18 +101,20 @@ parity 가 이기는 그림만 남아 있다.
 
 **`동시 장애` 행의 앞 두 칸은 `—` 그대로 두어라.** 측정한 적 없는 값을 채우지 마라.
 
-## 작업 4 — 한계 슬라이드 정리
+## 작업 5 — 한계 슬라이드 정리
 
 장단점 표로 올라간 항목은 한계 슬라이드에서 뺀다. 남길 것:
 
 - `• tail victim은 여전히 surgical 폴백 …` (현행 유지)
 - `• KV shipping 비용은 장단점 표에 있음. 정량화는 안 함`
 - `• prefill(position 0) 장애는 재계산 0 아님`
-- `• 선행연구: KV parity 자체는 GhostServe가 먼저 함 …` (현행 유지)
+- 선행연구 항목은 **삭제한다** — 6번 슬라이드로 올라갔으므로 여기 두면 중복임
 
 ## 끝나고 확인할 것
 
-- §2 가 6장인지 (§1 상한). 넘으면 알려라 — 슬라이드를 임의로 지우지 마라
+- §2 가 7장이다 (§1 상한 6장을 1장 넘김). 새 기술을 처음 들이는 주라 원리·선행연구·
+  장단점이 한꺼번에 들어간 결과다. **그대로 두고 넘겼다는 사실만 알려라** —
+  슬라이드를 임의로 지우지 마라
 - 쪽번호가 전 장에 있는지
 - 새로 넣은 표에 PowerPoint 기본 표 스타일의 밴딩이 살아나지 않았는지
 - 새로 쓴 문장이 음슴체·명사 종결인지, 영단어 뒤 조사가 붙어 있는지

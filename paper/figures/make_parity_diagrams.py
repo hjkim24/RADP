@@ -288,8 +288,70 @@ def generalization():
     plt.close(fig)
 
 
+# ------------------------------------------------------- 4. prior art delta
+def ghostserve_delta():
+    """Where GhostServe put parity vs where we put it.
+
+    Every fact on the left panel is from the paper as cataloged in
+    paper/refs/PAPERS.md — coding group = tensor-parallel shards inside one
+    node, parity offloaded to host RAM, H200 x8 over NVLink, and the paper's
+    own scope note that it is "primarily designed for intra-node serving,
+    particularly for tensor parallelism". Nothing here is inferred: the point
+    of the figure is that the regime we run in is the one they named as out
+    of scope, so the contribution is the transplant, not the mechanism.
+    """
+    fig = plt.figure(figsize=SLIDE_WIDE)
+
+    # ── GhostServe: inside one server ─────────────────────────────
+    ax = panel(fig, [0.015, 0.30, 0.45, 0.58], (0, 10), (0, 4.2),
+               title="GhostServe (MLSys '26)")
+    ax.add_patch(FancyBboxPatch((0.35, 1.75), 9.3, 1.35,
+                                boxstyle="round,pad=0.05", linewidth=1.4,
+                                facecolor="#F2F4F4", edgecolor="#C7CFCF"))
+    ax.text(0.60, 3.28, "one server", fontsize=11, color=BODY)
+    for i in range(4):
+        box(ax, 0.75 + i * 2.20, 2.05, 1.85, 0.75, f"GPU {i}", face=OK, fs=11)
+        if i < 3:
+            ax.plot([0.75 + i * 2.20 + 1.85, 0.75 + (i + 1) * 2.20],
+                    [2.42, 2.42], color=BODY, linewidth=1.6)
+    ax.text(0.35, 1.62, "NVLink · tensor-parallel shards", ha="left",
+            va="top", fontsize=10.5, color=BODY)
+    arrow(ax, 7.6, 1.72, 7.6, 1.05, color=PAR, lw=1.8)
+    box(ax, 4.9, 0.20, 4.7, 0.80, "host RAM  (parity)", face=PAR,
+        text="white", fs=12, bold=True)
+
+    # ── ours: across the network ──────────────────────────────────
+    ax = panel(fig, [0.535, 0.30, 0.45, 0.58], (0, 10), (0, 4.2),
+               title="Ours — same idea, different regime")
+    box(ax, 0.75, 3.05, 3 * 2.20 + 1.85, 0.80, "coordinator  (parity)",
+        face=PAR, text="white", fs=12, bold=True)
+    for i in range(4):
+        x = 0.75 + i * 2.20
+        box(ax, x, 1.35, 1.85, 0.75, f"stage {i}", face=OK, fs=11)
+        arrow(ax, x + 0.92, 2.12, x + 0.92, 3.02, color=PAR, lw=1.4,
+              ls=(0, (4, 2)))
+        if i < 3:
+            ax.plot([x + 1.85, 0.75 + (i + 1) * 2.20], [1.72, 1.72],
+                    color=BODY, linewidth=1.2, linestyle=":")
+    ax.text(5.0, 1.05, "Ethernet · pipeline stages on separate boards",
+            ha="center", va="top", fontsize=10.5, color=BODY)
+    ax.text(5.0, 0.35, "no spare node, no host RAM to offload to",
+            ha="center", va="top", fontsize=10.5, color=DEAD)
+
+    # ── the one sentence that positions the work ──────────────────
+    ax = panel(fig, [0.015, 0.0, 0.97, 0.22], (0, 10), (0, 1))
+    note(ax, 0.05, 0.5, "KV erasure coding is theirs. The paper scopes itself "
+         "to intra-node tensor parallelism and leaves cross-node pipeline as "
+         "future work — that gap is the regime we measure in.",
+         width=105, size=12)
+
+    save_slide(fig, "fig_ghostserve_delta")
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     parity_mechanism()
     recovery_families(only_existing=True)
     recovery_families()
     generalization()
+    ghostserve_delta()
