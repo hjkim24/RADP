@@ -625,14 +625,26 @@ class _WorkerServicer(radp_pb2_grpc.WorkerServiceServicer):  # type: ignore[misc
             code = (
                 e.code() if hasattr(e, "code") else grpc.StatusCode.UNAVAILABLE
             )
+            # On a chain longer than 3 stages the failure can be further
+            # downstream than our own next hop: our successor already
+            # attributed it and stamped the TRUE victim's range. Relay that
+            # verbatim instead of overwriting it with our next hop, otherwise
+            # every hop rewrites the blame one stage closer to the head and
+            # the coord kills the wrong (alive) worker.
+            try:
+                down = {k: v for k, v in (e.trailing_metadata() or ())}
+            except AttributeError:
+                down = {}
+            failed_start = down.get("radp-failed-start", str(next_start))
+            failed_end = down.get("radp-failed-end", str(next_end))
             log.warning(
                 "downstream chain RunStage to %s[%d..%d] failed (%s); "
-                "stamping trailer and aborting",
-                _next_addr, next_start, next_end, code,
+                "attributing to [%s..%s] and aborting",
+                _next_addr, next_start, next_end, code, failed_start, failed_end,
             )
             context.set_trailing_metadata((
-                ("radp-failed-start", str(next_start)),
-                ("radp-failed-end", str(next_end)),
+                ("radp-failed-start", failed_start),
+                ("radp-failed-end", failed_end),
             ))
             context.abort(
                 grpc.StatusCode.UNAVAILABLE,

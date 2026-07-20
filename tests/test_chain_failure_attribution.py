@@ -130,6 +130,42 @@ def test_chain_failure_stamps_trailer(
     assert md.get("radp-failed-end") == str(dead_end)
 
 
+def test_trailer_survives_an_extra_hop(
+    chain_with_dead_middle: tuple[str, int, int],
+) -> None:
+    """On a chain longer than 3 stages the failure can be further downstream
+    than a given worker's own next hop. Each intermediate hop must RELAY the
+    trailer its successor already stamped, not overwrite it with its own next
+    hop — otherwise the blame walks one stage toward the head per hop and the
+    coord kills an alive worker (observed: a 4-stage chain whose stage 3 died
+    got attributed to stage 2).
+
+    Here: entry[1..0] -> head[1..6] -> dead[7..12]. The trailer that comes back
+    out of `entry` must still name 7..12, not 1..6.
+    """
+    head_addr, dead_start, dead_end = chain_with_dead_middle
+    entry_addr, entry_server = _spawn_worker_with_next_hop(
+        _FakeStageRunner(), head_addr,
+        my_start=1, my_end=1, next_start=1, next_end=6,
+    )
+    try:
+        with grpc.insecure_channel(entry_addr) as ch:
+            stub = radp_pb2_grpc.WorkerServiceStub(ch)
+            with pytest.raises(grpc.RpcError) as excinfo:
+                stub.RunStage(
+                    radp_pb2.RunStageRequest(
+                        activation=b"x", request_id=7, is_prefill=True,
+                        start_layer=1, end_layer=1, position=0,
+                    ),
+                    timeout=15.0,
+                )
+        md = {k: v for k, v in (excinfo.value.trailing_metadata() or ())}
+        assert md.get("radp-failed-start") == str(dead_start)
+        assert md.get("radp-failed-end") == str(dead_end)
+    finally:
+        entry_server.stop(0).wait()
+
+
 def test_gateway_attribution_picks_correct_dead_stage(
     chain_with_dead_middle: tuple[str, int, int],
 ) -> None:
