@@ -2100,7 +2100,24 @@ parity:      284.1 ms +   0.87 ms·P   → surgical 대비 19×, full-replay 대
 ```
 in-process는 bit-exact(복원 KV가 원본과 `torch.equal`) + sequence-match로 별도 증명. 테스트 fast 118 / slow 19 green.
 
-**의도된 한계**: ① **첫 interior victim 한정** — upstream non-head 생존자가 있으면 slot geometry 불일치로 **안전하게 surgical 폴백**(틀린 토큰 없음); 임의 victim은 future work ② 정상 운영 중 KV shipping 네트워크 세금 미최적화·미정량화 ③ 단일 장애(RAID-5) ④ prefill(pos 0) 장애는 라이브 prefill로 축퇴.
+**의도된 한계**: ① ~~**첫 interior victim 한정**~~ → **Phase B1-PARITY.2에서 해소** (임의 interior victim 지원; 마지막 stage victim만 surgical 폴백 유지) ② 정상 운영 중 KV shipping 네트워크 세금 미최적화·미정량화 ③ 단일 장애(RAID-5) ④ prefill(pos 0) 장애는 라이브 prefill로 축퇴.
+
+## Phase B1-PARITY.2 — parity 복구를 임의 interior victim으로 일반화 (2026-07-20)
+
+**목표**: Phase B1-PARITY의 "① 첫 interior victim 한정" 한계 해소. 죽은 stage가 chain 어디에 있든(단, downstream non-head 생존자가 하나라도 있으면) zero-forward XOR 복원이 실제로 동작하게 한다.
+
+**구현**:
+- [radp/coordinator/gateway.py](radp/coordinator/gateway.py) — `_recover_parity`: 생존자들이 같은 slot 수를 갖도록 강요하던 게이트를 제거하고 **`N = min(생존자 slot 수)`** (= 모든 non-head stage가 공유하는 prefix)로 복원 대상 결정. `_xor_reconstruct_kv`는 slot 축을 `-1`로 reshape 후 transpose 결과를 `[:n_slots]`로 **슬라이스** — upstream 생존자의 여분 slot을 잘라 정렬. KV는 append-only라 slot i 바이트는 그대로.
+- [radp/worker/server.py](radp/worker/server.py) — **선결 버그 수정**(아래).
+
+**찾아낸 버그** (이 작업을 막고 있던 진짜 원인): 4-stage chain에서 stage 3이 죽었는데 coord가 **stage 2를 죽였다**. chain forwarding의 `except grpc.RpcError` 핸들러가 downstream이 이미 stamp 한 `radp-failed-*` trailer를 무시하고 **자기 next hop**으로 덮어써서, hop 하나 지날 때마다 책임이 head 쪽으로 한 칸씩 이동. 3-stage에서는 hop이 하나뿐이라 드러나지 않았음. 이제 중간 hop은 successor의 trailer를 **그대로 릴레이**한다.
+
+**검증 결과**:
+- 신규 slow e2e `test_parity_recovery_middle_victim` — 4-stage(head + non-head 3), victim=중간 non-head(upstream 생존자 1 + downstream 생존자 1). (a) PARITY 브랜치 실행 & surgical 폴백 0회, (b) 복원 KV가 원본과 layer별 K·V 모두 `torch.equal`, (c) 토큰 시퀀스 = healthy reference. 기존 first-victim 테스트와 공용 드라이버 `_assert_parity_recovery`로 통합.
+- 신규 fast `test_trailer_survives_an_extra_hop` — trailer 릴레이 회귀 가드(수정 전 `'1' == '7'` 로 실패 확인).
+- fast 117 green (기존 116 + trailer 릴레이 1), slow(parity+surgical+B1) 20 green (기존 19 + middle-victim 1).
+
+**의도된 한계**: ① **마지막 stage victim은 여전히 surgical 폴백** — downstream non-head 생존자가 없어 모든 생존자가 한 slot씩 길고, 마지막 공유 slot의 parity에 victim 기여분이 빠져 completeness 게이트가 걸림(틀린 토큰은 없음) ② 단일 장애(RAID-5) ③ prefill(pos 0) 장애는 라이브 prefill로 축퇴.
 
 ## 알려진 한계 (현재)
 

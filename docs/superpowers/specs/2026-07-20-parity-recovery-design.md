@@ -168,12 +168,27 @@ fallback. Parity is strictly the *fast path*; correctness never depends on it.
 - **Single fault only** (RAID-5 = one block loss). Concurrent multi-stage
   failure → parity infeasible = documented limit (matches R's single-backup
   assumption). Reed-Solomon multi-fault = future work.
-- **First-non-head-victim only.** Zero-forward reconstruction fires only when
-  the dead stage has no upstream non-head survivor. For any other victim, an
-  upstream non-head survivor has already advanced to P+1 while downstream
-  survivors sit at P — the geometry mismatch trips the gate and recovery
-  safely falls back to surgical (never a wrong token). Arbitrary-victim
-  reconstruction (slicing upstream survivors back to N slots) is future work.
+- **Any victim with a downstream non-head survivor.** ~~First-non-head-victim
+  only~~ — lifted. Survivors no longer have to agree on their slot count:
+  upstream survivors already completed the failed position P (one extra KV
+  slot) while downstream ones never received it, so reconstruction targets the
+  shared prefix `N = min(survivor slot counts)` — exactly what the victim holds,
+  since it crashes at the TOP of its RunStage before appending P — and slices
+  the upstream survivors back to N before XOR-ing. Covered bit-exact by
+  `tests/test_parity_recovery.py::test_parity_recovery_middle_victim`
+  (4-stage chain, middle victim: one upstream + one downstream survivor).
+  - Prerequisite fixed alongside: on chains >3 stages each hop used to
+    overwrite the `radp-failed-*` trailer with its OWN next hop, walking the
+    blame one stage toward the head per hop and killing an alive worker.
+    Intermediate hops now relay the trailer their successor stamped
+    (`tests/test_chain_failure_attribution.py::test_trailer_survives_an_extra_hop`).
+- **Last-stage victim still falls back.** With no downstream non-head survivor
+  every survivor is one slot long, so the last shared slot's parity is missing
+  the victim's own contribution; the completeness gate trips and recovery falls
+  back to surgical (never a wrong token).
+- **Prefill-position failure is not zero-forward.** A crash at position 0 has no
+  prior KV to reconstruct from, so it degenerates to running prefill live — a
+  real forward pass.
 - Padding-skew inefficiency accepted (reframed as ψ+R coupling angle).
 - Continuous KV-shipping network tax is **measured/reported, not optimized**.
 - `FetchKV` pulls survivors' full KV at failure — O(P × (N−1)) network, the

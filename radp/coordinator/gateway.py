@@ -902,21 +902,26 @@ class RequestGateway:
             hasn't landed yet);
           * the mirrored dead-stage input for the failed position is missing.
 
-        Scope (topology, honest limit): this zero-forward path reconstructs
-        the dead stage's KV ONLY when the dead stage is the FIRST non-head
-        stage on the chain — i.e. it has no upstream non-head survivor. For
-        any OTHER victim, an upstream non-head survivor has already advanced
-        to position P+1 (its forward for the failed position P completed
-        before the chain reached the dead stage) while the downstream
-        survivors are still at P — that geometry mismatch trips the
-        size/completeness gates above, so recovery SAFELY falls back to
-        surgical rather than ever emitting a wrong token. Reconstructing an
-        arbitrary (non-first) victim — slicing the upstream survivors' extra
-        position back off to realign everyone to N slots — is future work,
-        not implemented here. Separately: a crash at position 0 (prefill)
-        has no prior KV to zero-forward reconstruct from, so it degenerates
-        to running prefill live (an actual forward pass), not a zero-forward
-        one.
+        Scope (topology): any non-head victim that has at least one non-head
+        survivor DOWNSTREAM of it is reconstructed here. Survivors need not
+        agree on their slot count: the ones UPSTREAM of the victim already
+        completed the failed position P (one extra KV slot) while the
+        downstream ones never received it, so we reconstruct the shared
+        prefix N = min(survivor slot counts) — exactly what the victim holds,
+        since it crashed at the TOP of its RunStage before appending P — and
+        slice the upstream survivors back to N before XOR-ing.
+
+        Honest limits that remain:
+          * single fault only — two dead stages leave the XOR underdetermined
+            (the parity completeness gate catches it → surgical);
+          * a victim with NO downstream non-head survivor (i.e. the LAST
+            stage) leaves every survivor one slot LONGER than the victim, so
+            that extra shared slot's parity is missing the victim's own
+            contribution — the completeness gate trips and recovery SAFELY
+            falls back to surgical;
+          * a crash at position 0 (prefill) has no prior KV to zero-forward
+            reconstruct from, so it degenerates to running prefill live (an
+            actual forward pass), not a zero-forward one.
 
         LAYOUT: the parity blob and the workers' MirrorKV columns are
         SLOT-major (per absolute KV-slot, layers within a slot);
@@ -984,33 +989,38 @@ class RequestGateway:
                 request_id, head_stage, error, current_position
             )
 
-        # N (absolute KV-slot count) is derived from a survivor's byte length —
-        # FetchKV's num_positions only echoes the request. All non-head stages
-        # advance together in the sync chain, so every survivor must expose the
-        # same N; a mismatch means we can't trust the geometry → surgical.
-        probe_stage, probe_bytes = surv_kv[0]
-        probe_layers = int(probe_stage.end_layer) - int(probe_stage.start_layer) + 1
-        bytes_per_slot = probe_layers * 2 * n_heads * head_dim * itemsize
-        if bytes_per_slot == 0 or len(probe_bytes) % bytes_per_slot != 0:
-            log.warning(
-                "request=%d parity: survivor %s KV size %d not a multiple of "
-                "slot size %d; fallback to surgical",
-                request_id, probe_stage.device, len(probe_bytes), bytes_per_slot,
-            )
-            return self._recover_surgical(
-                request_id, head_stage, error, current_position
-            )
-        n_slots = len(probe_bytes) // bytes_per_slot
+        # Each survivor's own absolute KV-slot count comes from its byte length —
+        # FetchKV's num_positions only echoes the request. Survivors need NOT
+        # agree: in the sync chain the stages UPSTREAM of the victim already
+        # appended the failed position P's KV before the chain reached it, so
+        # they carry one slot MORE than the downstream ones. The dead stage
+        # crashed at the top of its RunStage, before appending P, so it holds
+        # exactly the slots every non-head stage shares — N = the minimum. The
+        # extra trailing slot(s) on the upstream survivors are sliced off during
+        # the XOR (see :meth:`_xor_reconstruct_kv`).
+        slot_counts: list[int] = []
         for s, buf in surv_kv:
             n_l = int(s.end_layer) - int(s.start_layer) + 1
-            if len(buf) != n_l * 2 * n_heads * n_slots * head_dim * itemsize:
+            bytes_per_slot = n_l * 2 * n_heads * head_dim * itemsize
+            if bytes_per_slot == 0 or len(buf) % bytes_per_slot != 0:
                 log.warning(
-                    "request=%d parity: survivor %s KV geometry mismatch; "
-                    "fallback to surgical", request_id, s.device,
+                    "request=%d parity: survivor %s KV size %d not a multiple of "
+                    "slot size %d; fallback to surgical",
+                    request_id, s.device, len(buf), bytes_per_slot,
                 )
                 return self._recover_surgical(
                     request_id, head_stage, error, current_position
                 )
+            slot_counts.append(len(buf) // bytes_per_slot)
+        n_slots = min(slot_counts)
+        if n_slots == 0:
+            log.warning(
+                "request=%d parity: survivors share no KV slots; "
+                "fallback to surgical", request_id,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
 
         # Completeness gate: every slot must have all non-head contributors.
         for slot in range(n_slots):
@@ -1151,10 +1161,17 @@ class RequestGateway:
         surv_rows: list[np.ndarray] = []
         for stage, buf in surv_kv:
             n_l = int(stage.end_layer) - int(stage.start_layer) + 1
+            # -1 on the slot axis: a survivor UPSTREAM of the victim holds one
+            # slot MORE than the shared count (it processed the failed position
+            # before the chain reached the victim). Slice back to `n_slots`
+            # after the transpose so every survivor lines up on slots 0..N-1 —
+            # KV is append-only, so slot i's bytes are identical either way.
             arr = np.frombuffer(buf, dtype=np_dtype).reshape(
-                n_l, 2, n_heads, n_slots, head_dim
+                n_l, 2, n_heads, -1, head_dim
             )
-            slot_major = np.ascontiguousarray(np.transpose(arr, (3, 0, 1, 2, 4)))
+            slot_major = np.ascontiguousarray(
+                np.transpose(arr, (3, 0, 1, 2, 4))[:n_slots]
+            )
             surv_rows.append(slot_major.reshape(n_slots, -1).view(np.uint8))
 
         dead_slots = np.empty((n_slots, dead_slot_bytes), dtype=np.uint8)

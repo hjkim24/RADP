@@ -316,6 +316,8 @@ from radp.coordinator.gateway import RequestGateway
 
 
 def _cfg():
+    """3 stages (head + 2 non-head); the only interior victim is the FIRST
+    non-head stage, whose non-head survivor is DOWNSTREAM (same slot count)."""
     ids = ["worker-a", "worker-b", "worker-c"]
     placement = [
         _Stage(LayerIdx(1), LayerIdx(4), DeviceId("worker-a")),
@@ -330,8 +332,29 @@ def _cfg():
     return ids, placement, recovery
 
 
-def _healthy_reference(prompt, n):
-    ids, placement, recovery = _cfg()
+def _cfg4():
+    """4 stages (head + 3 non-head) so a MIDDLE non-head victim exists: killing
+    worker-c[7..9] leaves an UPSTREAM non-head survivor (worker-b, already
+    advanced past the failed position -> one extra KV slot) and a DOWNSTREAM
+    one (worker-d, still at the victim's slot count)."""
+    ids = ["worker-a", "worker-b", "worker-c", "worker-d"]
+    placement = [
+        _Stage(LayerIdx(1), LayerIdx(3), DeviceId("worker-a")),
+        _Stage(LayerIdx(4), LayerIdx(6), DeviceId("worker-b")),
+        _Stage(LayerIdx(7), LayerIdx(9), DeviceId("worker-c")),
+        _Stage(LayerIdx(10), LayerIdx(12), DeviceId("worker-d")),
+    ]
+    recovery = {
+        DeviceId("worker-a"): DeviceId("worker-b"),
+        DeviceId("worker-b"): DeviceId("worker-c"),
+        DeviceId("worker-c"): DeviceId("worker-d"),
+        DeviceId("worker-d"): DeviceId("worker-a"),
+    }
+    return ids, placement, recovery
+
+
+def _healthy_reference(prompt, n, cfg=_cfg):
+    ids, placement, recovery = cfg()
     with in_process_cluster_with_mirror(ids) as (addrs, servers, attach):
         deploy(addrs, placement, model_id=MODEL, recovery=recovery)
         wire_chain(addrs, placement)
@@ -353,21 +376,24 @@ def _kv_layers(buf, n_layers, n_heads, head_dim, np_dtype):
     return [(arr[li, 0], arr[li, 1]) for li in range(n_layers)]
 
 
-def test_parity_recovery_matches_reference(monkeypatch, caplog):
-    """Zero-forward parity recovery of a mid-chain interior-stage crash.
-
-    Gates: (a) the PARITY branch runs and never falls back to surgical;
+def _assert_parity_recovery(monkeypatch, caplog, *, cfg, victim_dev, backup_dev):
+    """Drive one zero-forward parity recovery and assert all three gates:
+    (a) the PARITY branch runs and never falls back to surgical;
     (b) the reconstructed backup KV is bit-identical to the victim's, per
     layer for K and V; (c) the recovered sequence equals the wired reference.
+
+    ``victim_dev``/``backup_dev`` are device ids; the victim's layer range is read off
+    the placement, and ``backup_dev`` is where ``recovery`` promotes it.
     """
     from radp.coordinator.gateway import RequestGateway
 
     monkeypatch.setenv("RADP_PARITY", "1")
     prompt, n, kill_at = "The quick brown fox", 12, 4
-    dead_key = (5, 8)
-    reference = _healthy_reference(prompt, n)
+    reference = _healthy_reference(prompt, n, cfg)
 
-    ids, placement, recovery = _cfg()
+    ids, placement, recovery = cfg()
+    victim_stage = next(s for s in placement if s.device == DeviceId(victim_dev))
+    dead_key = (int(victim_stage.start_layer), int(victim_stage.end_layer))
     with in_process_cluster_with_mirror(ids) as (addrs, servers, attach):
         deploy(addrs, placement, model_id=MODEL, recovery=recovery)
         wire_chain(addrs, placement)
@@ -390,7 +416,7 @@ def test_parity_recovery_matches_reference(monkeypatch, caplog):
         gw._recover_surgical = spy_surgical
 
         # Capture the KV bytes the gateway installs onto the promoted backup.
-        c_runner = servers[DeviceId("worker-c")].runner
+        c_runner = servers[DeviceId(backup_dev)].runner
         orig_install = c_runner.install_kv
         installed: dict = {}
 
@@ -406,7 +432,7 @@ def test_parity_recovery_matches_reference(monkeypatch, caplog):
         c_runner.install_kv = spy_install
 
         rid = gw.new_request_id()
-        b_runner = servers[DeviceId("worker-b")].runner
+        b_runner = servers[DeviceId(victim_dev)].runner
         orig_run = b_runner.run
         state = {"calls": 0, "tripped": False}
         victim: dict = {}
@@ -418,10 +444,10 @@ def test_parity_recovery_matches_reference(monkeypatch, caplog):
                     state["tripped"] = True
                     # Snapshot the victim's KV (slots 0..N-1) BEFORE crashing.
                     victim["N"] = b_runner.kv_seq_len(
-                        rid, start=LayerIdx(5), end=LayerIdx(8)
+                        rid, start=LayerIdx(dead_key[0]), end=LayerIdx(dead_key[1])
                     )
                     victim["bytes"] = b_runner.export_kv(
-                        rid, start=LayerIdx(5), end=LayerIdx(8)
+                        rid, start=LayerIdx(dead_key[0]), end=LayerIdx(dead_key[1])
                     )
                     # Wait until BOTH the input mirror for pos kill_at AND the
                     # parity for every slot 0..N-1 have landed, so recovery
@@ -436,7 +462,7 @@ def test_parity_recovery_matches_reference(monkeypatch, caplog):
                     ):
                         time.sleep(0.01)
                     raise RuntimeError(
-                        "simulated worker-b mid-stage crash after mirror+kv"
+                        f"simulated {victim_dev} mid-stage crash after mirror+kv"
                     )
             return orig_run(
                 request_id, activation_blob, start=start, end=end,
@@ -482,3 +508,22 @@ def test_parity_recovery_matches_reference(monkeypatch, caplog):
     # (c) recovered sequence == healthy wired reference.
     assert len(recovered) == n
     assert recovered == reference, f"recovered={recovered}\nreference={reference}"
+
+
+def test_parity_recovery_matches_reference(monkeypatch, caplog):
+    """FIRST non-head victim: every non-head survivor is downstream, so all
+    survivors already agree on the slot count (no slicing needed)."""
+    _assert_parity_recovery(
+        monkeypatch, caplog, cfg=_cfg, victim_dev="worker-b", backup_dev="worker-c"
+    )
+
+
+def test_parity_recovery_middle_victim(monkeypatch, caplog):
+    """MIDDLE non-head victim: worker-b (upstream) already appended the failed
+    position's KV and so carries one slot MORE than the victim, while worker-d
+    (downstream) carries exactly the victim's count. Reconstruction must slice
+    the upstream survivor back to the shared slot count instead of bailing out
+    to surgical."""
+    _assert_parity_recovery(
+        monkeypatch, caplog, cfg=_cfg4, victim_dev="worker-c", backup_dev="worker-d"
+    )
