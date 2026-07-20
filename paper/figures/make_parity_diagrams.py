@@ -31,7 +31,7 @@ from _slide import (BODY, SLIDE_FULL, SLIDE_WIDE, SUBJECT,  # noqa: E402
 
 DEAD = SUBJECT["full_replay"]      # 죽은 노드
 OK = "#B8C0C0"                     # 평상시 노드
-HEAD = "#DDE3E3"                   # head 는 parity 그룹 밖이라 더 옅게
+HEAD = "#DDE3E3"                   # head는 parity 그룹 밖이라 더 옅게
 PAR = SUBJECT["parity"]
 SUR = SUBJECT["surgical"]
 
@@ -54,7 +54,7 @@ def arrow(ax, x1, y1, x2, y2, color=BODY, lw=1.4, ls="-"):
 NAMES = ["head", "A", "B", "C"]
 XS = [0.30 + i * 2.45 for i in range(4)]     # head 0.30 / A 2.75 / B 5.20 / C 7.65
 BW, BH = 2.10, 0.90
-BAR_X, BAR_W = XS[1], XS[3] + BW - XS[1]     # parity 막대는 non-head 만 덮는다
+BAR_X, BAR_W = XS[1], XS[3] + BW - XS[1]     # parity 막대는 non-head만 덮는다
 Y_NODE, Y_BAR = 0.55, 2.35
 
 
@@ -85,21 +85,21 @@ def parity_mechanism():
     for x in XS[1:]:
         arrow(ax, x + BW / 2, Y_NODE + BH, x + BW / 2, Y_BAR,
               color=PAR, lw=1.5, ls=(0, (4, 2)))
-    ax.annotate("KV 컬럼을\n올린다", xy=(XS[1] + BW / 2, (Y_NODE + BH + Y_BAR) / 2),
+    ax.annotate("KV 컬럼\n올림", xy=(XS[1] + BW / 2, (Y_NODE + BH + Y_BAR) / 2),
                 xytext=(-24, 0), textcoords="offset points", ha="right",
                 va="center", fontsize=11.5, color=PAR, linespacing=1.4)
-    note(ax, XS[0], Y_NODE - 0.28, "head 는 coordinator 가 소스라 parity 그룹에서 빠진다",
+    note(ax, XS[0], Y_NODE - 0.28, "head는 coordinator가 소스 → parity 그룹 제외",
          width=48, size=11, va="top")
 
     # ── 아래: 장애 복원 ───────────────────────────────────────────
     ax = panel(fig, [0.02, 0.115, 0.96, 0.375], *LIM,
                title="장애 복원", right="모델 forward 0회")
     _bar(ax); _chain(ax, dead_idx=2)
-    for i in (1, 3):                                   # 생존자는 KV 를 내어주고
+    for i in (1, 3):                                   # 생존자는 KV를 내어주고
         arrow(ax, XS[i] + BW / 2, Y_NODE + BH, XS[i] + BW / 2, Y_BAR,
               color=BODY, lw=1.2, ls=(0, (4, 2)))
     arrow(ax, XS[2] + BW / 2, Y_BAR, XS[2] + BW / 2, Y_NODE + BH,
-          color=PAR, lw=2.8)                           # P 에서 죽은 노드로 역산
+          color=PAR, lw=2.8)                           # P에서 죽은 노드로 역산
     ax.annotate("역산", xy=(XS[2] + BW / 2, (Y_NODE + BH + Y_BAR) / 2),
                 xytext=(12, 0), textcoords="offset points", ha="left",
                 va="center", fontsize=12, color=PAR, fontweight="bold")
@@ -109,7 +109,7 @@ def parity_mechanism():
 
     # ── 결론: 자기 영역을 갖는다 ──────────────────────────────────
     ax = panel(fig, [0.02, 0.0, 0.96, 0.105], (0, 10), (0, 1))
-    ax.text(5, 0.5, "생존자 KV   ⊕   P   =   B 의 KV", ha="center", va="center",
+    ax.text(5, 0.5, "생존자 KV   ⊕   P   =   B의 KV", ha="center", va="center",
             fontsize=15, color=BODY, fontweight="bold")
 
     save_slide(fig, "fig_parity_mechanism")
@@ -143,7 +143,7 @@ def recovery_families():
             box(ax, cx(i), y, CW, RH, n,
                 face=color if hit else OK,
                 text="white" if hit else BODY, fs=11.5, bold=hit)
-        if title == "parity":               # 재계산 대신 P 에서 역산
+        if title == "parity":               # 재계산 대신 P에서 역산
             ax.annotate("⊕ P", xy=(cx(DEAD_IDX) + CW / 2, y), xytext=(0, -7),
                         textcoords="offset points", ha="center", va="top",
                         fontsize=13, color=color, fontweight="bold")
@@ -158,7 +158,7 @@ def recovery_families():
                                 shrinkA=2, shrinkB=0))
 
     ax = panel(fig, [0.02, 0.0, 0.96, 0.10], (0, 10), (0, 1))
-    ax.text(0.05, 0.5, "parity 는 죽은 노드를 다시 돌리지 않고 parity 에서 역산한다",
+    ax.text(0.05, 0.5, "parity는 죽은 노드를 다시 돌리지 않고 parity에서 역산함",
             fontsize=13, color=BODY, va="center")
 
     save_slide(fig, "fig_recovery_families")
@@ -171,7 +171,7 @@ def generalization():
 
     # ── (a) slot alignment ────────────────────────────────────────
     ax = panel(fig, [0.015, 0.22, 0.45, 0.62], (0, 10), (0.45, 4.3),
-               title="① 앞선 노드가 한 칸 더 가 있다")
+               title="① 앞선 노드가 한 칸 더 감")
     SX, SW, SGAP, SH = 3.55, 0.52, 0.10, 0.62
     rows = [("upstream 생존자", 9, SUR), ("victim", 8, DEAD),
             ("downstream 생존자", 8, OK)]
@@ -185,17 +185,17 @@ def generalization():
 
     cut = SX + 8 * (SW + SGAP) - SGAP / 2      # 8칸째 뒤 = 자르는 지점
     ax.plot([cut, cut], [0.55, 3.95], color=BODY, linestyle=":", linewidth=1.6)
-    ax.annotate("min = 8 에서 자른다", xy=(cut, 3.95), xytext=(0, 6),
+    ax.annotate("min = 8에서 자름", xy=(cut, 3.95), xytext=(0, 6),
                 textcoords="offset points", ha="center", va="bottom",
                 fontsize=11.5, color=BODY, fontweight="bold")
 
     ax = panel(fig, [0.015, 0.02, 0.45, 0.16], (0, 10), (0, 1))
-    note(ax, 0.05, 0.5, "잘라 맞추면 첫 워커뿐 아니라 아무 위치나 복원된다",
+    note(ax, 0.05, 0.5, "잘라 맞추면 첫 워커 외 임의 위치 복원됨",
          width=60, size=12)
 
     # ── (b) trailer overwrite ─────────────────────────────────────
     ax = panel(fig, [0.535, 0.22, 0.45, 0.62], (0, 10), (0.45, 4.3),
-               title="② 누가 죽었는지가 덮어써지고 있었다")
+               title="② 누가 죽었는지가 덮어써짐")
     chain = ["entry", "hop", "dead"]
     CX, CW2, CH = 0.30, 2.60, 0.95
     STEP = 3.35
@@ -208,7 +208,7 @@ def generalization():
         if i < 2:
             arrow(ax, x + CW2, y + CH / 2, CX + (i + 1) * STEP, y + CH / 2)
 
-    # 표식이 dead 에서 hop 으로 되돌아 덮어쓰는 흐름
+    # 표식이 dead에서 hop으로 되돌아 덮어쓰는 흐름
     y_back = y - 0.42
     ax.annotate("", xy=(CX + STEP + CW2 / 2, y_back),
                 xytext=(CX + 2 * STEP + CW2 / 2, y_back),
@@ -218,7 +218,7 @@ def generalization():
             "장애 표식이 자기 다음 홉으로 덮어써짐",
             ha="center", va="center", fontsize=11.5, color=DEAD)
     ax.text(CX + 1.5 * STEP + CW2 / 2, y_back - 1.02,
-            "→ 멀쩡한 hop 이 범인으로 몰려 죽었다",
+            "→ 멀쩡한 hop이 범인으로 몰려 죽음",
             ha="center", va="center", fontsize=12.5, color=DEAD,
             fontweight="bold")
 

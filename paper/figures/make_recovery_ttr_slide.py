@@ -85,6 +85,6 @@ ax.spines["right"].set_visible(False)
 ax.grid(True, axis="y", alpha=0.3)
 ax.set_axisbelow(True)
 
-# 오른쪽에 이름표가 나가므로 그만큼 자리를 비운다 (tight_layout 이 잘라먹지 않게)
+# 오른쪽에 이름표가 나가므로 그만큼 자리를 비운다 (tight_layout이 잘라먹지 않게)
 fig.subplots_adjust(left=0.11, right=0.76, top=0.96, bottom=0.14)
 save_slide(fig, "fig_recovery_ttr_slide")
