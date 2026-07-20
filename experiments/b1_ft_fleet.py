@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import subprocess
 import time
 from pathlib import Path
@@ -212,11 +213,22 @@ def run_trial(
 
     fired = fault_fired(victim_host)
     tbt = rec["tbt_seconds_each"]
-    ttr = max(tbt) if tbt else float("nan")
-    ttr_idx = tbt.index(ttr) if tbt else -1
-    # The crash lands when the victim processes decode `position`; its recovery
-    # cost shows up as the spike at per-step index position-1 (prefill = 0).
+    # The crash lands when the victim processes decode `position`, so the
+    # recovery cost IS the step at per-step index position-1 (prefill = 0).
+    # Read it there rather than taking max(tbt): we control where the fault
+    # fires, and once recovery gets cheap (parity ~2x a normal step) an
+    # unrelated jitter spike elsewhere in the stream can exceed the real
+    # recovery step and silently mis-measure it. `peak_*` is kept as a
+    # diagnostic so such cases stay visible.
     expected_idx = position - 1
+    ttr = tbt[expected_idx] if 0 <= expected_idx < len(tbt) else float("nan")
+    peak = max(tbt) if tbt else float("nan")
+    peak_idx = tbt.index(peak) if tbt else -1
+    median_tbt = statistics.median(tbt) if tbt else float("nan")
+    # Sanity: the recovery step must stand out from a normal decode step.
+    # (Replaces the old "peak lands at expected index" gate, which fails for
+    # a fast recovery even when that recovery was perfectly correct.)
+    recovery_visible = bool(tbt) and ttr > 1.3 * median_tbt
     seq_match = (reference is None) or (rec["decoded_text"] == reference)
 
     # Parity-only: verify the gateway actually took the zero-forward XOR
@@ -236,10 +248,18 @@ def run_trial(
         "mode": mode,
         "position": position,
         "ttr_seconds": ttr,
-        "ttr_step_index": ttr_idx,
+        "ttr_step_index": expected_idx,
         "expected_step_index": expected_idx,
+        "median_tbt_seconds": median_tbt,
+        "ttr_over_median": (ttr / median_tbt) if median_tbt else float("nan"),
+        # Diagnostics: where the largest step actually landed. peak_is_recovery
+        # False just means an unrelated jitter spike beat a cheap recovery —
+        # informational, not a validity gate.
+        "peak_seconds": peak,
+        "peak_step_index": peak_idx,
+        "peak_is_recovery": peak_idx == expected_idx,
         "fired": fired,
-        "index_ok": ttr_idx == expected_idx,
+        "recovery_visible": recovery_visible,
         "sequence_match": seq_match,
         "parity_branch_ran": parity_branch_ran,
         "parity_branch_log": parity_branch_log,
@@ -248,7 +268,7 @@ def run_trial(
         "tbt_seconds_each": [round(x, 4) for x in tbt],
         "decoded_text": rec["decoded_text"],
     }
-    valid = fired and row["index_ok"] and seq_match
+    valid = fired and recovery_visible and seq_match
     note = ""
     if mode == "parity":
         valid = valid and bool(parity_branch_ran)
@@ -257,8 +277,9 @@ def run_trial(
             "" if parity_branch_ran else " (FELL BACK TO SURGICAL)",
         )
     log.info(
-        "%-11s P=%-2d  TTR=%.3fs  idx=%d/%d  fired=%s seq_match=%s%s  %s",
-        mode, position, ttr, ttr_idx, expected_idx, fired, seq_match, note,
+        "%-11s P=%-2d  TTR=%.3fs (%.1fx median, step %d)  fired=%s seq_match=%s%s  %s",
+        mode, position, ttr, (ttr / median_tbt) if median_tbt else float("nan"),
+        expected_idx, fired, seq_match, note,
         "OK" if valid else "!! INVALID",
     )
     return row
@@ -307,7 +328,7 @@ def run(
     fits: dict[str, Any] = {}
     for mode in modes:
         pts = [(t["position"], t["ttr_seconds"]) for t in trials
-               if t["mode"] == mode and t["fired"] and t["index_ok"] and t["sequence_match"]
+               if t["mode"] == mode and t["fired"] and t["recovery_visible"] and t["sequence_match"]
                and (mode != "parity" or t["parity_branch_ran"])]
         if len(pts) >= 2:
             f = _linfit([p for p, _ in pts], [y for _, y in pts])

@@ -2115,7 +2115,9 @@ in-process는 bit-exact(복원 KV가 원본과 `torch.equal`) + sequence-match�
 **검증 결과**:
 - 신규 slow e2e `test_parity_recovery_middle_victim` — 4-stage(head + non-head 3), victim=중간 non-head(upstream 생존자 1 + downstream 생존자 1). (a) PARITY 브랜치 실행 & surgical 폴백 0회, (b) 복원 KV가 원본과 layer별 K·V 모두 `torch.equal`, (c) 토큰 시퀀스 = healthy reference. 기존 first-victim 테스트와 공용 드라이버 `_assert_parity_recovery`로 통합.
 - 신규 fast `test_trailer_survives_an_extra_hop` — trailer 릴레이 회귀 가드(수정 전 `'1' == '7'` 로 실패 확인).
-- fast 117 green (기존 116 + trailer 릴레이 1), slow(parity+surgical+B1) 20 green (기존 19 + middle-victim 1).
+- fast 117 green (기존 116 + trailer 릴레이 1), slow(parity+surgical+B1) 20 green (기존 19 + middle-victim 1). 최종 리뷰 fix 후 slow parity 12 (last-stage 폴백 테스트 추가).
+- **실 fleet 실측** (victim `on-6[18..19]` = 중간 interior, 예전엔 폴백하던 케이스): 15/15 valid, parity 5/5 `parity_branch_ran=True`. `full-replay 321.6ms+163.01ms·P | surgical 223.9ms+17.53ms·P | parity 245.5ms+1.43ms·P` — **parity 기울기가 victim 위치와도 무관**(첫 victim 0.87 vs 중간 1.43 ms·P⁻¹, 둘 다 ≈0). 정상 decode 스텝 대비 복구 스텝 비율: parity 1.6–1.9×로 P·위치 무관 일정, surgical 1.9→5.0×, full-replay 6.0→34.4×. 결과 `b1_ft_fleet_mid.json`.
+- **측정 방식 정정**: 복구 스텝을 `max(TBT)` 대신 **주입 인덱스 `TBT[P−1]`에서 직접 읽도록** 변경(`experiments/b1_ft_fleet.py`). parity가 빨라지자 무관한 지터가 복구 스텝을 앞지른 사례 1건 발생(중간 victim P=4: max 0.322s@idx32 vs 실제 0.278s@idx3). 기존 트라이얼은 전부 max 위치=P−1이라 그 1건만 값이 바뀌었고, 기록된 per-step 시계열에서 재추출(재실행 없음). `peak_*`는 진단용 유지, validity 게이트는 `recovery_visible`(복구 스텝 > 1.3× median)로 교체.
 
 **의도된 한계**: ① **마지막 stage victim은 여전히 surgical 폴백** — downstream non-head 생존자가 없어 모든 생존자가 한 slot씩 길고, 마지막 공유 slot의 parity에 victim 기여분이 빠져 completeness 게이트가 걸림(틀린 토큰은 없음) ② 단일 장애(RAID-5) ③ prefill(pos 0) 장애는 라이브 prefill로 축퇴 ④ **trailer 릴레이는 fail-fast 하향 실패만 고침, hang은 미해결** — 모든 hop이 거의 동시에 같은 `timeout=10.0`을 쓰므로, 2+ hop 아래에서 **행(hang)**하는 victim은 entry hop 자신의 데드라인이 먼저 트립되어 여전히 자신의 (살아있는) next hop을 오귀속할 수 있음(entry가 직접 RpcError를 받는 시나리오라 fail-fast 케이스와 다름). 해소하려면 inner hop이 outer hop보다 짧은 데드라인을 가져야 함(future work) — pre-existing, 이번 작업으로 악화되지 않음.
 

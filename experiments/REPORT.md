@@ -424,8 +424,25 @@ parity:      TTR(P) = 284.1 ms +   0.87 ms · P     ← 기울기 ≈ 0
 
 **해석.** parity의 기울기 **0.87 ms/position은 사실상 0** — surgical 대비 **19×**, full-replay 대비 **188×** 완만. 실패 깊이가 8배(P=4→32) 깊어져도 TTR은 0.298→0.316 s로 **+6%**만 증가(같은 구간에서 surgical 2.4×, full-replay 5.8× 증가). 이것이 "재계산 0" 클레임의 직접 측정: parity는 position마다 모델을 다시 돌리지 않고 **이미 가진 데이터의 전송+XOR**만 하므로 비용이 깊이에 비례하지 않는다. 그 결과 parity의 TTR은 이제 **세 계열이 공유하는 고정 오버헤드**(backup 승격 + 체인 rewire, 절편 ~284 ms)가 91%를 차지 — 복구 비용의 병목이 "재계산"에서 "재구성 이외의 관리 작업"으로 옮겨감.
 
+### B1-PARITY.2 — 임의 interior victim으로 일반화 + 부수 버그 (2026-07-20 오후)
+
+**일반화.** 위 한계(첫 interior victim 전용)를 해소. 크래시 순간 upstream 생존자는 slot이 1개 더 많고 downstream은 적으므로, **전 non-head가 공유하는 slot 수 `N = min(생존자 slot 수)`로 잡고 upstream 생존자를 앞 N개로 잘라낸 뒤** XOR한다. 실측 확인: 중간 victim에서 생존자 slot 수가 `[9, 8]`(격차 1)로 관측 — 슬라이싱이 실제로 동작. **격차가 1을 넘으면**(짧거나 stale한 버퍼) 잘린 KV를 설치해 조용히 틀린 토큰을 낼 수 있으므로 **surgical로 폴백**하는 가드를 둠(리뷰에서 지적된, 정확성이 parity에 의존하던 유일한 경로).
+
+**⚠️ 부수 발견 — 체인 trailer 덮어쓰기 버그 (전 복구 모드 영향).** 일반화 작업 중, 체인의 **각 hop이 `radp-failed-*` trailer를 자기 next hop으로 덮어써서** 2 hop 이상 아래에서 난 장애가 **가까운(살아있는) stage로 오귀속**되고 coordinator가 멀쩡한 워커를 죽이는 버그를 발견·수정했다(다중 hop 회귀 테스트 추가). full-replay·surgical·parity 모두 해당. **기존 §B1-PARITY 수치는 영향 없음** — victim `on-1`이 head 바로 다음(포워딩 hop 1개)이라 덮어쓸 중간 hop이 없었고, 로그상 귀속도 `on-1`로 정확했다.
+
+**측정 방식 정정.** 복구 스텝을 `max(TBT)`로 잡던 것을 **주입 위치가 우리가 정한 값이므로 `TBT[P−1]`에서 직접 읽도록** 변경. parity가 충분히 빨라지자(정상 스텝의 ~1.7배) 무관한 지터 스파이크가 복구 스텝을 앞지르는 사례가 실제로 1건 발생했다(중간 victim, P=4: max는 index 32의 0.322 s, 실제 복구 스텝은 0.278 s). 기존 트라이얼은 전부 `max` 위치 = `P−1`이었으므로 **값이 바뀐 것은 그 1건뿐**이며, 재실행 없이 기록된 per-step 시계열에서 재추출했다. `peak_*`는 진단용으로 계속 기록한다.
+
+**중간 victim 결과** (victim `on-6[18..19]`, 15/15 valid, parity 5/5 `parity_branch_ran=True`):
+```
+full-replay: 321.6 ms + 163.01 ms · P
+surgical:    223.9 ms +  17.53 ms · P
+parity:      245.5 ms +   1.43 ms · P
+```
+→ **parity의 기울기는 victim 위치와도 무관**(첫 0.87 / 중간 1.43 ms·P⁻¹, 둘 다 ≈0). 정상 decode 스텝(median) 대비 복구 스텝 비율로 보면 더 선명하다: **parity는 P·위치와 무관하게 항상 1.6–1.9×**(정상 토큰 2개어치), surgical은 1.9→5.0×, full-replay는 6.0→34.4×로 깊이에 따라 증가.
+
 **정직한 한계 (paper에 그대로 기술).**
-- **첫 interior victim에 한정.** 현재 프로토타입은 죽은 stage에 **upstream non-head 생존자가 없을 때**만 재계산-0 복원을 수행한다(sync chain에서 upstream 생존자는 P+1 slot, downstream은 P slot이라 geometry가 어긋남). 그 외 victim은 **안전하게 surgical로 폴백**(틀린 토큰 없음). 본 측정의 victim `on-1`이 정확히 첫 interior stage. 임의 victim(upstream 생존자를 N slot으로 잘라내기)은 future work.
+- **마지막 stage(tail) victim은 여전히 surgical 폴백.** downstream 생존자가 없어 `min()`이 과대추정되고 completeness 게이트가 걸린다. 이를 덮으려면 `count−1` 규칙이 필요한데 **과소추정 시 아무 게이트도 못 잡아** 잘린 KV를 설치할 위험이 있어, 미검증 규칙을 넣는 대신 폴백으로 남겼다(테스트로 잠금: 폴백하며 출력은 레퍼런스와 일치). fleet 기준 `on-1`·`on-6`·`ao-1`은 parity, tail `on-2`만 폴백.
+- **trailer relay는 fail-fast 장애 기준.** victim이 2 hop 이상 아래에서 **hang**하면 바깥 hop의 deadline이 먼저 터져 여전히 오귀속될 수 있다(선재 문제; 안쪽 hop에 더 짧은 deadline이 필요).
 - **정상 운영 중 연속 네트워크 세금**(KV 컬럼 shipping)을 지불한다. 본 실험은 이 비용을 기술만 하고 최적화·정량화하지 않았다.
 - 단일 장애 전용(RAID-5). prefill(position 0) 장애는 라이브 prefill로 축퇴 = 재계산-0 아님.
 

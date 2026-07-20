@@ -37,7 +37,8 @@ fig, ax = plt.subplots(figsize=(5.0, 3.2))
 xline = np.linspace(0, 34, 50)
 for mode, (color, marker, label) in STYLE.items():
     pts = [(t["position"], t["ttr_seconds"]) for t in trials
-           if t["mode"] == mode and t["fired"] and t["index_ok"] and t["sequence_match"]
+           if t["mode"] == mode and t["fired"] and t.get("recovery_visible", t.get("index_ok"))
+           and t["sequence_match"]
            and (mode != "parity" or t.get("parity_branch_ran"))]
     xs = [p for p, _ in pts]
     ys = [y for _, y in pts]
