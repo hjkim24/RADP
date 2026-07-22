@@ -18,7 +18,7 @@ from experiments.b1_ft_baselines import (
     resolve_excluding,
     run_all,
     run_b0_abort,
-    run_b1_cold_restart,
+    run_reactive_replacement,
     run_radp_full_replay,
     run_radp_surgical,
 )
@@ -137,7 +137,7 @@ def test_run_all_returns_all_four_lines():
 
     names = {l["name"] for l in rec["lines"]}
     assert names == {
-        "RADP-surgical", "RADP-full-replay", "B1-cold-restart", "B0-abort",
+        "RADP-surgical", "RADP-full-replay", "reactive-replacement", "B0-abort",
     }
     for line in rec["lines"]:
         assert set(line) >= {
@@ -148,7 +148,7 @@ def test_run_all_returns_all_four_lines():
 
 
 @pytest.mark.slow
-def test_b1_cold_restart_line():
+def test_reactive_replacement_line():
     """Cold-restart under the SAME mid-stage crash: first attempt aborts,
     then a fresh placement + gateway over the survivors reproduces the
     exact wired reference sequence from scratch."""
@@ -157,11 +157,11 @@ def test_b1_cold_restart_line():
     _ref_toks, reference_wall = generate_wired_reference_wall(
         prompt=prompt, max_tokens=max_tokens
     )
-    r = run_b1_cold_restart(
+    r = run_reactive_replacement(
         prompt=prompt, max_tokens=max_tokens, kill_after_tokens=kill_after,
         reference=reference, reference_wall=reference_wall,
     )
-    assert r.name == "B1-cold-restart"
+    assert r.name == "reactive-replacement"
     assert not r.aborted
     assert r.tokens_completed == max_tokens
     assert r.sequence_matches_reference is True, (
