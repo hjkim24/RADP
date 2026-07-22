@@ -68,3 +68,32 @@ def test_backup_placement_true_is_default_and_populates_recovery() -> None:
     assert _spec(backup_placement=True).backup_placement is True
     result = Scheduler(_spec(backup_placement=True)).solve_alternating_best_order()
     assert result.recovery != {}  # default path unchanged: backups assigned
+
+
+def test_reconfigure_endpoint_excludes_dead() -> None:
+    import types as _t
+    from fastapi.testclient import TestClient
+    from radp.coordinator.web_api import make_app
+    from radp.common.types import DeviceId, Stage, LayerIdx
+
+    calls = {}
+
+    class _Gw:
+        _dead = {DeviceId("on-1")}
+
+    def _reconfigure(survivors):
+        calls["survivors"] = survivors
+        return [Stage(LayerIdx(1), LayerIdx(24), DeviceId("on-6"))]
+
+    server = _t.SimpleNamespace(
+        gateway=_Gw(),
+        _addr_lookup={DeviceId("on-1"): "a", DeviceId("on-6"): "b"},
+        reconfigure_over_survivors=_reconfigure,
+    )
+    client = TestClient(make_app(server))
+    resp = client.post("/api/reconfigure")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["excluded"] == ["on-1"]
+    assert body["survivors"] == ["on-6"]
+    assert calls["survivors"] == {DeviceId("on-6")}

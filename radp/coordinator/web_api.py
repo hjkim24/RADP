@@ -278,6 +278,33 @@ def make_app(server: CoordinatorServer) -> FastAPI:
         after = sorted(str(d) for d in getattr(gw, "_dead", set()))
         return {"revived": before, "dead_devices_after": after}
 
+    @app.post("/api/reconfigure")
+    def post_reconfigure() -> Any:
+        """Reactive re-placement: re-solve the layer placement over the CURRENT
+        survivors (all workers minus the gateway's dead set) and redeploy. This
+        is the driver-triggered baseline path — it does NOT promote a backup
+        (that is the surgical/parity/replicate recovery path). Returns the new
+        placement so the caller can confirm the failed device is absent.
+        """
+        gw = server.gateway
+        if gw is None:
+            return JSONResponse({"detail": "gateway not ready"}, status_code=503)
+        dead = set(getattr(gw, "_dead", set()))
+        survivors = set(server._addr_lookup.keys()) - dead
+        if not survivors:
+            return JSONResponse(
+                {"detail": "no survivors to reconfigure over"}, status_code=409
+            )
+        placement = server.reconfigure_over_survivors(survivors)
+        return {
+            "survivors": sorted(str(d) for d in survivors),
+            "excluded": sorted(str(d) for d in dead),
+            "placement": [
+                {"device": str(s.device), "start": int(s.start_layer),
+                 "end": int(s.end_layer)} for s in placement
+            ],
+        }
+
     if _STATIC_DIR.exists():
         app.mount(
             "/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"
