@@ -975,6 +975,21 @@ class RequestGateway:
                 request_id, head_stage, error, current_position
             )
 
+        # Size-mismatch guard hoisted above promote/rewire (mirrors
+        # _recover_parity's discipline of finishing all geometry checks
+        # before touching the backup): a fallback here must leave the
+        # backup un-promoted and the chain un-rewired, not half-done.
+        n_heads, head_dim, np_dtype, itemsize = self._kv_dims()
+        n_dead_layers = dead_key[1] - dead_key[0] + 1
+        dead_slot_bytes = n_dead_layers * 2 * n_heads * head_dim * itemsize
+        if len(stored) != n_slots * dead_slot_bytes:
+            log.info(
+                "request=%d replicate: stored KV size %d != expected %d (%d slots x %d); "
+                "deferring to surgical",
+                request_id, len(stored), n_slots * dead_slot_bytes, n_slots, dead_slot_bytes,
+            )
+            return self._recover_surgical(request_id, head_stage, error, current_position)
+
         backup_dev = self.recovery.get(dead_stage.device)
         if backup_dev is None:
             raise NoRecoveryError(f"no backup for {dead_stage.device}")
@@ -991,16 +1006,6 @@ class RequestGateway:
             raise
         self._rewire_chain()
 
-        n_heads, head_dim, np_dtype, itemsize = self._kv_dims()
-        n_dead_layers = dead_key[1] - dead_key[0] + 1
-        dead_slot_bytes = n_dead_layers * 2 * n_heads * head_dim * itemsize
-        if len(stored) != n_slots * dead_slot_bytes:
-            log.info(
-                "request=%d replicate: stored KV size %d != expected %d (%d slots x %d); "
-                "deferring to surgical",
-                request_id, len(stored), n_slots * dead_slot_bytes, n_slots, dead_slot_bytes,
-            )
-            return self._recover_surgical(request_id, head_stage, error, current_position)
         dead_slots = np.frombuffer(stored, dtype=np.uint8).reshape(
             n_slots, dead_slot_bytes
         )
@@ -1645,6 +1650,7 @@ class RequestGateway:
         """Best-effort: ask every (currently-alive) worker to drop this request's cache."""
         self.cache.evict_request(request_id)
         self.parity_cache.evict_request(request_id)
+        self.replica_cache.evict_request(request_id)
         for device_id in self.worker_addresses:
             if device_id in self._dead:
                 continue

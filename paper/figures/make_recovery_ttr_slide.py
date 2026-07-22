@@ -50,7 +50,8 @@ STYLE = {
 def valid(t):
     return (t["fired"] and t.get("recovery_visible", t.get("index_ok"))
             and t["sequence_match"]
-            and (t["mode"] != "parity" or t.get("parity_branch_ran")))
+            and (t["mode"] != "parity" or t.get("parity_branch_ran"))
+            and (t["mode"] != "replicate" or t.get("replicate_branch_ran")))
 
 
 median_step = statistics.median(t["median_tbt_seconds"] for t in trials if valid(t))
