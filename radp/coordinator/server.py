@@ -589,11 +589,17 @@ class CoordinatorServer:
         """
         if self.detector is None:
             raise RuntimeError("auto_schedule() must be called after start()")
-        orch = ProfileOrchestrator(self._addr_lookup, self.detector)
+        return self._profile_and_solve(self._addr_lookup)
+
+    def _profile_and_solve(self, addr_lookup: dict[DeviceId, str]) -> AlternatingResult:
+        """Profile the given workers, run the Recovery-Aware DP over them, store
+        the result on self.placement/self.recovery, and return it. Shared by
+        auto_schedule (full fleet) and reconfigure_over_survivors (survivors)."""
+        orch = ProfileOrchestrator(addr_lookup, self.detector)
 
         log.info(
             "auto-scheduling: waiting for %d workers (timeout=%.0fs)",
-            len(self._addr_lookup),
+            len(addr_lookup),
             self.config.profiling_wait_timeout_seconds,
         )
         t_wait_start = time.perf_counter()
@@ -730,6 +736,26 @@ class CoordinatorServer:
             records=records,
         )
         return result
+
+    def reconfigure_over_survivors(self, survivors: set[DeviceId]) -> Placement:
+        """Reactive re-placement: re-run the profiling + Recovery-Aware DP +
+        deploy over ONLY the survivor workers, excluding the failed one(s).
+        Returns the new placement (which must not contain any excluded device).
+        Driver-triggered via POST /api/reconfigure — NOT an autonomous recovery
+        path.
+        """
+        if self.detector is None:
+            raise RuntimeError("reconfigure_over_survivors requires start() first")
+        surv_lookup = {d: a for d, a in self._addr_lookup.items() if d in survivors}
+        if not surv_lookup:
+            raise RuntimeError("no survivor workers to reconfigure over")
+        log.warning(
+            "reactive re-placement: re-solving over %d survivors %s",
+            len(surv_lookup), sorted(str(d) for d in surv_lookup),
+        )
+        self._profile_and_solve(surv_lookup)
+        self.deploy()
+        return list(self.placement)
 
     def _write_scheduler_stats_sidecar(
         self,
