@@ -106,8 +106,11 @@ def test_template_renders_manual_mode(tmp_path: Path) -> None:
 def test_template_omits_placement_block_in_auto_mode(tmp_path: Path) -> None:
     """auto-rendered YAML must not contain manual-mode keys at all."""
     rendered = _render(**_COMMON_VARS, schedule_mode="auto")
-    assert "placement:" not in rendered
-    assert "recovery:" not in rendered
+    # Line-anchored: the manual-mode blocks are top-level keys (`placement:` /
+    # `recovery:` at column 0). A bare substring check false-matches the
+    # coordinator's indented `backup_placement:` knob, which is auto-mode-legal.
+    assert "\nplacement:" not in rendered
+    assert "\nrecovery:" not in rendered
 
 
 def test_template_omits_profiling_block_in_manual_mode(tmp_path: Path) -> None:
