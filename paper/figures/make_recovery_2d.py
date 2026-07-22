@@ -1,4 +1,5 @@
 # Generate after the fleet replicate sweep produces b1_ft_fleet_replicate.json + b1_ft_overhead.json (controller-run).
+# reactive point generated after the controller-run reactive sweep produces b1_ft_fleet_reactive.json
 """2-D Pareto: recovery time at P=32 (x) vs steady-state storage (y). Only
 parity sits in the low-TTR AND low-storage corner. TTR from measured JSON;
 storage from computed overhead (state the split in the caption)."""
@@ -17,7 +18,8 @@ ovh = json.load(open(RESULTS / "b1_ft_overhead.json"))  # {"replicate_bytes","pa
 def ttr_at(d, mode, P=32):
     xs = [t for t in d["trials"] if t["mode"] == mode and t["position"] == P
           and t.get("recovery_visible") and t["sequence_match"]
-          and t.get(f"{mode}_branch_ran", True)]
+          and t.get(f"{mode}_branch_ran", True)
+          and (mode != "reactive_replacement" or t.get("reconfigured"))]
     return sum(t["ttr_seconds"] for t in xs) / len(xs)
 
 pts = [
@@ -26,6 +28,14 @@ pts = [
     ("replicate",   ttr_at(rep, "replicate"),   ovh["replicate_bytes"], SUBJECT["replicate"],   "D"),
     ("parity",      ttr_at(par, "parity"),      ovh["parity_bytes"],    SUBJECT["parity"],      "^"),
 ]
+
+# reactive JSON lands after the controller-run reactive sweep (Task 6). Guard
+# so this script still renders the existing 4-point figure until it exists.
+reactive_path = RESULTS / "b1_ft_fleet_reactive.json"
+if reactive_path.exists():
+    rea = json.load(open(reactive_path))
+    pts.append(("reactive", ttr_at(rea, "reactive_replacement"), 0,
+                SUBJECT["reactive_replacement"], "v"))
 
 fig, ax = plt.subplots(figsize=SLIDE_FULL)
 for name, x, y, color, marker in pts:

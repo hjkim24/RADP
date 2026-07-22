@@ -39,11 +39,20 @@ if replicate_path.exists():
     trials += rep["trials"]
     fits.update(rep["fits"])
 
+# reactive JSON lands after the controller-run reactive sweep (Task 6). Guard
+# so this script still renders the 4-line figure until it exists.
+reactive_path = RESULTS / "b1_ft_fleet_reactive.json"
+if reactive_path.exists():
+    rea = json.load(open(reactive_path))
+    trials += rea["trials"]
+    fits.update(rea["fits"])
+
 STYLE = {
     "full_replay": (SUBJECT["full_replay"], "o", "full-replay"),
     "surgical":    (SUBJECT["surgical"],    "s", "surgical"),
     "parity":      (SUBJECT["parity"],      "^", "parity"),
     "replicate":   (SUBJECT["replicate"],   "D", "replicate"),
+    "reactive_replacement": (SUBJECT["reactive_replacement"], "v", "reactive"),
 }
 
 
@@ -51,7 +60,8 @@ def valid(t):
     return (t["fired"] and t.get("recovery_visible", t.get("index_ok"))
             and t["sequence_match"]
             and (t["mode"] != "parity" or t.get("parity_branch_ran"))
-            and (t["mode"] != "replicate" or t.get("replicate_branch_ran")))
+            and (t["mode"] != "replicate" or t.get("replicate_branch_ran"))
+            and (t["mode"] != "reactive_replacement" or t.get("reconfigured")))
 
 
 median_step = statistics.median(t["median_tbt_seconds"] for t in trials if valid(t))

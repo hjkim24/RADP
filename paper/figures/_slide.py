@@ -45,6 +45,7 @@ SUBJECT = {
     "parity":      ACCENT,   # 덱이 제목에 쓰는 강조 파랑 = 결론
     "baseline":    "#808080",
     "replicate":   "#808080",   # rival baseline — neutral grey, not parity's blue
+    "reactive_replacement": "#595959",  # baseline anchor — muted grey, distinct
 }
 
 # --- slide-content geometry (inches, from DESIGN_SYSTEM.md §2) -------------
