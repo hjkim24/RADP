@@ -58,6 +58,7 @@ _DROPIN = "/etc/systemd/system/radp-coordinator.service.d/recovery.conf"
 _WORKER_DROPIN_DIR = "/etc/systemd/system/radp-worker.service.d"
 _WORKER_DROPIN = f"{_WORKER_DROPIN_DIR}/parity.conf"
 _PARITY_LOG_MARKER = "PARITY reconstruct:"
+_REPLICATE_LOG_MARKER = "REPLICATE reconstruct:"
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +103,14 @@ def set_worker_parity(on: bool) -> None:
         "name=radp-worker state=restarted daemon_reload=yes",
     )
     log.info("worker RADP_PARITY drop-in %s", "armed" if on else "removed")
+
+
+def set_worker_replication(on: bool) -> None:
+    """Replicate reuses the same worker KV-ship gate as parity — the worker
+    does not know the coordinator's storage mode (it ships KV columns
+    whenever RADP_PARITY=1 regardless of whether the coordinator then keeps
+    them as a parity XOR or a full replica). Alias for clarity at call sites."""
+    set_worker_parity(on)
 
 
 def restart_coordinator_and_wait(
@@ -180,6 +189,19 @@ def _parity_branch_ran(log_text: str) -> bool:
     return _PARITY_LOG_MARKER in log_text
 
 
+def _replicate_branch_ran(log_text: str) -> bool:
+    """True iff the gateway's real replicate (full-KV-copy) path fired,
+    exact mirror of ``_parity_branch_ran``: ``gateway._recover_replicate``
+    ladders to ``_recover_surgical`` on the same "can't trust" gates and
+    only reaches the replica-copy itself past all of them, at which point
+    it logs exactly one ``log.warning`` containing this marker (see
+    gateway.py's ``_recover_replicate``, the "REPLICATE reconstruct:"
+    line). Its absence means the trial silently fell back to surgical.
+    Pure string predicate — no SSH — so it's unit-testable directly.
+    """
+    return _REPLICATE_LOG_MARKER in log_text
+
+
 # ---------------------------------------------------------------------------
 # Trial
 # ---------------------------------------------------------------------------
@@ -244,6 +266,20 @@ def run_trial(
         )
         parity_branch_ran = parity_branch_log is not None
 
+    # Replicate-only: exact mirror of the parity gate above — verify the
+    # gateway actually took the full-replica-copy path rather than silently
+    # falling back to surgical (see `_replicate_branch_ran`). Never checked
+    # for full_replay/surgical/parity trials.
+    replicate_branch_ran: bool | None = None
+    replicate_branch_log: str | None = None
+    if mode == "replicate":
+        coord_log = fetch_coordinator_log(coord_ssh, ssh_key)
+        replicate_branch_log = next(
+            (line for line in coord_log.splitlines() if _REPLICATE_LOG_MARKER in line),
+            None,
+        )
+        replicate_branch_ran = replicate_branch_log is not None
+
     row = {
         "mode": mode,
         "position": position,
@@ -263,6 +299,8 @@ def run_trial(
         "sequence_match": seq_match,
         "parity_branch_ran": parity_branch_ran,
         "parity_branch_log": parity_branch_log,
+        "replicate_branch_ran": replicate_branch_ran,
+        "replicate_branch_log": replicate_branch_log,
         "text_tokens": rec["text_tokens"],
         "reset_wall_seconds": reset_wall,
         "tbt_seconds_each": [round(x, 4) for x in tbt],
@@ -275,6 +313,12 @@ def run_trial(
         note = "  parity_branch=%s%s" % (
             parity_branch_ran,
             "" if parity_branch_ran else " (FELL BACK TO SURGICAL)",
+        )
+    elif mode == "replicate":
+        valid = valid and bool(replicate_branch_ran)
+        note = "  replicate_branch=%s%s" % (
+            replicate_branch_ran,
+            "" if replicate_branch_ran else " (FELL BACK TO SURGICAL)",
         )
     log.info(
         "%-11s P=%-2d  TTR=%.3fs (%.1fx median, step %d)  fired=%s seq_match=%s%s  %s",
@@ -294,12 +338,13 @@ def run(
         ch = grpc.insecure_channel(coord, options=_GRPC_OPTIONS)
         return radp_pb2_grpc.CoordinatorServiceStub(ch)
 
-    # Parity needs the workers shipping KV columns for the ENTIRE sweep, not
-    # just parity-mode trials — arm it once up front, before any coordinator
-    # reschedule (including the healthy-reference one below), so it's never
-    # racing a trial. Not auto-disabled at the end: cleanup is a separate,
-    # explicit restore step.
-    if "parity" in modes:
+    # Parity AND replicate need the workers shipping KV columns for the
+    # ENTIRE sweep, not just their own trials — both gate on the SAME
+    # RADP_PARITY drop-in (see `set_worker_replication`), so arm it once up
+    # front, before any coordinator reschedule (including the
+    # healthy-reference one below), so it's never racing a trial. Not
+    # auto-disabled at the end: cleanup is a separate, explicit restore step.
+    if "parity" in modes or "replicate" in modes:
         set_worker_parity(True)
 
     # Healthy reference (no fault armed): the plan is fresh after the restart
@@ -322,14 +367,16 @@ def run(
                 coord_host=coord_host, coord_ssh=coord_ssh, ssh_key=ssh_key,
             ))
 
-    # Linear fits over VALID trials only. For "parity", validity additionally
-    # requires the zero-forward XOR branch to have actually fired — a trial
-    # that silently fell back to surgical must NOT contaminate the parity fit.
+    # Linear fits over VALID trials only. For "parity" / "replicate",
+    # validity additionally requires the real (non-surgical-fallback) branch
+    # to have actually fired — a trial that silently fell back to surgical
+    # must NOT contaminate that mode's fit.
     fits: dict[str, Any] = {}
     for mode in modes:
         pts = [(t["position"], t["ttr_seconds"]) for t in trials
                if t["mode"] == mode and t["fired"] and t["recovery_visible"] and t["sequence_match"]
-               and (mode != "parity" or t["parity_branch_ran"])]
+               and (mode != "parity" or t["parity_branch_ran"])
+               and (mode != "replicate" or t["replicate_branch_ran"])]
         if len(pts) >= 2:
             f = _linfit([p for p, _ in pts], [y for _, y in pts])
             fits[mode] = {**f, "n_points": len(pts)}
