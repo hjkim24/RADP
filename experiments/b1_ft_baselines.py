@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import time
 import types
 from dataclasses import asdict, dataclass
@@ -177,50 +178,68 @@ def _drive_inplace_crash(
     (after its mirror for that position has landed); the gateway's in-place
     recovery (``recovery_mode``) fixes the failed decode step in place.
     ``ttr_seconds`` is that single failed step's wall-clock.
+
+    ``recovery_mode in {"parity", "replicate"}`` needs the worker to ship KV
+    columns to the coordinator (see ``radp/worker/server.py``'s
+    ``_maybe_push_parity_kv``), gated on the ``RADP_PARITY`` env var — the
+    same gate both modes share (no separate env var). It's set only for the
+    duration of this call and restored after, so it doesn't change the
+    other lines' (surgical / full-replay) timing.
     """
     device_ids, placement, recovery, victim = chain_config()
     dead_key = next(
         (int(s.start_layer), int(s.end_layer)) for s in placement if s.device == victim
     )
-    with in_process_cluster_with_mirror(device_ids) as (addrs, servers, attach):
-        deploy(addrs, placement, model_id=MODEL_ID, recovery=recovery)
-        wire_chain(addrs, placement)
-        gw = RequestGateway(
-            placement=placement, recovery=recovery,
-            worker_addresses=addrs, model_id=MODEL_ID,
-            recovery_mode=recovery_mode,
-        )
-        attach(gw)
-        gw.generate(prompt, max_tokens=2)  # warmup BEFORE installing the fault
+    needs_parity_gate = recovery_mode in ("parity", "replicate")
+    old_parity = os.environ.get("RADP_PARITY")
+    if needs_parity_gate:
+        os.environ["RADP_PARITY"] = "1"
+    try:
+        with in_process_cluster_with_mirror(device_ids) as (addrs, servers, attach):
+            deploy(addrs, placement, model_id=MODEL_ID, recovery=recovery)
+            wire_chain(addrs, placement)
+            gw = RequestGateway(
+                placement=placement, recovery=recovery,
+                worker_addresses=addrs, model_id=MODEL_ID,
+                recovery_mode=recovery_mode,
+            )
+            attach(gw)
+            gw.generate(prompt, max_tokens=2)  # warmup BEFORE installing the fault
 
-        rid = gw.new_request_id()
-        tripped = _inject_mid_stage_crash(
-            gw, servers[victim], servers[victim].runner,
-            dead_key=dead_key, at_position=kill_after_tokens,
-        )
+            rid = gw.new_request_id()
+            tripped = _inject_mid_stage_crash(
+                gw, servers[victim], servers[victim].runner,
+                dead_key=dead_key, at_position=kill_after_tokens,
+            )
 
-        ttr: float | None = None
-        aborted = False
-        toks: list[int] = []
-        t_start = time.perf_counter()
-        try:
-            gw._prefill(rid, prompt)
-            for step in range(1, max_tokens):
-                t0 = time.perf_counter()
-                gw._decode_step(rid)
-                dt = time.perf_counter() - t0
-                if step == kill_after_tokens:
-                    ttr = dt
-            toks = list(gw._requests[rid].generated_token_ids)
-        except Exception:
-            aborted = True
-            with contextlib.suppress(Exception):
+            ttr: float | None = None
+            aborted = False
+            toks: list[int] = []
+            t_start = time.perf_counter()
+            try:
+                gw._prefill(rid, prompt)
+                for step in range(1, max_tokens):
+                    t0 = time.perf_counter()
+                    gw._decode_step(rid)
+                    dt = time.perf_counter() - t0
+                    if step == kill_after_tokens:
+                        ttr = dt
                 toks = list(gw._requests[rid].generated_token_ids)
-        finally:
-            with contextlib.suppress(Exception):
-                gw._evict_everywhere(rid)
-        total = time.perf_counter() - t_start
-        gw.close()
+            except Exception:
+                aborted = True
+                with contextlib.suppress(Exception):
+                    toks = list(gw._requests[rid].generated_token_ids)
+            finally:
+                with contextlib.suppress(Exception):
+                    gw._evict_everywhere(rid)
+            total = time.perf_counter() - t_start
+            gw.close()
+    finally:
+        if needs_parity_gate:
+            if old_parity is None:
+                os.environ.pop("RADP_PARITY", None)
+            else:
+                os.environ["RADP_PARITY"] = old_parity
 
     assert tripped.fired, (
         f"{name}: injected mid-stage crash on {victim} never fired "
@@ -256,6 +275,16 @@ def run_radp_full_replay(
 ) -> BaselineResult:
     return _drive_inplace_crash(
         name="RADP-full-replay", recovery_mode="full_replay",
+        prompt=prompt, max_tokens=max_tokens,
+        kill_after_tokens=kill_after_tokens, reference=reference,
+    )
+
+
+def run_radp_replicate(
+    *, prompt: str, max_tokens: int, kill_after_tokens: int, reference: list[int]
+) -> BaselineResult:
+    return _drive_inplace_crash(
+        name="RADP-replicate", recovery_mode="replicate",
         prompt=prompt, max_tokens=max_tokens,
         kill_after_tokens=kill_after_tokens, reference=reference,
     )
@@ -421,6 +450,10 @@ def run_all(*, prompt: str, max_tokens: int, kill_after_tokens: int) -> dict:
             kill_after_tokens=kill_after_tokens, reference=reference,
         ),
         run_radp_full_replay(
+            prompt=prompt, max_tokens=max_tokens,
+            kill_after_tokens=kill_after_tokens, reference=reference,
+        ),
+        run_radp_replicate(
             prompt=prompt, max_tokens=max_tokens,
             kill_after_tokens=kill_after_tokens, reference=reference,
         ),
