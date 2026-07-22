@@ -395,9 +395,18 @@ replace the set with `{"full_replay", "surgical", "parity", "replicate"}` and up
                 request_id, head_stage, error, current_position
             )
         dead_key = (int(dead_stage.start_layer), int(dead_stage.end_layer))
-        # The victim died computing position `current_position`, having
-        # completed 0..current_position-1 (that is what it stored).
-        n_slots = current_position
+        # n_slots = ABSOLUTE KV-slot count the dead stage stored, NOT the
+        # generation-step index. Prefill (position 0) durably stores the whole
+        # prompt (past_length slots) in ONE step, so `n_slots = current_position`
+        # is WRONG for any multi-token prompt (it holds only for a 1-token
+        # prompt). Derive it from past_length like _decode_step does — parity
+        # avoids this trap by deriving n_slots from survivor byte length.
+        # [Caught during Task 3 implementation: the brief originally wrote
+        #  `n_slots = current_position`, which failed the multi-token bit-exact
+        #  e2e — reshape 196608 into (4, 24576) vs correct (8, 24576).]
+        req_state = self._requests.get(request_id)
+        past_length = int(req_state.past_length) if req_state is not None else 0
+        n_slots = past_length + current_position - 1 if current_position >= 1 else 0
         if n_slots < 1 or not self.replica_cache.is_complete(
             request_id, dead_key, up_to_position=n_slots - 1
         ):
@@ -505,12 +514,12 @@ def test_replication_overhead_sum_vs_max():
     from experiments._harness import replication_overhead
     from radp.common.types import Stage, DeviceId, LayerIdx
     # head [1..15] excluded; non-head layer counts 2,2,4,1
-    placement = [
-        Stage(DeviceId("h"),  LayerIdx(1),  LayerIdx(15)),
-        Stage(DeviceId("a"),  LayerIdx(16), LayerIdx(17)),  # 2
-        Stage(DeviceId("b"),  LayerIdx(18), LayerIdx(19)),  # 2
-        Stage(DeviceId("c"),  LayerIdx(20), LayerIdx(23)),  # 4
-        Stage(DeviceId("d"),  LayerIdx(24), LayerIdx(24)),  # 1
+    placement = [   # Stage field order is (start_layer, end_layer, device)
+        Stage(LayerIdx(1),  LayerIdx(15), DeviceId("h")),
+        Stage(LayerIdx(16), LayerIdx(17), DeviceId("a")),  # 2
+        Stage(LayerIdx(18), LayerIdx(19), DeviceId("b")),  # 2
+        Stage(LayerIdx(20), LayerIdx(23), DeviceId("c")),  # 4
+        Stage(LayerIdx(24), LayerIdx(24), DeviceId("d")),  # 1
     ]
     # per-layer bytes = 2 (K,V) * n_heads * head_dim * itemsize; use unit sizes
     o = replication_overhead(placement, n_heads=1, head_dim=1, itemsize=1)
