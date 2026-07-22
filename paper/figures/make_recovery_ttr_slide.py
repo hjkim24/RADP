@@ -57,14 +57,19 @@ STYLE = {
 
 
 def valid(t):
-    return (t["fired"] and t.get("recovery_visible", t.get("index_ok"))
+    return (t["fired"]
+            and (t.get("recovery_visible", t.get("index_ok"))
+                 or t["mode"] == "reactive_replacement")
             and t["sequence_match"]
             and (t["mode"] != "parity" or t.get("parity_branch_ran"))
             and (t["mode"] != "replicate" or t.get("replicate_branch_ran"))
             and (t["mode"] != "reactive_replacement" or t.get("reconfigured")))
 
 
-median_step = statistics.median(t["median_tbt_seconds"] for t in trials if valid(t))
+median_step = statistics.median(
+    t["median_tbt_seconds"] for t in trials
+    if valid(t) and "median_tbt_seconds" in t
+)
 
 fig, ax = plt.subplots(figsize=SLIDE_FULL)
 xline = np.linspace(0, 36, 60)

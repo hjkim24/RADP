@@ -17,9 +17,12 @@ ovh = json.load(open(RESULTS / "b1_ft_overhead.json"))  # {"replicate_bytes","pa
 
 def ttr_at(d, mode, P=32):
     xs = [t for t in d["trials"] if t["mode"] == mode and t["position"] == P
-          and t.get("recovery_visible") and t["sequence_match"]
+          and (t.get("recovery_visible") or mode == "reactive_replacement")
+          and t["sequence_match"]
           and t.get(f"{mode}_branch_ran", True)
           and (mode != "reactive_replacement" or t.get("reconfigured"))]
+    if not xs:
+        return float("nan")
     return sum(t["ttr_seconds"] for t in xs) / len(xs)
 
 pts = [

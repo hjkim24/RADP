@@ -89,6 +89,11 @@ class CoordinatorConfig:
     # from disk only at failure time (~5-30 s recovery, possible token loss).
     # See backlog item A5 / EXP-D2.3 for the trade-off study.
     eager_backup: bool = True
+    # False (R={}): coordinator computes placement with no backup peer at
+    # all — used by the reactive-replacement baseline sweep, where recovery
+    # is a post-fault DP re-solve over survivors rather than a pre-placed
+    # backup. Mirrors ClusterSpec.backup_placement (radp/common/types.py).
+    backup_placement: bool = True
     # throughput | latency | blended — see ClusterSpec.optimization_mode.
     # Default throughput matches the legacy behavior (max_stage minimization
     # + inline TBT_SLO constraint), which is correct for steady-state pipelined
@@ -190,6 +195,7 @@ class CoordinatorConfig:
             slo_tbt_seconds=float(slo.get("tbt_seconds", 0.1)),
             activation_bytes=int(coord.get("activation_bytes", 0)),
             eager_backup=bool(coord.get("eager_backup", True)),
+            backup_placement=bool(coord.get("backup_placement", True)),
             optimization_mode=str(coord.get("optimization_mode", "throughput")),
             blend_alpha=float(coord.get("blend_alpha", 0.0)),
             hop_overhead_seconds=float(coord.get("hop_overhead_seconds", 0.0)),
@@ -661,6 +667,7 @@ class CoordinatorServer:
             ),
             activation_bytes=activation_bytes,
             eager_backup=self.config.eager_backup,
+            backup_placement=self.config.backup_placement,
             optimization_mode=self.config.optimization_mode,
             blend_alpha=self.config.blend_alpha,
             hop_overhead_seconds=self.config.hop_overhead_seconds,
@@ -681,6 +688,7 @@ class CoordinatorServer:
                 "optimization_mode": self.config.optimization_mode,
                 "blend_alpha": self.config.blend_alpha,
                 "eager_backup": self.config.eager_backup,
+                "backup_placement": self.config.backup_placement,
                 "activation_bytes": activation_bytes,
                 "hop_overhead_seconds": self.config.hop_overhead_seconds,
                 "target_concurrency": self.config.target_concurrency,
