@@ -33,10 +33,12 @@ Writes experiments/results/<out>.json.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import statistics
 import subprocess
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -203,6 +205,35 @@ def _replicate_branch_ran(log_text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Reactive-replacement: coordinator web_api reconfigure (no gateway recovery
+# mode — R={} means there is no backup to promote, so a crash aborts and the
+# ONLY path back is the coordinator re-solving the DP over survivors).
+# ---------------------------------------------------------------------------
+_COORD_WEB_PORT = 8080
+
+
+def _coord_web(coord_host: str) -> str:
+    host = coord_host.split(":")[0]
+    return f"http://{host}:{_COORD_WEB_PORT}"
+
+
+def reconfigure_over_survivors(coord_host: str, timeout: float = 320.0) -> dict:
+    """POST /api/reconfigure — coordinator re-solves over survivors + redeploys.
+    Returns the response dict (survivors/excluded/placement)."""
+    req = urllib.request.Request(
+        _coord_web(coord_host) + "/api/reconfigure", method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def _reconfigured_over_survivors(placement: list, victim_device: str) -> bool:
+    """Measurement gate: the post-reconfigure placement must NOT contain the
+    victim — proof the reactive re-solve genuinely happened over survivors."""
+    return all(stage["device"] != victim_device for stage in placement)
+
+
+# ---------------------------------------------------------------------------
 # Trial
 # ---------------------------------------------------------------------------
 def _linfit(xs: list[float], ys: list[float]) -> dict[str, float]:
@@ -329,6 +360,85 @@ def run_trial(
     return row
 
 
+def run_reactive_replacement_trial(
+    stub_factory: Any, *, position: int, prompt: str, max_tokens: int,
+    victim_host: str, victim_stage: tuple[int, int], victim_device: str,
+    coord_host: str, coord_ssh: str, ssh_key: str,
+) -> dict[str, Any]:
+    """One reactive-replacement measurement at failure position P.
+
+    The coordinator MUST be deployed in the R={} regime (backup_placement=
+    False) for this line, so the crash aborts (no backup to promote) and
+    /api/reconfigure is the only way back. TTR = wall(crash -> replayed
+    recovered token) - healthy reference wall.
+
+    This is the fleet analog of the in-process ``run_reactive_replacement``
+    baseline (see ``experiments/b1_ft_baselines.py``): reset -> timed healthy
+    reference -> arm+crash (aborts) -> re-solve over survivors -> replay from
+    0 -> ttr = replay_wall - reference_wall. It reuses ``run_trial``'s own
+    plumbing (``restart_coordinator_and_wait``, ``arm_fault``, ``fault_fired``,
+    ``_bench_one_request``) rather than gRPC/gateway recovery — the whole
+    point of this path is that there IS no gateway recovery to dispatch.
+
+    Unlike ``run_trial``, this trial takes its OWN fresh healthy reference
+    (not the sweep-level one) because after this trial's reconfigure the
+    chain topology permanently drops the victim; only the restart at the top
+    of the NEXT trial restores the full healthy chain (same "victim never
+    really died" reset semantics ``run_trial`` already relies on).
+    """
+    # 1. Restart the coordinator (fresh, all-workers plan) + a timed healthy
+    # reference request.
+    reset_wall = restart_coordinator_and_wait(coord_host, coord_ssh, ssh_key)
+    ref = _bench_one_request(stub_factory(), prompt, max_tokens=max_tokens)
+    reference_wall = ref["total_seconds"]
+    reference_text = ref["decoded_text"]
+
+    # 2. Arm the crash at `position`, then fire the request. With R={} there
+    # is no backup to promote, so the gateway's chain-failure path raises
+    # straight out of the stream — the request aborts. That IS the expected
+    # outcome, not an error in the harness.
+    arm_fault(victim_host, victim_stage[0], victim_stage[1], position)
+    t_start = time.perf_counter()
+    with contextlib.suppress(Exception):
+        # expected: no backup entry -> abort IS the measured event
+        _bench_one_request(stub_factory(), prompt, max_tokens=max_tokens)
+    fired = fault_fired(victim_host)
+
+    # 3. Coordinator re-solves the DP over survivors and redeploys.
+    resp = reconfigure_over_survivors(coord_host)
+
+    # 4. Replay the SAME request from 0 on the reconfigured chain.
+    rec = _bench_one_request(stub_factory(), prompt, max_tokens=max_tokens)
+    t_end = time.perf_counter()
+
+    ttr = (t_end - t_start) - reference_wall
+    seq_match = rec["decoded_text"] == reference_text
+    reconfigured = _reconfigured_over_survivors(resp["placement"], victim_device)
+
+    row = {
+        "mode": "reactive_replacement",
+        "position": position,
+        "ttr_seconds": ttr,
+        "sequence_match": seq_match,
+        "reconfigured": reconfigured,
+        "fired": fired,
+        "reset_wall_seconds": reset_wall,
+        "reference_wall_seconds": reference_wall,
+        "text_tokens": rec["text_tokens"],
+        "decoded_text": rec["decoded_text"],
+        "survivors": resp.get("survivors"),
+        "excluded": resp.get("excluded"),
+        "placement": resp.get("placement"),
+    }
+    valid = fired and seq_match and reconfigured
+    log.info(
+        "%-11s P=%-2d  TTR=%.3fs  fired=%s seq_match=%s reconfigured=%s  %s",
+        "reactive", position, ttr, fired, seq_match, reconfigured,
+        "OK" if valid else "!! INVALID",
+    )
+    return row
+
+
 def run(
     *, coord: str, coord_host: str, coord_ssh: str, ssh_key: str,
     victim_host: str, victim_stage: tuple[int, int], positions: list[int],
@@ -356,27 +466,56 @@ def run(
     reference = ref["decoded_text"]
     log.info("reference (%d tok): %r", ref["text_tokens"], reference)
 
+    # reactive_replacement drives the coordinator over its web_api instead of
+    # the gateway's recovery_mode dispatch (there IS no recovery — R={} means
+    # no backup to promote), so it must NEVER get a `set_recovery_mode` write:
+    # that env var selects among surgical/parity/replicate branches that this
+    # path does not use. device_id == ansible host alias in this fleet's
+    # inventory.ini (see deploy/inventory.ini), so the victim's placement
+    # "device" string is `victim_host` itself.
+    # ponytail: assumes device_id == ansible alias; add a --victim-device
+    # flag if a fleet ever diverges the two.
+    victim_device = victim_host
+
     trials: list[dict[str, Any]] = []
     for mode in modes:
-        set_recovery_mode(coord_host, mode)
+        if mode != "reactive_replacement":
+            set_recovery_mode(coord_host, mode)
         for p in positions:
-            trials.append(run_trial(
-                stub_factory, mode=mode, position=p, prompt=prompt,
-                max_tokens=max_tokens, victim_host=victim_host,
-                victim_stage=victim_stage, reference=reference,
-                coord_host=coord_host, coord_ssh=coord_ssh, ssh_key=ssh_key,
-            ))
+            if mode == "reactive_replacement":
+                trials.append(run_reactive_replacement_trial(
+                    stub_factory, position=p, prompt=prompt,
+                    max_tokens=max_tokens, victim_host=victim_host,
+                    victim_stage=victim_stage, victim_device=victim_device,
+                    coord_host=coord_host, coord_ssh=coord_ssh, ssh_key=ssh_key,
+                ))
+            else:
+                trials.append(run_trial(
+                    stub_factory, mode=mode, position=p, prompt=prompt,
+                    max_tokens=max_tokens, victim_host=victim_host,
+                    victim_stage=victim_stage, reference=reference,
+                    coord_host=coord_host, coord_ssh=coord_ssh, ssh_key=ssh_key,
+                ))
 
     # Linear fits over VALID trials only. For "parity" / "replicate",
     # validity additionally requires the real (non-surgical-fallback) branch
     # to have actually fired — a trial that silently fell back to surgical
-    # must NOT contaminate that mode's fit.
+    # must NOT contaminate that mode's fit. "reactive_replacement" rows carry
+    # a different shape (no tbt-derived "recovery_visible" — TTR there is a
+    # whole-request wall-clock delta, not a per-step one) so it gets its own
+    # mutually-exclusive branch, gated on `reconfigured` the exact way
+    # parity/replicate gate on their own branch-ran flags.
     fits: dict[str, Any] = {}
     for mode in modes:
-        pts = [(t["position"], t["ttr_seconds"]) for t in trials
-               if t["mode"] == mode and t["fired"] and t["recovery_visible"] and t["sequence_match"]
-               and (mode != "parity" or t["parity_branch_ran"])
-               and (mode != "replicate" or t["replicate_branch_ran"])]
+        if mode == "reactive_replacement":
+            pts = [(t["position"], t["ttr_seconds"]) for t in trials
+                   if t["mode"] == mode and t["fired"] and t["sequence_match"]
+                   and t["reconfigured"]]
+        else:
+            pts = [(t["position"], t["ttr_seconds"]) for t in trials
+                   if t["mode"] == mode and t["fired"] and t["recovery_visible"] and t["sequence_match"]
+                   and (mode != "parity" or t["parity_branch_ran"])
+                   and (mode != "replicate" or t["replicate_branch_ran"])]
         if len(pts) >= 2:
             f = _linfit([p for p, _ in pts], [y for _, y in pts])
             fits[mode] = {**f, "n_points": len(pts)}
@@ -415,22 +554,35 @@ def main() -> None:
     p.add_argument("--victim-end", type=int, default=17)
     p.add_argument("--positions", default="4,8,16,24,32",
                    help="comma-separated failure depths P")
-    p.add_argument("--modes", default="full_replay,surgical")
+    p.add_argument(
+        "--modes", default="full_replay,surgical",
+        help="comma-separated: full_replay,surgical,parity,replicate,"
+             "reactive_replacement. reactive_replacement drives the "
+             "coordinator's /api/reconfigure over HTTP (no gateway recovery "
+             "mode) and REQUIRES the coordinator already deployed R={} "
+             "(backup_placement=False) — a separate controller-gated step.",
+    )
     p.add_argument("--prompt", default="The quick brown fox")
     p.add_argument("--max-tokens", type=int, default=0,
                    help="0 = max(positions)+4")
-    p.add_argument("--out", default="b1_ft_fleet")
+    p.add_argument("--out", default=None,
+                   help="output file stem (default: b1_ft_fleet_reactive if "
+                        "reactive_replacement is in --modes, else b1_ft_fleet)")
     args = p.parse_args()
 
     positions = [int(x) for x in args.positions.split(",") if x.strip()]
     max_tokens = args.max_tokens or (max(positions) + 4)
+    modes = [m for m in args.modes.split(",") if m]
+    out_name = args.out or (
+        "b1_ft_fleet_reactive" if "reactive_replacement" in modes else "b1_ft_fleet"
+    )
     run(
         coord=args.coord, coord_host=args.coord_host, coord_ssh=args.coord_ssh,
         ssh_key=str(Path(args.ssh_key).expanduser()),
         victim_host=args.victim_host,
         victim_stage=(args.victim_start, args.victim_end),
-        positions=positions, modes=[m for m in args.modes.split(",") if m],
-        prompt=args.prompt, max_tokens=max_tokens, out_name=args.out,
+        positions=positions, modes=modes,
+        prompt=args.prompt, max_tokens=max_tokens, out_name=out_name,
     )
 
 
