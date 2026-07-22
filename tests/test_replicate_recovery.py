@@ -297,3 +297,26 @@ def test_replicate_falls_back_when_incomplete(monkeypatch, caplog):
         victim_dev="worker-b", backup_dev="worker-c",
         force_incomplete=True,
     )
+
+
+# --- Task 4: replication_overhead() computation --------------------------
+
+
+def test_replication_overhead_sum_vs_max():
+    from experiments._harness import replication_overhead
+    from radp.common.types import Stage, DeviceId, LayerIdx
+    # head [1..15] excluded; non-head layer counts 2,2,4,1
+    placement = [
+        Stage(LayerIdx(1),  LayerIdx(15), DeviceId("h")),
+        Stage(LayerIdx(16), LayerIdx(17), DeviceId("a")),  # 2
+        Stage(LayerIdx(18), LayerIdx(19), DeviceId("b")),  # 2
+        Stage(LayerIdx(20), LayerIdx(23), DeviceId("c")),  # 4
+        Stage(LayerIdx(24), LayerIdx(24), DeviceId("d")),  # 1
+    ]
+    # per-layer bytes = 2 (K,V) * n_heads * head_dim * itemsize; use unit sizes
+    o = replication_overhead(placement, n_heads=1, head_dim=1, itemsize=1)
+    # bytes per stage = layers * 2; sum = (2+2+4+1)*2 = 18, max = 4*2 = 8
+    assert o["replicate_bytes"] == 18
+    assert o["parity_bytes"] == 8
+    assert abs(o["ratio"] - 18 / 8) < 1e-9
+    assert len(o["per_stage"]) == 4  # non-head only

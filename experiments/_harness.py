@@ -318,6 +318,32 @@ def make_synthetic_spec(
 
 
 # ---------------------------------------------------------------------------
+# Storage analysis
+# ---------------------------------------------------------------------------
+def replication_overhead(placement: Placement, n_heads: int, head_dim: int, itemsize: int) -> dict:
+    """Steady-state coordinator storage: replicate = Σ non-head stage KV,
+    parity = max non-head stage KV. Deterministic — no measurement. Feeds the
+    2-D Pareto y-axis and the O(N) storage-scaling curve.
+    """
+    per_stage = []
+    for stage in placement:
+        if int(stage.start_layer) == 1:  # head is coord-sourced, not stored
+            continue
+        n_layers = int(stage.end_layer) - int(stage.start_layer) + 1
+        stage_bytes = n_layers * 2 * n_heads * head_dim * itemsize
+        per_stage.append(((int(stage.start_layer), int(stage.end_layer)), stage_bytes))
+    sizes = [b for _, b in per_stage]
+    total = sum(sizes)
+    biggest = max(sizes) if sizes else 0
+    return {
+        "replicate_bytes": total,
+        "parity_bytes": biggest,
+        "ratio": (total / biggest) if biggest else 0.0,
+        "per_stage": per_stage,
+    }
+
+
+# ---------------------------------------------------------------------------
 # JSON I/O
 # ---------------------------------------------------------------------------
 def write_json(name: str, data: Any) -> Path:
