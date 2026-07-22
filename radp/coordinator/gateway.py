@@ -1153,6 +1153,31 @@ class RequestGateway:
                 up_to_position=int(up_to_position),
             )
 
+    @staticmethod
+    def _slot_major_to_layer_major(
+        dead_slots,  # np.ndarray[uint8], shape (n_slots, dead_slot_bytes)
+        n_dead_layers: int,
+        n_heads: int,
+        head_dim: int,
+        np_dtype,
+    ) -> bytes:
+        """Turn per-slot dead-stage columns into LAYER-major install_kv bytes.
+
+        Inverse of extract_kv_column's layout: reshape each slot to
+        (n_dead_layers, 2, n_heads, head_dim), stack over slots, then move the
+        slot axis back between heads and head_dim (transpose (1,2,3,0,4)).
+        Axis order pinned by the parity bit-exact end-to-end test.
+        """
+        import numpy as np
+        n_slots = dead_slots.shape[0]
+        dead_slot_major = dead_slots.view(np_dtype).reshape(
+            n_slots, n_dead_layers, 2, n_heads, head_dim
+        )
+        dead_layer_major = np.ascontiguousarray(
+            np.transpose(dead_slot_major, (1, 2, 3, 0, 4))
+        )
+        return dead_layer_major.tobytes()
+
     def _xor_reconstruct_kv(
         self,
         request_id: RequestId,
@@ -1211,13 +1236,9 @@ class RequestGateway:
                 acc[: col.size] ^= col
             dead_slots[slot] = acc[:dead_slot_bytes]
 
-        dead_slot_major = dead_slots.view(np_dtype).reshape(
-            n_slots, n_dead_layers, 2, n_heads, head_dim
+        return self._slot_major_to_layer_major(
+            dead_slots, n_dead_layers, n_heads, head_dim, np_dtype
         )
-        dead_layer_major = np.ascontiguousarray(
-            np.transpose(dead_slot_major, (1, 2, 3, 0, 4))
-        )
-        return dead_layer_major.tobytes()
 
     def _replay_through_chain(
         self,
