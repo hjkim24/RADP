@@ -49,6 +49,7 @@ from radp.common.types import (
 from radp.coordinator.activation_cache import ActivationCache
 from radp.coordinator.parity_cache import ParityCache
 from radp.coordinator.recovery_plan import build_execution_plan
+from radp.coordinator.replica_cache import ReplicaCache
 from radp.coordinator.sampling import sample_next_token
 
 _GRPC_OPTIONS: list[tuple[str, Any]] = [
@@ -144,7 +145,6 @@ class RequestGateway:
         # is_complete() unreachable (one stage would never contribute),
         # silently disabling parity recovery.
         self.parity_cache = ParityCache(num_stages=max(len(placement) - 1, 0))
-        from radp.coordinator.replica_cache import ReplicaCache
         self.replica_cache = ReplicaCache(num_stages=max(len(placement) - 1, 0))
         self._request_counter = itertools.count(start=1)
         self._requests: dict[RequestId, _RequestState] = {}
@@ -994,6 +994,13 @@ class RequestGateway:
         n_heads, head_dim, np_dtype, itemsize = self._kv_dims()
         n_dead_layers = dead_key[1] - dead_key[0] + 1
         dead_slot_bytes = n_dead_layers * 2 * n_heads * head_dim * itemsize
+        if len(stored) != n_slots * dead_slot_bytes:
+            log.info(
+                "request=%d replicate: stored KV size %d != expected %d (%d slots x %d); "
+                "deferring to surgical",
+                request_id, len(stored), n_slots * dead_slot_bytes, n_slots, dead_slot_bytes,
+            )
+            return self._recover_surgical(request_id, head_stage, error, current_position)
         dead_slots = np.frombuffer(stored, dtype=np.uint8).reshape(
             n_slots, dead_slot_bytes
         )
