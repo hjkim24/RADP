@@ -405,37 +405,63 @@ def run_reactive_replacement_trial(
     fired = fault_fired(victim_host)
 
     # 3. Coordinator re-solves the DP over survivors and redeploys.
-    resp = reconfigure_over_survivors(coord_host)
-
     # 4. Replay the SAME request from 0 on the reconfigured chain.
-    rec = _bench_one_request(stub_factory(), prompt, max_tokens=max_tokens)
-    t_end = time.perf_counter()
+    # Both steps are guarded: transient failures (HTTP 409, network timeout)
+    # mark the trial INVALID rather than aborting the whole sweep.
+    try:
+        resp = reconfigure_over_survivors(coord_host)
+        rec = _bench_one_request(stub_factory(), prompt, max_tokens=max_tokens)
+        t_end = time.perf_counter()
 
-    ttr = (t_end - t_start) - reference_wall
-    seq_match = rec["decoded_text"] == reference_text
-    reconfigured = _reconfigured_over_survivors(resp["placement"], victim_device)
+        ttr = (t_end - t_start) - reference_wall
+        seq_match = rec["decoded_text"] == reference_text
+        reconfigured = _reconfigured_over_survivors(resp["placement"], victim_device)
 
-    row = {
-        "mode": "reactive_replacement",
-        "position": position,
-        "ttr_seconds": ttr,
-        "sequence_match": seq_match,
-        "reconfigured": reconfigured,
-        "fired": fired,
-        "reset_wall_seconds": reset_wall,
-        "reference_wall_seconds": reference_wall,
-        "text_tokens": rec["text_tokens"],
-        "decoded_text": rec["decoded_text"],
-        "survivors": resp.get("survivors"),
-        "excluded": resp.get("excluded"),
-        "placement": resp.get("placement"),
-    }
-    valid = fired and seq_match and reconfigured
-    log.info(
-        "%-11s P=%-2d  TTR=%.3fs  fired=%s seq_match=%s reconfigured=%s  %s",
-        "reactive", position, ttr, fired, seq_match, reconfigured,
-        "OK" if valid else "!! INVALID",
-    )
+        row = {
+            "mode": "reactive_replacement",
+            "position": position,
+            "ttr_seconds": ttr,
+            "sequence_match": seq_match,
+            "reconfigured": reconfigured,
+            "fired": fired,
+            "reset_wall_seconds": reset_wall,
+            "reference_wall_seconds": reference_wall,
+            "text_tokens": rec["text_tokens"],
+            "decoded_text": rec["decoded_text"],
+            "survivors": resp.get("survivors"),
+            "excluded": resp.get("excluded"),
+            "placement": resp.get("placement"),
+        }
+        valid = fired and seq_match and reconfigured
+        log.info(
+            "%-11s P=%-2d  TTR=%.3fs  fired=%s seq_match=%s reconfigured=%s  %s",
+            "reactive", position, ttr, fired, seq_match, reconfigured,
+            "OK" if valid else "!! INVALID",
+        )
+    except Exception as e:
+        # Transient failure on reconfigure or replay: mark trial invalid, don't
+        # abort the sweep. Downstream fit-gate (which checks `reconfigured`)
+        # will exclude this row.
+        row = {
+            "mode": "reactive_replacement",
+            "position": position,
+            "ttr_seconds": None,
+            "sequence_match": False,
+            "reconfigured": False,
+            "fired": fired,
+            "reset_wall_seconds": reset_wall,
+            "reference_wall_seconds": reference_wall,
+            "text_tokens": None,
+            "decoded_text": None,
+            "survivors": None,
+            "excluded": None,
+            "placement": None,
+            "error": str(e),
+        }
+        log.warning(
+            "%-11s P=%-2d  FAILED (reconfigure/replay): %s",
+            "reactive", position, e,
+        )
     return row
 
 
