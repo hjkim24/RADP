@@ -44,6 +44,7 @@ SUBJECT = {
     "surgical":    NAVY,     # 중간, 구조색
     "parity":      ACCENT,   # 덱이 제목에 쓰는 강조 파랑 = 결론
     "baseline":    "#808080",
+    "replicate":   "#808080",   # rival baseline — neutral grey, not parity's blue
 }
 
 # --- slide-content geometry (inches, from DESIGN_SYSTEM.md §2) -------------

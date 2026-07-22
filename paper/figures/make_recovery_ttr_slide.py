@@ -29,12 +29,21 @@ from _slide import BODY, SLIDE_FULL, SUBJECT, save_slide  # noqa: E402
 RESULTS = Path(__file__).parent.parent.parent / "experiments" / "results"
 
 d = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
-trials, fits = d["trials"], d["fits"]
+trials, fits = list(d["trials"]), dict(d["fits"])
+
+# replicate JSON lands after the controller-run fleet sweep (Task 6). Guard
+# so this script still renders the 3-line parity figure until it exists.
+replicate_path = RESULTS / "b1_ft_fleet_replicate.json"
+if replicate_path.exists():
+    rep = json.load(open(replicate_path))
+    trials += rep["trials"]
+    fits.update(rep["fits"])
 
 STYLE = {
     "full_replay": (SUBJECT["full_replay"], "o", "full-replay"),
     "surgical":    (SUBJECT["surgical"],    "s", "surgical"),
     "parity":      (SUBJECT["parity"],      "^", "parity"),
+    "replicate":   (SUBJECT["replicate"],   "D", "replicate"),
 }
 
 
