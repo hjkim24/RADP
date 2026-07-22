@@ -101,10 +101,10 @@ class RequestGateway:
         async_chain_timeout_seconds: float = 30.0,
         recovery_mode: str = "full_replay",
     ) -> None:
-        if recovery_mode not in {"full_replay", "surgical", "parity"}:
+        if recovery_mode not in {"full_replay", "surgical", "parity", "replicate"}:
             raise ValueError(
-                f"recovery_mode must be 'full_replay', 'surgical' or 'parity', "
-                f"got {recovery_mode!r}"
+                f"recovery_mode must be 'full_replay', 'surgical', 'parity' or "
+                f"'replicate', got {recovery_mode!r}"
             )
         self.recovery_mode = recovery_mode
         self.placement = placement
@@ -144,6 +144,8 @@ class RequestGateway:
         # is_complete() unreachable (one stage would never contribute),
         # silently disabling parity recovery.
         self.parity_cache = ParityCache(num_stages=max(len(placement) - 1, 0))
+        from radp.coordinator.replica_cache import ReplicaCache
+        self.replica_cache = ReplicaCache(num_stages=max(len(placement) - 1, 0))
         self._request_counter = itertools.count(start=1)
         self._requests: dict[RequestId, _RequestState] = {}
 
@@ -263,13 +265,18 @@ class RequestGateway:
         position: int,
         kv_bytes: bytes,
     ) -> None:
-        """Feed a worker-shipped KV column into the parity cache (MirrorKV)."""
-        self.parity_cache.xor_in(
-            RequestId(request_id),
-            (int(start_layer), int(end_layer)),
-            int(position),
-            kv_bytes,
-        )
+        """Feed a worker-shipped KV column into the parity or replica cache
+        (MirrorKV), dispatching on ``recovery_mode`` — replicate keeps every
+        stage's column verbatim; every other mode XORs it into parity."""
+        key = (int(start_layer), int(end_layer))
+        if self.recovery_mode == "replicate":
+            self.replica_cache.store(
+                RequestId(request_id), key, int(position), kv_bytes
+            )
+        else:
+            self.parity_cache.xor_in(
+                RequestId(request_id), key, int(position), kv_bytes
+            )
 
     def mirror_stats(self) -> dict[str, int]:
         """Lifetime ingress counters + current cache state. Diagnostic only."""
@@ -689,6 +696,10 @@ class RequestGateway:
         ONLY the promoted backup — see :meth:`_recover_surgical`. The
         default ("full_replay") keeps the behaviour documented above.
         """
+        if self.recovery_mode == "replicate":
+            return self._recover_replicate(
+                request_id, head_stage, error, current_position
+            )
         if self.recovery_mode == "parity":
             return self._recover_parity(
                 request_id, head_stage, error, current_position
@@ -873,6 +884,145 @@ class RequestGateway:
             )
         # Run position P live: forwards backup → downstream and yields the
         # recovered response. The head already advanced to P; we skip it.
+        last_resp = self._invoke(
+            backup_stage, request_id, history[current_position],
+            is_prefill=(current_position == 0),
+            position=current_position, replay_only=False,
+        )
+        return backup_stage, last_resp
+
+    def _recover_replicate(
+        self,
+        request_id: RequestId,
+        head_stage: Stage,
+        error: grpc.RpcError,
+        current_position: int,
+    ) -> tuple[Stage, Any]:
+        """Full-KV-replication recovery — install the dead stage's own stored
+        KV columns onto the promoted backup, then run the failed position live.
+        No survivor fetch, no XOR, no slot-spread guard (cf. _recover_parity):
+        replicate holds the dead stage's OWN columns, not survivors', so there
+        is no alignment skew to guard against.
+
+        Falls back to :meth:`_recover_surgical` (which itself ladders to full
+        replay) whenever the stored columns can't be trusted — never emits a
+        wrong token:
+          * the dead stage is the head (coord-sourced, never stored);
+          * the stored columns are incomplete for the slots the victim held;
+          * the mirrored dead-stage input for the failed position is missing.
+
+        Cost: one LoadKV + one live position — no per-position replay, no
+        survivor RPCs. See docs/superpowers/specs/2026-07-22-replication-
+        baseline-design.md.
+        """
+        dead_stage = self._attribute_chain_failure(head_stage, error)
+        if int(dead_stage.start_layer) == 1:  # head: coord-sourced, never stored
+            log.info(
+                "request=%d replicate: dead stage is the head; deferring to "
+                "surgical", request_id,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+        if dead_stage.device not in self._dead:
+            log.warning(
+                "request=%d replicate recovery: chain failure attributed to "
+                "%s[%d..%d] (head was %s)",
+                request_id, dead_stage.device,
+                dead_stage.start_layer, dead_stage.end_layer, head_stage.device,
+            )
+            self.mark_dead(dead_stage.device)
+        dead_key = (int(dead_stage.start_layer), int(dead_stage.end_layer))
+
+        # `current_position` is the GENERATION-STEP index (0=prefill,
+        # 1,2,3,...=decode), not the absolute KV-slot count -- prefill
+        # (position 0) durably stores `past_length` slots (the whole
+        # prompt) in ONE step, then each decode step adds exactly one more.
+        # So by the time a decode at `current_position` fails, the dead
+        # stage has durably stored slots 0..(past_length+current_position-2)
+        # -- n_slots = past_length + current_position - 1. (A crash during
+        # prefill itself has nothing durable yet -- n_slots = 0.) Mirrors
+        # how _recover_parity derives n_slots from actual survivor byte
+        # lengths rather than assuming it equals current_position.
+        req_state = self._requests.get(request_id)
+        past_length = int(req_state.past_length) if req_state is not None else 0
+        n_slots = (
+            past_length + current_position - 1 if current_position >= 1 else 0
+        )
+        if n_slots < 1 or not self.replica_cache.is_complete(
+            request_id, dead_key, up_to_position=n_slots - 1
+        ):
+            log.info(
+                "request=%d replicate: stored KV incomplete for %s; "
+                "deferring to surgical", request_id, dead_key,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+        stored = self.replica_cache.get_stage_kv(request_id, dead_key)
+        if stored is None:
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+
+        history = self.cache.get_history(request_id, dead_key)
+        if len(history) <= current_position:
+            log.warning(
+                "request=%d replicate: mirror history len=%d <= failed pos %d; "
+                "fallback to surgical", request_id, len(history), current_position,
+            )
+            return self._recover_surgical(
+                request_id, head_stage, error, current_position
+            )
+
+        backup_dev = self.recovery.get(dead_stage.device)
+        if backup_dev is None:
+            raise NoRecoveryError(f"no backup for {dead_stage.device}")
+        backup_addr = self.worker_addresses.get(backup_dev)
+        if backup_addr is None:
+            raise RuntimeError(f"recovery device {backup_dev} has no address")
+        try:
+            with WorkerClient(backup_addr) as client:
+                client.promote_backup(for_device_id=dead_stage.device)
+        except Exception:
+            log.exception(
+                "request=%d promote_backup on %s failed", request_id, backup_dev
+            )
+            raise
+        self._rewire_chain()
+
+        n_heads, head_dim, np_dtype, itemsize = self._kv_dims()
+        n_dead_layers = dead_key[1] - dead_key[0] + 1
+        dead_slot_bytes = n_dead_layers * 2 * n_heads * head_dim * itemsize
+        dead_slots = np.frombuffer(stored, dtype=np.uint8).reshape(
+            n_slots, dead_slot_bytes
+        )
+        dead_kv_bytes = self._slot_major_to_layer_major(
+            dead_slots, n_dead_layers, n_heads, head_dim, np_dtype
+        )
+
+        backup_stage = next(
+            (s for s in self.current_plan()
+             if (int(s.start_layer), int(s.end_layer)) == dead_key),
+            None,
+        )
+        if backup_stage is None:
+            raise RuntimeError(
+                f"layer range {dead_key} not present in post-recovery plan"
+            )
+
+        log.warning(
+            "request=%d REPLICATE reconstruct: backup %s stage[%d..%d] "
+            "slots=%d (stored KV, zero-forward), then run pos %d live",
+            request_id, backup_stage.device, *dead_key, n_slots, current_position,
+        )
+        with WorkerClient(self.worker_addresses[backup_stage.device]) as client:
+            client.load_kv(
+                request_id=request_id,
+                start_layer=dead_key[0], end_layer=dead_key[1],
+                kv_bytes=dead_kv_bytes, num_positions=n_slots,
+            )
+
         last_resp = self._invoke(
             backup_stage, request_id, history[current_position],
             is_prefill=(current_position == 0),
