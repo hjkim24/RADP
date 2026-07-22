@@ -114,7 +114,7 @@ def set_worker_replication(on: bool) -> None:
 
 
 def restart_coordinator_and_wait(
-    coord_host: str, coord_ssh: str, ssh_key: str, timeout: int = 220
+    coord_host: str, coord_ssh: str, ssh_key: str, timeout: int = 320
 ) -> float:
     """Restart the coordinator (daemon-reload picks up the drop-in) and block
     until it has re-scheduled and is serving. Returns wall seconds waited."""

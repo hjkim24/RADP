@@ -2222,3 +2222,12 @@ in-process는 bit-exact(복원 KV가 원본과 `torch.equal`) + sequence-match�
 ```
 
 그리고 맨 위 "## 현재 상태 요약"의 숫자 (테스트 카운트, source 파일 수, Phase 개수)를 갱신한다.
+
+## Phase B1-REPLICATE — full KV replication baseline (2026-07-22)
+
+parity의 4번째 대조군으로 full KV replication 구현·측정. `ReplicaCache`(parity cache에서 XOR만 제거),
+gateway `_recover_replicate`(생존자 fetch·XOR 없이 저장본 직접 install), fleet TTR(P) 스위프.
+결과: `replicate TTR(P)=239.3+2.67 ms·P` — parity(284.1+0.87)와 **TTR 동률**(교차 P≈25), 둘 다
+zero-recompute. parity의 우위는 저장뿐(max vs Σ = 2.25×, O(1) vs O(N)) → 2D Pareto(TTR × 저장)에서
+parity만 좌하단 코너. SDD 7태스크(계획 버그 2건 하네스가 포착: n_slots·Stage 인자순서), fleet 5/5
+`replicate_branch_ran=True`. 그림 fig_recovery_2d/ttr_slide(4선)/storage_scaling. 커밋 main.

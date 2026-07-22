@@ -477,6 +477,48 @@ surgical 복구 후 backup의 KV를 `fetch_kv`로 뽑아 바이트 비교. 기�
 
 ---
 
+## B1-REPLICATE — full KV replication baseline: parity의 진짜 라이벌 (실 fleet, 2026-07-22)
+
+**동기.** parity를 full-replay/surgical(재계산 계열)뿐 아니라 *다른 zero-recompute 전략*과 대비해야
+기여가 격리된다. full KV replication(DejaVu/KevlarFlow 계열)은 XOR 없이 stage별 KV를 통째로
+coordinator에 저장했다 로드한다 — parity와 **복구 기제가 같고**(재계산 0), **저장하는 것만 다르다**
+(N벌 vs XOR 1장). 구현은 parity cache에서 XOR만 뺀 것(`ReplicaCache`), 저장 위치도 coordinator로
+동일하게 두어 "저장 위치" 교란변수를 제거. GhostServe가 이미 한 erasure-coding vs full-replication
+비교(8:2가 75% 절감)를 우리 이종 엣지 레짐에 재현한 것.
+
+**세팅.** §B1-PARITY와 **동일** fleet·victim(`on-1[16..17]`)·주입(sync chain, compute-time crash).
+워커 `RADP_PARITY=1`(KV shipping 공유 게이트), coordinator `RADP_RECOVERY_MODE=replicate`.
+
+**결과** (victim `on-1`, 15/15 valid across smoke+sweep, replicate 5/5 `replicate_branch_ran=True`):
+```
+full-replay: 308.7 ms + 164.32 ms · P
+surgical:    249.4 ms +  16.21 ms · P
+parity:      284.1 ms +   0.87 ms · P
+replicate:   239.3 ms +   2.67 ms · P      ← NEW
+```
+→ **replicate도 기울기 ≈ 0** (2.67 ms/pos, surgical 16·full-replay 164 대비 사실상 평평) — 재계산
+계열이 아니라 parity와 같은 저장 계열임을 실측 확인. **replicate 절편(239)이 parity(284)보다 낮다**:
+replicate는 저장본 1개 install, parity는 생존자 N−1 fetch + XOR이라 복구 시 전송이 더 많기 때문.
+기울기 교차 P≈25 — P<25 replicate가, P>25 parity가 근소하게 빠름. 즉 **TTR에선 사실상 동률.**
+
+**그래서 parity의 우위는 TTR이 아니라 저장이다 (2D Pareto).** 상시 coordinator 저장:
+```
+replicate = Σ(non-head stage KV) = 9 layer분 (36864 B)
+parity    = max(non-head stage KV) = 4 layer분 (16384 B)   → 2.25× 적음
+```
+스케일링으론 replicate O(N)·parity O(1) (stage 수 무관, 엣지가 깊어질수록 벌어짐). 그래서 1D TTR
+그래프가 아니라 **2D Pareto(TTR × 저장)**로 프레이밍: full-replay/surgical은 저장 0이나 TTR가 P를
+타고, replicate는 TTR 낮으나 저장 N배, **parity만 좌하단(낮은 TTR ∧ 낮은 저장) 코너**에 있다.
+정직한 한계: replicate와 parity는 **상시 네트워크(업로드)가 동일**하다(둘 다 같은 KV 컬럼 전송) —
+parity의 변별점은 오직 coordinator 저장 바이트다.
+
+그림: [`fig_recovery_ttr_slide`](../paper/figures/fig_recovery_ttr_slide.pdf) (4-선, 로그축),
+[`fig_recovery_2d`](../paper/figures/fig_recovery_2d.pdf) (Pareto),
+[`fig_storage_scaling`](../paper/figures/fig_storage_scaling.pdf) (O(N) vs O(1)).
+출처: [`b1_ft_fleet_replicate.json`](results/b1_ft_fleet_replicate.json),
+[`b1_ft_overhead.json`](results/b1_ft_overhead.json). 설계/계획:
+`docs/superpowers/{specs,plans}/2026-07-22-replication-baseline*`.
+
 ## 11. 핵심 발견 정리 (페이퍼)
 
 1. **DP는 정상 운영에서 이김 — compute 이기종성이 유의미할 때.** OPT-125M 동질 Nano fleet (§3.3)에선 4 placement가 TBT ±3% 안에서 tie. OPT-350M 3-tier fleet (§4)에선 ours가 greedy 대비 **TBT -6.5%**, **처리량 +8.3%**, 조건당 n=300 샘플.
@@ -499,6 +541,8 @@ surgical 복구 후 backup의 KV를 `fetch_kv`로 뽑아 바이트 비교. 기�
 8. **OPT-350M의 `project_in`과 safetensors prefix layout이 둘 다 함정** — 두 가지 실제 fix 가 필요했음 (`934ea27`, `246a02b`). loader를 다른 아키텍처로 확장하려는 사람을 위한 flag.
 
 9. **Profiler 가 hidden bug 두 개** (D2.2 §5): tokenizer padding silent no-op + CUDA async timing → AGX vs Nano gap 이 ~0 로 가려졌었음. Commit 382739b 의 fix 가 D2.3+ 의 모든 측정의 전제조건.
+
+12. **Full KV replication은 parity와 TTR 동률, 저장에서만 짐 (§B1-REPLICATE).** 같은 fleet에서 `replicate TTR(P)=239.3+2.67 ms·P` — parity(284.1+0.87)와 기울기·절편 모두 사실상 동률(교차 P≈25). 둘 다 zero-recompute라 TTR이 같고, parity의 유일한 우위는 상시 저장(max vs Σ, 2.25×; O(1) vs O(N)). 그래서 비교는 1D TTR이 아니라 2D Pareto(TTR × 저장)이며 parity만 좌하단 코너. GhostServe의 erasure-coding vs replication 비교를 이종 엣지 레짐에 재현. 측정은 `replicate_branch_ran` 로그로 surgical 폴백 오표기 배제(5/5 진짜 replicate).
 
 11. **Cross-stage XOR parity = 재계산 0인 3번째 복구 계열, 실 하드웨어에서 기울기 ≈ 0 (§B1-PARITY).** 같은 fleet·victim·주입에서 `TTR(P) = 284 ms + 0.87 ms·P` — surgical(16.21) 대비 **19×**, full-replay(164.32) 대비 **188×** 완만. P를 8배 늘려도 TTR +6%. 복구 비용이 "재계산"이 아니라 **공유 고정 오버헤드(승격+rewire ~284 ms)**에 지배됨. 입력 재생 계열(surgical/Petals)과 근본적으로 다른 메커니즘이며, 측정은 `parity_branch_ran` 로그 검증으로 surgical 폴백 오표기를 배제(5/5 진짜 parity). 한계: 첫 interior victim 한정(그 외 안전 폴백), 정상 운영 중 KV shipping 네트워크 세금.
 

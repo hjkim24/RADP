@@ -79,11 +79,14 @@ for mode, (color, marker, label) in STYLE.items():
             color=color, linewidth=1.8, alpha=0.9, zorder=3)
 
     # 범례 대신 선 끝에 직접 이름을 붙인다. 눈이 범례와 선을 오갈 일이 없다.
+    # parity/replicate 는 둘 다 평평해 선 끝(≈0.3s)에서 라벨이 겹친다 —
+    # 세로로 살짝 벌려 둘 다 읽히게 한다 (offset points 로 픽셀 단위 이동).
     slope_ms = f["slope"] * 1e3
     tail = f["intercept"] + f["slope"] * 36
+    dy = {"parity": 11, "replicate": -13}.get(mode, 0)
     ax.annotate(f"{label}\n{slope_ms:.2f} ms/pos" if slope_ms < 10
                 else f"{label}\n{slope_ms:.0f} ms/pos",
-                xy=(36, tail), xytext=(8, 0), textcoords="offset points",
+                xy=(36, tail), xytext=(8, dy), textcoords="offset points",
                 va="center", ha="left", fontsize=12.5, color=color,
                 fontweight="bold", linespacing=1.4, annotation_clip=False)
 
