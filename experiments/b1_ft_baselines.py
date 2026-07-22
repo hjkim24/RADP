@@ -95,8 +95,8 @@ def generate_wired_reference_wall(
     *, prompt: str, max_tokens: int
 ) -> tuple[list[int], float]:
     """Like :func:`generate_wired_reference`, but also returns the
-    healthy-cluster wall-clock — the ``reference_wall`` the cold-restart
-    line's TTR is measured against (see ``run_b1_cold_restart``)."""
+    healthy-cluster wall-clock — the ``reference_wall`` the reactive-replacement
+    line's TTR is measured against (see ``run_reactive_replacement``)."""
     return _generate_wired_reference_impl(prompt=prompt, max_tokens=max_tokens)
 
 
@@ -366,17 +366,24 @@ def resolve_excluding(dead: DeviceId, survivors: list[DeviceId]) -> Placement:
     return greedy_placement(devices, num_layers)
 
 
-def run_b1_cold_restart(
+def run_reactive_replacement(
     *, prompt: str, max_tokens: int, kill_after_tokens: int,
     reference: list[int], reference_wall: float,
 ) -> BaselineResult:
-    """Cold-restart baseline: no in-place recovery. On the SAME mid-stage
-    crash, the first attempt aborts exactly like ``run_b0_abort``. Recovery
-    then re-solves a placement over the survivors, redeploys the model on
-    them, wires a fresh chain, and re-runs generation from scratch on a
-    brand-new ``RequestGateway`` (full model reload included — that IS the
-    cold-restart cost). ``ttr_seconds`` is the whole restart's wall-clock
-    minus the healthy-cluster ``reference_wall``, per the TTR taxonomy.
+    """Reactive re-placement baseline: no proactive backup (R={}). On the SAME
+    mid-stage crash, the first attempt aborts (no backup to promote). Recovery
+    then RE-SOLVES a placement over the survivors, redeploys the model on them,
+    wires a fresh chain, and re-runs generation from scratch (full model reload
+    IS the cost). ``ttr_seconds`` is the whole re-placement's wall-clock minus
+    the healthy ``reference_wall``, per the TTR taxonomy.
+
+    Fidelity note: in-process there are no per-device profiles (all workers are
+    identical stubs), so ``resolve_excluding`` uses a uniform greedy re-split as
+    a STAND-IN for the Recovery-Aware DP. The fleet variant runs the real DP
+    over profiled survivors (see the reactive-replacement fleet path). This
+    in-process test verifies the mechanism's CORRECTNESS (re-solve + replay →
+    reference tokens), which is placement-algorithm-independent; the real cost
+    is measured on the fleet.
     """
     device_ids, placement, _recovery, victim = chain_config()
     dead_key = next(
@@ -418,15 +425,15 @@ def run_b1_cold_restart(
         gw2.close()
 
     assert tripped.fired, (
-        f"B1-cold-restart: injected mid-stage crash on {victim} never fired "
+        f"reactive-replacement: injected mid-stage crash on {victim} never fired "
         f"(dead_key={dead_key}, at_position={kill_after_tokens}) — "
-        "restart measured nothing"
+        "re-placement measured nothing"
     )
 
     completed = len(toks)
     goodput = completed / total if total > 0 else 0.0
     return BaselineResult(
-        name="B1-cold-restart",
+        name="reactive-replacement",
         ttr_seconds=total - reference_wall,
         tokens_completed=completed,
         tokens_requested=max_tokens,
@@ -457,7 +464,7 @@ def run_all(*, prompt: str, max_tokens: int, kill_after_tokens: int) -> dict:
             prompt=prompt, max_tokens=max_tokens,
             kill_after_tokens=kill_after_tokens, reference=reference,
         ),
-        run_b1_cold_restart(
+        run_reactive_replacement(
             prompt=prompt, max_tokens=max_tokens,
             kill_after_tokens=kill_after_tokens, reference=reference,
             reference_wall=reference_wall,
