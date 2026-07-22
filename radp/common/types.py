@@ -164,6 +164,12 @@ class ClusterSpec:
     slower recovery (weights load from disk, ~5-30 s) and potential
     in-flight KV cache loss for better steady-state throughput on the
     primary node. See backlog item A5."""
+    backup_placement: bool = True
+    """If True (default), the scheduler assigns a backup peer per stage (R) via
+    ``determine_recovery_table`` — proactive recovery. If False, R is empty
+    ({}), the DP solves Ψ with no backup burden, and a stage failure has no
+    backup to promote (reactive re-placement baseline). Default True keeps every
+    existing run unchanged."""
     optimization_mode: str = "throughput"
     """Cost-function family for the DP. The scheduler tracks both Σ stage
     cost and max stage cost in every cell and ranks candidate placements

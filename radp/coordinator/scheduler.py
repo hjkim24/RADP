@@ -166,7 +166,11 @@ class Scheduler:
 
         for i in range(1, max_iterations + 1):
             try:
-                r = determine_recovery_table(self.spec, prev_psi)
+                r = (
+                    determine_recovery_table(self.spec, prev_psi)
+                    if self.spec.backup_placement
+                    else {}
+                )
             except NoRecoveryError as e:
                 if best_consistent is not None:
                     log.warning(
@@ -347,6 +351,7 @@ class Scheduler:
                 slo=self.spec.slo,
                 activation_bytes=self.spec.activation_bytes,
                 eager_backup=self.spec.eager_backup,
+                backup_placement=self.spec.backup_placement,
                 optimization_mode=self.spec.optimization_mode,
                 blend_alpha=self.spec.blend_alpha,
                 hop_overhead_seconds=self.spec.hop_overhead_seconds,
