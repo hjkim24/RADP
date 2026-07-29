@@ -98,7 +98,10 @@ for mode, (color, marker, label) in STYLE.items():
     # 세로로 살짝 벌려 둘 다 읽히게 한다 (offset points 로 픽셀 단위 이동).
     slope_ms = f["slope"] * 1e3
     tail = f["intercept"] + f["slope"] * 36
-    dy = {"parity": 11, "replicate": -13}.get(mode, 0)
+    # 오른쪽 아래는 surgical(0.83s)·parity·replicate(둘 다 ≈0.32s) 세 라벨이 몰린다.
+    # surgical 바로 위(full-replay 6.2s까지)는 비어 있으므로 surgical 을 위로 올려 공간을
+    # 내고, parity(위)·replicate(아래)를 그 밑에서 크게 벌린다 — 2줄 라벨이 안 겹치게.
+    dy = {"surgical": 20, "parity": 16, "replicate": -28}.get(mode, 0)
     # reactive is flat at tens of seconds — a fitted per-position slope is pure
     # measurement noise (a spurious sign), so label it with its LEVEL, not a
     # slope. Its cold re-solve + reload + replay-from-0 cost does not depend on
