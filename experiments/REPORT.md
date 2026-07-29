@@ -569,6 +569,75 @@ reactive가 최상단 ~53 s),
 출처: [`b1_ft_fleet_reactive.json`](results/b1_ft_fleet_reactive.json). 설계/계획:
 `docs/superpowers/{specs,plans}/2026-07-22-reactive-replacement*`.
 
+## B1-OVERHEAD — 상시 network shipping: mirror은 누가 왜 무는가 (2026-07-30)
+
+**동기.** B1-FLEET/PARITY/REPLICATE/REACTIVE 넷은 전부 "장애 나면 무엇을 다시 만드는가"(TTR)만 쟀다. parity/replicate는 **정상 운영 중에도** 매 스텝 KV 컬럼을 coordinator로 흘려보내는 상시 네트워크 세금을 문다 — §B1-PARITY/§B1-REPLICATE 한계 항목에 "정량화 안 됨"으로 남겨둔 항목이다. 이번 측정이 그 세금을 계열별로 분해한다.
+
+**메커니즘 (코드로 확인, `experiments/_harness.py::shipping_overhead`).** worker→coordinator 상시 shipping은 매 decode 스텝마다 두 가지다:
+- **input mirror**(`submit_mirror`/`record_mirror`): non-head stage 전부가 **recovery_mode·RADP_PARITY 여부와 무관하게 항상** 자기 활성값을 coordinator로 흘려보낸다(`radp/worker/server.py:429-451`, 게이트는 `start_layer>1 ∧ not replay_only` 뿐 — 5계열 전부 이 조건을 만족). 계열별로 다르지 않다.
+- **KV 컬럼**(`MirrorKV`/`_maybe_push_parity_kv`): `RADP_PARITY` 환경변수 게이트라 **parity/replicate 두 계열만** 얹는다(`server.py:473-484`).
+
+**결과 (OPT-350M, 5-stage 배치 `ao-2[1-15]/on-1[16-17]/on-6[18-19]/ao-1[20-23]/on-2[24]`, `b1_ft_overhead.json`).**
+
+| 계열 | 스텝당 shipping | 대역폭 (median TBT=0.1633 s 기준) |
+|---|---|---|
+| full-replay / reactive / surgical | mirror만 8192 B | 50165.3 B/s (49.0 KiB/s) |
+| parity / replicate | mirror(8192)+KV(36864)=**45056 B** | 275909.4 B/s (269.4 KiB/s) |
+
+parity/replicate가 나머지 셋 대비 스텝당 **5.5×** 더 많은 바이트를 쏜다 — 정확히 KV 컬럼(36864 B)만큼의 델타다. **mirror(8192 B)는 다섯 계열 전부가 무는 always-on 베이스라인**이고, **KV 컬럼(36864 B)이 parity/replicate만 그 위에 얹는 델타**다.
+
+**mirror은 왜 존재하나 — surgical rung의 값.** mirror shipping은 다섯 계열이 똑같이 물지만, 실제로 그걸 읽어서 쓰는(read-back) 계열은 다르다. `radp/coordinator/gateway.py`를 추적하면:
+- **surgical**(`_recover_surgical`)은 죽은 stage의 mirror 히스토리 **전체(position 0..P-1)**를 읽어 backup에 replay하는 게 복구 메커니즘 그 자체(`self.cache.get_history`, line 841).
+- **parity/replicate**(`_recover_parity`/`_recover_replicate`)는 정상 경로에서 과거 포지션은 이미 가진 XOR/복제본으로 재구성하지만, **실패 포지션 P 딱 하나치**는 여전히 mirror에서 읽어 live로 흘린다(각각 line 1224/1285, line 968/1039 — mirror가 완전 무관하진 않다, 다만 O(1) 읽기). mirror 히스토리 길이가 P보다 짧으면(async lag) 또는 KV 쪽 6개 게이트 중 하나라도 걸리면 **`_recover_surgical`로 폴백**해 mirror 히스토리 **전체**를 읽는 비싼 경로로 넘어간다 — §B1-PARITY의 `parity_branch_ran`/`replicate_branch_ran` 로그가 바로 이 전환을 잡아내는 장치다.
+- **full-replay**(`_replay_through_chain`)와 **reactive**는 worker가 쏜 mirror 바이트를 **한 번도 읽지 않는다** — full-replay는 coordinator 자신이 로컬로 프라이밍해둔 head-input history(`self.cache.get_history`이지만 head 항목은 `_run_pipeline`이 직접 채운 것, worker mirror 아님)로 체인 전체를 처음부터 다시 굴리고, reactive는 재배치 후 완전히 새 gateway를 열어 원 프롬프트로 position 0부터 재-prefill한다.
+
+즉 **cost ladder는 parity/replicate(재계산 0) → surgical(부분 재계산) → full-replay(전량 재계산)** 순이고, mirror는 정확히 **surgical rung의 값**이다 — surgical이 히스토리 전체를 직접 소비하고, parity/replicate는 현재 포지션 1개치만 상시로 빌리다가 폴백 시에만 전체를 빌려 쓴다. 이 폴백 사다리는 개념이 아니라 실코드다: surgical 자신도 async-mirror lag 시 `_replay_through_chain`(full-replay)으로 한 단계 더 떨어진다(`gateway.py:843-858`) — `parity/replicate → surgical → full-replay`가 이미 코드에 있는 실제 경로다. 대안으로 **parity → full-replay** 2계열 사다리(중간 surgical rung 삭제)를 생각해볼 수 있다 — mirror shipping(8192 B/step, 5계열 전부에서 사라짐)을 완전히 없앨 수 있지만, 게이트 실패 시 폴백처가 이제 surgical(249.4+16.21 ms·P)이 아니라 full-replay(308.6+164.32 ms·P)라 폴백 비용이 P=32 기준 **7.3배**(0.767 s→5.621 s) 뛴다. mirror의 8192 B/step 세금은 그 값싼 폴백 안전망을 유지하는 대가다.
+
+**정합성과의 연결 (§B1-FIDELITY 참조).** surgical(또는 그로의 폴백)이 하는 일은 **재계산**이다 — §B1-FIDELITY가 그 재계산이 tier에 따라 비트가 달라짐을 실측으로 보인다. parity/replicate가 정상 경로에서 갖는 bit-exact 보장은 폴백 순간 사라지고, surgical의 tier-dependent 재계산을 그대로 상속한다.
+
+**정직한 한계.** shipping 바이트는 배치·모델 크기로부터 **결정론적으로 계산**된 값(`replication_overhead`/`shipping_overhead`, 측정이 아님)이고, 대역폭만 실측 median TBT(parity 스윕에서 도출, 0.1633 s)로 나눈 것 — gRPC 링크의 실제 latency/처리량 영향을 별도로 측정하지는 않았다. 5.5×는 이 5-stage/OPT-350M 배치(layer 분포 [2,2,4,1]) 한정이며, 다른 placement에선 mirror:KV 비가 달라진다.
+
+출처: [`b1_ft_overhead.json`](results/b1_ft_overhead.json)(shipping), [`b1_ft_fleet_parity.json`](results/b1_ft_fleet_parity.json)(median TBT). 코드: `experiments/_harness.py::shipping_overhead`, `experiments/gen_overhead.py`.
+
+---
+
+## B1-FIDELITY — 재계산 기반 복구의 tier 간 bit fidelity 실측 (백로그 B4, 2026-07-30)
+
+**동기.** §B1-PARITY.2 말미에서 "복구 결과의 강도가 다르다"를 **논증으로만** 남겼었다 — parity는 raw uint8 XOR라 완전 가역이므로 bit-identical, surgical/full-replay는 재계산이라 수학적으로 동치인 값일 뿐이라 커널·정밀도 경로가 다르면 비트가 어긋날 수 있다는 추정이었고, 실측은 없었다. 백로그 B4가 이 프로브다.
+
+**세팅.** OPT-350M non-head stage `[16,17]`(2층, `on-1`이 맡는 실제 stage), seq=8, 고정 시드 입력(`torch.manual_seed(0)`으로 만든 hidden_states + 4D causal mask)을 **동일 바이트로** 두 tier에 ansible로 ship: `on-1`(cuda, fp16)과 `on-3`(cpu, fp16). 각 tier에서 `StageRunner.run(is_prefill=True)` → `export_kv` → sha256 + raw dump 회수 → `experiments.fidelity_compare.compare_kv`(순수 numpy, float64 캐스팅 후 비교)로 바이트 비교. 드라이버: `experiments/probe_recompute_fidelity.py`.
+
+**결과 (`b1_ft_fidelity.json`).**
+
+```
+tier_a=cuda(on-1), tier_b=cpu(on-3)
+hash_equal=False, exact=False
+fraction_mismatched=0.26861572265625   (≈26.9%)
+max_abs_diff=0.00390625                (=2⁻⁸)
+recompute_diverges=true
+```
+
+**CUDA와 CPU에서 같은 입력을 같은 stage에 forward했는데 KV의 약 27%가 원소 단위로 다르다.** 최대 절대오차는 2⁻⁸(≈0.0039)로 fp16 몇 ULP 규모 — 값이 완전히 틀린 게 아니라 **커널 reduction 순서·FMA 사용 여부·누적 정밀도가 CUDA/CPU BLAS 경로마다 달라 생기는 부동소수 non-associativity**로 해석한다(정확도 버그가 아니라 하드웨어-종속 재현성 문제).
+
+**family_verdict (JSON 그대로).**
+```
+parity:      bit-exact (by construction)
+replicate:   bit-exact (by construction)
+surgical:    tier-dependent recompute
+full_replay: tier-dependent recompute
+reactive:    tier-dependent recompute
+```
+
+parity/replicate는 죽은 stage를 **다시 forward하지 않으므로**(raw uint8 XOR/복제본 install) 이 실험의 영향을 받지 않는다 — "by construction" bit-exact. surgical/full-replay/reactive 셋은 전부 죽은 stage를 **어딘가에서 다시 forward**하므로, backup의 device tier가 victim과 다르면 이 실험이 실측한 만큼(원소 27%, 최대오차 2⁻⁸) 갈라질 수 있다. 즉 재계산 계열 셋에는 "속도"뿐 아니라 **새로운 정합성 축**이 생긴다 — 지금까지 fleet 트라이얼의 `sequence_match`(argmax 토큰 일치)는 전부 100%였지만, 그건 토큰 하나만 보는 게이트이고 중간 KV 텐서 자체는 tier가 바뀌면 bit 단위로 다를 수 있다는 뜻이다.
+
+**⚠️ 캐비엇 — parity/replicate의 bit-exactness는 조건부다.** 위 verdict의 "bit-exact (by construction)"은 parity/replicate가 **자기 primary 경로(XOR 재구성/복제본 install)를 실제로 탔을 때만** 성립한다. §B1-OVERHEAD에서 확인했듯 게이트 중 하나라도 걸리면 둘 다 **조용히 surgical로 폴백**하고, 그 순간 이 프로브가 잡아낸 tier-dependent 재계산 드리프트를 그대로 상속한다. 측정 하네스가 이미 이 구분을 게이팅한다 — 드라이버가 coordinator 로그의 `"PARITY reconstruct:"` 마커로 `parity_branch_ran`(및 대응 `replicate_branch_ran`)을 기록해 폴백 트라이얼을 fit에서 제외한다(§B1-PARITY/§B1-REPLICATE, 두 스윕 모두 5/5 True). 그러니 정확한 문장은 "parity/replicate는 무조건 bit-exact"가 아니라 **"`parity_branch_ran`/`replicate_branch_ran=True`인 한에서 bit-exact, 폴백하면 surgical과 같은 정합성 리스크를 진다"**다.
+
+**정직한 한계.** (1) 프로브는 stage `[16,17]`·seq=8 **한 지점**뿐 — 4층짜리 `ao-1[20..23]`처럼 attention 출력이 누적되는 더 깊은 stage나 더 긴 시퀀스에서 mismatch 비율이 어떻게 변하는지는 미측정. (2) tier 쌍도 cuda↔cpu **하나**만 쟀다 — `agx`(`ao-1`) tier는 코드에 정의는 돼 있으나(`TIERS`) 이번 실행은 `{"cuda": "on-1", "cpu": "on-3"}` 두 tier만 호출했다. §B1-PARITY.2가 추정한 "victim·backup이 같은 기종(cuda↔cuda)이면 bit-identical일 가능성" 자체는 아직 검증 안 됨. (3) 지금까지 fleet 측정에서 실제로 틀린 토큰이 나온 사례는 없다 — 이 프로브가 잡는 건 argmax 이전의 중간 텐서 수준 드리프트다.
+
+출처: [`b1_ft_fidelity.json`](results/b1_ft_fidelity.json). 코드: `experiments/probe_recompute_fidelity.py`, `experiments/fidelity_compare.py`.
+
+---
+
 ## 11. 핵심 발견 정리 (페이퍼)
 
 1. **DP는 정상 운영에서 이김 — compute 이기종성이 유의미할 때.** OPT-125M 동질 Nano fleet (§3.3)에선 4 placement가 TBT ±3% 안에서 tie. OPT-350M 3-tier fleet (§4)에선 ours가 greedy 대비 **TBT -6.5%**, **처리량 +8.3%**, 조건당 n=300 샘플.
@@ -591,6 +660,10 @@ reactive가 최상단 ~53 s),
 8. **OPT-350M의 `project_in`과 safetensors prefix layout이 둘 다 함정** — 두 가지 실제 fix 가 필요했음 (`934ea27`, `246a02b`). loader를 다른 아키텍처로 확장하려는 사람을 위한 flag.
 
 9. **Profiler 가 hidden bug 두 개** (D2.2 §5): tokenizer padding silent no-op + CUDA async timing → AGX vs Nano gap 이 ~0 로 가려졌었음. Commit 382739b 의 fix 가 D2.3+ 의 모든 측정의 전제조건.
+
+15. **재계산 기반 복구(surgical/full-replay/reactive)에 새로운 정합성 축이 생긴다 — CUDA↔CPU 재계산이 실측으로 갈라짐 (§B1-FIDELITY).** 같은 OPT-350M non-head stage(`[16,17]`)를 같은 입력으로 cuda(`on-1`)·cpu(`on-3`) 두 tier에서 재계산해 KV를 바이트 비교하니 `recompute_diverges=true` — 원소 26.9% 불일치, 최대 절대오차 2⁻⁸(fp16 몇 ULP, CUDA/CPU BLAS 커널 reduction 순서 차이로 해석). parity/replicate는 forward를 안 하므로 by-construction bit-exact, 재계산 셋(surgical/full-replay/reactive)은 tier-dependent — 속도 축과 별개로 **정합성 축**이 새로 생긴다는 뜻. 캐비엇: parity/replicate의 bit-exact 보장은 `parity_branch_ran`/`replicate_branch_ran=True`(자기 primary 경로를 실제로 탔을 때)에 한정 — 게이트가 걸려 surgical로 폴백하면 이 드리프트를 그대로 상속한다. 한계: stage 1곳·tier 쌍 1개(cuda↔cpu)만 측정, 동일 기종(cuda↔cuda) 조합은 미검증, 지금까지 모든 fleet 트라이얼의 토큰 출력(`sequence_match`)은 100% 일치.
+
+14. **상시 network shipping을 계열별로 분해하면 mirror가 surgical rung의 값임이 드러난다 (§B1-OVERHEAD).** 5계열 전부가 스텝당 input mirror 8192 B를 always-on으로 물고(`server.py:429-451`, recovery_mode 무관), parity/replicate만 KV 컬럼 36864 B를 더 얹어 스텝당 45056 B(대역폭 275909.4 B/s ≈ 269.4 KiB/s) — 나머지 셋(50165.3 B/s ≈ 49.0 KiB/s) 대비 **5.5×**. 코드 추적 결과 mirror 히스토리 전체를 읽는 건 surgical(dead-stage 히스토리 replay)뿐이고, parity/replicate는 현재 포지션 1개치만 상시로 빌리다가 게이트가 걸릴 때만 전체를 빌려 쓰며(§B1-PARITY의 `*_branch_ran` 게이팅), full-replay·reactive는 worker mirror를 한 바이트도 안 읽는다(각각 coord 자체 head-history replay·재-prefill). `parity/replicate → surgical → full-replay` 폴백 사다리가 이미 코드에 존재하고(`gateway.py:843-858`), mirror을 아예 없애는 `parity → full-replay` 2계열 대안은 8192 B/step 세금을 지우는 대신 폴백 비용을 P=32 기준 7.3배(surgical 0.767 s → full-replay 5.621 s) 키운다.
 
 13. **Reactive re-placement(backup 없음, R={})은 복구가 두 자릿수 초 — proactive backup의 존재 이유를 앵커링 (§B1-REACTIVE).** 같은 fleet에서 `reactive TTR(P)=56.9 s−0.18 s·P`, P에 대해 사실상 flat(~53 s median, 음의 기울기는 노이즈). 비용이 **재배치 중 cold model reload + position 0 재생**에 지배돼 crash 위치와 무관. P=32에서 parity 대비 **~176×**, full-replay 대비 **~10×** 느림. 저장 0이나 복구 catastrophic이라 2D Pareto 우하단(TTR≈53 s ∧ 저장 0)에 홀로 앉음 — full-replay/surgical/parity/replicate가 저장을 지불해 사는 복구 속도를 backup 없는 계열은 못 산다는 걸 직접 보임. 코디/gateway 무변경(기존 web_api 엔드포인트만 조합), victim은 라이브 placement에서 동적 선택 + `clear_all_failures`→`inject_failure`로 결정론적 단일 배제(compute-time crash가 프로세스를 안 죽여 heartbeat 유지되는 문제 우회), 5/5 valid.
 
