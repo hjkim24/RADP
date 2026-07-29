@@ -76,13 +76,39 @@ Key facts this must encode:
 - **The input mirror is an always-on baseline** paid by all five families — the
   KV column is the *delta* parity/replicate pay on top. surgical/full-replay/
   reactive ship only the mirror; parity/replicate ship mirror + KV column.
-- **full-replay and reactive pay the mirror without using it** (their recovery
-  re-forwards from tokens / re-solves). That is a latent optimization — the
-  mirror could be gated off for non-surgical modes — and a finding worth stating,
-  not hiding.
+- **Only surgical actually consumes the mirror** (`get_history`,
+  `gateway.py:841`). parity/replicate read it only when they ladder down to the
+  surgical fallback; full-replay/reactive never read it (they re-forward from
+  tokens / re-solve). The always-on mirror exists to keep the surgical fallback
+  rung usable — see the framing subsection below.
 - **KV column ≫ mirror per stage** once a stage holds >1 layer (16384 vs 2048
   for a 4-layer stage), so parity/replicate's total is several× the mirror-only
   modes'.
+
+### The mirror tax is the price of the surgical fallback rung
+
+Recovery is a cost-ordered ladder: `parity → surgical → full-replay`, each rung
+the cheapest correct recovery when the one above can't apply. parity needs a
+non-head victim + surviving stages + complete/trustworthy parity; when those
+fail it drops to surgical, which recomputes just the dead stage (O(1 stage));
+when the mirror is absent surgical drops to full-replay, which re-forwards the
+whole chain (O(all stages), TTR ∝ P). The always-on input mirror exists ONLY to
+keep the middle rung — surgical — usable as every store-KV mode's fallback.
+
+So the mirror bandwidth is not a mere artifact; it is the **standing premium for
+cheap fallback recovery**. The design alternative is `parity → full-replay`
+directly — no surgical rung, no mirror at all (full-replay needs only the token
+sequence the gateway already holds) — which eliminates the input-mirror tax but
+makes the fallback O(all stages, TTR ∝ P) instead of O(one stage). Which is
+right depends on how often parity's preconditions fail (tail/head victim,
+incomplete parity): the interior-victim sweeps never fell back (5/5 true XOR),
+but tail victims always do.
+
+① exists to **quantify this premium** so the choice is made on data, not
+assumption. Connection to ②: the surgical fallback is itself a *recompute*, so a
+fallback also forfeits parity's bit-exactness (cross-tier drift risk) — a
+fallback trades both time and fidelity, not just time. The overhead write-up
+(`§B1-OVERHEAD`) frames the mirror this way, not as a bug.
 
 ### Interface
 
@@ -180,6 +206,14 @@ the first pair; expand only if it diverges.
 |---|---|
 | parity / replicate | **bit-exact by construction** (restore stored bytes; already `torch.equal`-asserted in-process). Tier-independent. |
 | surgical / full-replay / reactive | recompute → inherit the probe result. Diverges → "cross-tier recovery differs from original bit-for-bit (token-flip: measured separately)". Bit-identical → "recompute also bit-exact (measured)". |
+
+**Caveat (ties ① and ②):** parity/replicate are bit-exact only on their *primary*
+path. When they ladder down to the surgical fallback (tail/head victim,
+incomplete parity), they recompute and inherit whatever cross-tier drift the
+probe finds — so "bit-exact" is conditional on the parity/replicate branch
+actually running, which the existing `parity_branch_ran` / `replicate_branch_ran`
+gates already record. The fidelity write-up must state this, not claim
+unconditional exactness.
 
 ### Output
 
