@@ -38,6 +38,7 @@ import json
 import statistics
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -227,6 +228,67 @@ def reconfigure_over_survivors(coord_host: str, timeout: float = 320.0) -> dict:
         return json.loads(r.read().decode())
 
 
+def fetch_placement(coord_host: str, timeout: float = 30.0) -> list[dict]:
+    """GET /api/cluster → the currently-deployed placement stages
+    ([{device,start,end}, ...])."""
+    req = urllib.request.Request(_coord_web(coord_host) + "/api/cluster")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode()).get("placement", [])
+
+
+def pick_interior_victim(placement: list[dict]) -> tuple[str, int, int]:
+    """Pick a chain-INTERIOR stage (never head, never tail) to crash — returns
+    (device, start, end). Head failure has special gateway handling and the
+    tail owns sampling; an interior stage is the clean reactive victim. Chosen
+    from the LIVE placement because the fleet solve is only quasi-deterministic
+    — CPU-worker registration timing shifts stage boundaries between coordinator
+    restarts, so a statically-passed victim stage can miss the deployed chain
+    (fault never fires)."""
+    interior = placement[1:-1] if len(placement) > 2 else placement
+    mid = interior[len(interior) // 2]
+    return str(mid["device"]), int(mid["start"]), int(mid["end"])
+
+
+def clear_all_failures(coord_host: str, timeout: float = 30.0) -> None:
+    """POST /api/clear_all_failures — empty the gateway's ``_dead`` set.
+
+    Called right before marking the victim so the reactive re-solve excludes
+    EXACTLY the victim, not also whatever stable worker happened to miss a
+    heartbeat in the crash/abort window (the compute-time crash briefly stalls
+    the chain, which can flap an unrelated worker's heartbeat). Makes survivors
+    deterministically ``all − {victim}`` across every position."""
+    req = urllib.request.Request(
+        _coord_web(coord_host) + "/api/clear_all_failures", method="POST"
+    )
+    with contextlib.suppress(urllib.error.HTTPError):
+        with urllib.request.urlopen(req, timeout=timeout):
+            pass
+
+
+def mark_device_dead(coord_host: str, device: str, timeout: float = 30.0) -> None:
+    """POST /api/inject_failure — put ``device`` into the gateway's ``_dead``
+    set so the subsequent /api/reconfigure re-solves over the TRUE survivors.
+
+    The fleet fault is a *compute-time crash*, not a process kill: the victim's
+    worker process stays alive and keeps heart-beating, so it never enters
+    ``_dead`` on its own (a real failure detector would mark it dead on the
+    heartbeat timeout). We do that explicitly here — immediately, so the
+    reactive re-placement deterministically excludes the node that crashed
+    rather than whichever worker happened to miss a heartbeat. Idempotent:
+    a 409 ("already dead") is treated as success."""
+    body = json.dumps({"device_id": device}).encode()
+    req = urllib.request.Request(
+        _coord_web(coord_host) + "/api/inject_failure", method="POST",
+        data=body, headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            pass
+    except urllib.error.HTTPError as e:
+        if e.code != 409:  # 409 == already dead: fine
+            raise
+
+
 def _reconfigured_over_survivors(placement: list, victim_device: str) -> bool:
     """Measurement gate: the post-reconfigure placement must NOT contain the
     victim — proof the reactive re-solve genuinely happened over survivors."""
@@ -363,7 +425,7 @@ def run_trial(
 def run_reactive_replacement_trial(
     stub_factory: Any, *, position: int, prompt: str, max_tokens: int,
     victim_host: str, victim_stage: tuple[int, int], victim_device: str,
-    coord_host: str, coord_ssh: str, ssh_key: str,
+    coord: str, coord_host: str, coord_ssh: str, ssh_key: str,
 ) -> dict[str, Any]:
     """One reactive-replacement measurement at failure position P.
 
@@ -393,11 +455,20 @@ def run_reactive_replacement_trial(
     reference_wall = ref["total_seconds"]
     reference_text = ref["decoded_text"]
 
+    # Pick the victim from the LIVE placement this trial's restart just solved,
+    # so the armed crash matches the actually-deployed chain (see
+    # ``pick_interior_victim`` — the fleet solve is only quasi-deterministic).
+    # On this fleet device_id == ansible host alias, so victim_device doubles as
+    # the arm/mark target. The statically-passed victim_* args are ignored here.
+    placement0 = fetch_placement(coord)
+    victim_device, vstart, vend = pick_interior_victim(placement0)
+    victim_host = victim_device
+
     # 2. Arm the crash at `position`, then fire the request. With R={} there
     # is no backup to promote, so the gateway's chain-failure path raises
     # straight out of the stream — the request aborts. That IS the expected
     # outcome, not an error in the harness.
-    arm_fault(victim_host, victim_stage[0], victim_stage[1], position)
+    arm_fault(victim_host, vstart, vend, position)
     t_start = time.perf_counter()
     with contextlib.suppress(Exception):
         # expected: no backup entry -> abort IS the measured event
@@ -409,7 +480,14 @@ def run_reactive_replacement_trial(
     # Both steps are guarded: transient failures (HTTP 409, network timeout)
     # mark the trial INVALID rather than aborting the whole sweep.
     try:
-        resp = reconfigure_over_survivors(coord_host)
+        # The compute-time crash left the victim heart-beating, so mark it dead
+        # explicitly (what a heartbeat-timeout detector would do) BEFORE the
+        # re-solve, so /api/reconfigure excludes the node that actually crashed.
+        # Clear first so ONLY the victim is excluded (the crash can flap an
+        # unrelated worker's heartbeat) → survivors = all − {victim}.
+        clear_all_failures(coord)
+        mark_device_dead(coord, victim_device)
+        resp = reconfigure_over_survivors(coord)
         rec = _bench_one_request(stub_factory(), prompt, max_tokens=max_tokens)
         t_end = time.perf_counter()
 
@@ -513,7 +591,8 @@ def run(
                     stub_factory, position=p, prompt=prompt,
                     max_tokens=max_tokens, victim_host=victim_host,
                     victim_stage=victim_stage, victim_device=victim_device,
-                    coord_host=coord_host, coord_ssh=coord_ssh, ssh_key=ssh_key,
+                    coord=coord, coord_host=coord_host,
+                    coord_ssh=coord_ssh, ssh_key=ssh_key,
                 ))
             else:
                 trials.append(run_trial(

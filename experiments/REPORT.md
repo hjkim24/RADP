@@ -519,6 +519,56 @@ parity의 변별점은 오직 coordinator 저장 바이트다.
 [`b1_ft_overhead.json`](results/b1_ft_overhead.json). 설계/계획:
 `docs/superpowers/{specs,plans}/2026-07-22-replication-baseline*`.
 
+## B1-REACTIVE — reactive re-placement baseline: proactive backup이 왜 필요한지 보이는 R={} 앵커 (실 fleet, 2026-07-22)
+
+**동기.** parity/replicate는 *상시 backup을 두는* 계열임. 그 반대편 극단 — **backup을 전혀 안 두는**
+운영점(R={})을 측정해야 "proactive backup의 값어치"가 격리됨. reactive re-placement는 장애가 나면
+그제서야 코디네이터가 생존자 위에서 DP를 다시 풀어 재배치하고, 새로 배치받은 워커가 레이어 가중치를
+**cold-reload**한 뒤, 요청을 **position 0부터 재생**함. 저장은 0이나 복구가 catastrophic이라는 걸
+실측으로 앵커링하는 게 목적 — 2D Pareto의 우하단(저장 0 ∧ TTR 폭발) 꼭짓점.
+
+**세팅.** 안정적 5-워커 CUDA/AGX fleet(`ao-2, on-6, on-1, ao-1, on-2` — CPU 워커 on-3/on-4는
+heartbeat 불안정으로 이 스위프에서 제외, parity/replicate와 동일 토폴로지). coordinator
+`backup_placement=false`(R={}) + `enable_subset_search=false`(R={} 레짐은 memory pruning이 꺼져
+subset 탐색 13692후보가 전수 DP로 돌아 6분+ 걸림 — full-set permutation만으로 제한). 주입은 다른
+계열과 **동일**한 compute-time crash지만, 이 계열은 gateway 복구 모드가 없음(R={}라 승격할 backup이
+없어 crash가 그대로 abort). **victim은 매 트라이얼 라이브 placement에서 동적 선택**(중간 interior
+stage) — fleet solve가 CPU-워커 등록 타이밍에 준-비결정적이라 정적 victim은 배포된 체인과 어긋나
+fault가 안 터짐. compute-time crash는 프로세스를 안 죽여 victim이 계속 heartbeat하므로(→`_dead`에
+자연 진입 안 함), 재배치 직전 `/api/clear_all_failures` → `/api/inject_failure`로 **victim만** 명시적
+dead 마킹(heartbeat-timeout 탐지기가 할 일을 즉시·결정론적으로 대행) 후 `/api/reconfigure`가
+생존자 위에서 재-solve+redeploy. 게이트: `reconfigured`(새 placement가 victim을 실제 배제) ∧
+`fired` ∧ `sequence_match`.
+
+**결과** (5/5 valid, 매 트라이얼 정확히 victim 1개만 배제 = survivors 4):
+```
+reactive_replacement: TTR(P) = 56.9 s − 0.18 s · P   (n=5)
+  P=4  64.1 s   P=8  48.2 s   P=16  50.5 s   P=24  53.5 s   P=32  52.8 s
+```
+→ **P에 대해 사실상 flat(~53 s median)** — 음의 기울기(−0.18 s/pos)는 측정 노이즈, 부호는 무의미함.
+당연한 결과임: replay가 항상 position 0부터라 crash 위치와 무관하고, 비용은 **재배치 중 cold model
+reload가 지배**(재-solve DP + 재배치받은 생존자의 레이어 가중치 로딩). full-replay가 P를 타고 오르는
+것(재-forward 길이 ∝ P)과 근본적으로 다름.
+
+**해석 — reactive가 왜 앵커인가.** P=32에서 reactive 52.8 s vs parity 0.30 s = **~176×**, vs
+full-replay 5.06 s = **~10×**. 저장은 0(backup 없음)이나 복구가 두 자릿수 초 — 2D Pareto에서
+`(TTR≈53 s, 저장 0)` 우하단에 홀로 앉음. proactive backup(parity/replicate)이 존재하는 이유를
+직접 보여줌: backup 없으면 장애 한 번에 cold reload+full replay 세금을 물어야 함.
+
+**정직한 한계.** (1) 탐지를 heartbeat timeout이 아니라 명시적 mark_dead로 대행 — 실환경의 탐지
+지연(~heartbeat 5 s)을 TTR에서 뺀 셈이나, 52 s 대비 무시할 수준이고 이렇게 해야 "재배치 비용"이
+깨끗이 측정됨. (2) victim은 재시작이 아니라 **배제**됨 — 이게 정확히 reactive re-placement의 정의
+(죽은 노드를 빼고 나머지로 재배치)이므로 victim의 자체 reload는 무관. (3) 코디네이터/gateway 코드
+무변경 — 기존 엔드포인트(`/api/inject_failure`·`/api/reconfigure`·`/api/clear_all_failures`)만
+드라이버에서 조합. (4) 5-워커 측정(CPU 워커 제외) — reactive TTR은 cold reload가 지배해 토폴로지에
+robust하므로 order-of-magnitude 스토리는 불변.
+
+그림: [`fig_recovery_ttr_slide`](../paper/figures/fig_recovery_ttr_slide.pdf) (5-선, 로그축 —
+reactive가 최상단 ~53 s),
+[`fig_recovery_2d`](../paper/figures/fig_recovery_2d.pdf) (Pareto, 로그-X — reactive 우하단).
+출처: [`b1_ft_fleet_reactive.json`](results/b1_ft_fleet_reactive.json). 설계/계획:
+`docs/superpowers/{specs,plans}/2026-07-22-reactive-replacement*`.
+
 ## 11. 핵심 발견 정리 (페이퍼)
 
 1. **DP는 정상 운영에서 이김 — compute 이기종성이 유의미할 때.** OPT-125M 동질 Nano fleet (§3.3)에선 4 placement가 TBT ±3% 안에서 tie. OPT-350M 3-tier fleet (§4)에선 ours가 greedy 대비 **TBT -6.5%**, **처리량 +8.3%**, 조건당 n=300 샘플.
@@ -541,6 +591,8 @@ parity의 변별점은 오직 coordinator 저장 바이트다.
 8. **OPT-350M의 `project_in`과 safetensors prefix layout이 둘 다 함정** — 두 가지 실제 fix 가 필요했음 (`934ea27`, `246a02b`). loader를 다른 아키텍처로 확장하려는 사람을 위한 flag.
 
 9. **Profiler 가 hidden bug 두 개** (D2.2 §5): tokenizer padding silent no-op + CUDA async timing → AGX vs Nano gap 이 ~0 로 가려졌었음. Commit 382739b 의 fix 가 D2.3+ 의 모든 측정의 전제조건.
+
+13. **Reactive re-placement(backup 없음, R={})은 복구가 두 자릿수 초 — proactive backup의 존재 이유를 앵커링 (§B1-REACTIVE).** 같은 fleet에서 `reactive TTR(P)=56.9 s−0.18 s·P`, P에 대해 사실상 flat(~53 s median, 음의 기울기는 노이즈). 비용이 **재배치 중 cold model reload + position 0 재생**에 지배돼 crash 위치와 무관. P=32에서 parity 대비 **~176×**, full-replay 대비 **~10×** 느림. 저장 0이나 복구 catastrophic이라 2D Pareto 우하단(TTR≈53 s ∧ 저장 0)에 홀로 앉음 — full-replay/surgical/parity/replicate가 저장을 지불해 사는 복구 속도를 backup 없는 계열은 못 산다는 걸 직접 보임. 코디/gateway 무변경(기존 web_api 엔드포인트만 조합), victim은 라이브 placement에서 동적 선택 + `clear_all_failures`→`inject_failure`로 결정론적 단일 배제(compute-time crash가 프로세스를 안 죽여 heartbeat 유지되는 문제 우회), 5/5 valid.
 
 12. **Full KV replication은 parity와 TTR 동률, 저장에서만 짐 (§B1-REPLICATE).** 같은 fleet에서 `replicate TTR(P)=239.3+2.67 ms·P` — parity(284.1+0.87)와 기울기·절편 모두 사실상 동률(교차 P≈25). 둘 다 zero-recompute라 TTR이 같고, parity의 유일한 우위는 상시 저장(max vs Σ, 2.25×; O(1) vs O(N)). 그래서 비교는 1D TTR이 아니라 2D Pareto(TTR × 저장)이며 parity만 좌하단 코너. GhostServe의 erasure-coding vs replication 비교를 이종 엣지 레짐에 재현. 측정은 `replicate_branch_ran` 로그로 surgical 폴백 오표기 배제(5/5 진짜 replicate).
 

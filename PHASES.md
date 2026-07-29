@@ -2231,3 +2231,41 @@ gateway `_recover_replicate`(생존자 fetch·XOR 없이 저장본 직접 instal
 zero-recompute. parity의 우위는 저장뿐(max vs Σ = 2.25×, O(1) vs O(N)) → 2D Pareto(TTR × 저장)에서
 parity만 좌하단 코너. SDD 7태스크(계획 버그 2건 하네스가 포착: n_slots·Stage 인자순서), fleet 5/5
 `replicate_branch_ran=True`. 그림 fig_recovery_2d/ttr_slide(4선)/storage_scaling. 커밋 main.
+
+## Phase B1-REACTIVE — reactive re-placement baseline (R={} 앵커) (2026-07-22)
+
+**목표**: backup을 전혀 안 두는(R={}) 5번째 복구 계열을 실 fleet에서 측정해 2D Pareto의 우하단
+(저장 0 ∧ TTR 폭발) 꼭짓점을 앵커링 — proactive backup(parity/replicate)의 값어치를 격리.
+
+**구현** (코디/gateway 무변경 — 기존 web_api 엔드포인트만 드라이버에서 조합):
+- [experiments/b1_ft_fleet.py](experiments/b1_ft_fleet.py) — `run_reactive_replacement_trial`:
+  라이브 placement에서 interior victim 동적 선택(`pick_interior_victim`/`fetch_placement`) → arm
+  compute-time crash → abort(R={}라 승격 backup 없음) → `clear_all_failures`+`mark_device_dead`로
+  victim만 결정론적 dead 마킹 → `reconfigure_over_survivors`(생존자 재-solve+redeploy) → position 0
+  재생. TTR=wall(crash→재생 복구토큰)−healthy reference wall.
+- `_coord_web`는 gRPC IP(`--coord`)에서 web_api URL 유도(ansible alias는 DNS 미해석).
+
+**찾아낸 버그/함정**:
+- 초기 스모크가 `nodename nor servname` — 드라이버가 web_api를 ansible alias("ax-1")로 호출. IP 유도로 fix.
+- **compute-time crash는 프로세스를 안 죽임** → victim이 계속 heartbeat → `_dead`에 자연 진입 안 함 →
+  `survivors=workers−_dead`가 victim 배제 실패(reconfigured=False). `inject_failure`로 명시적 마킹이 필요.
+- **placement 준-비결정적**(CPU 워커 등록 타이밍) → 정적 victim이 배포된 체인과 어긋나 fault 미발화
+  (fired=False). victim을 라이브 placement에서 동적 선택으로 해결.
+- crash 윈도우가 무관한 워커 heartbeat를 flap → `_dead`에 spurious 진입 → 재배치가 victim 외 배제.
+  `clear_all_failures` 선행으로 survivors=all−{victim} 결정론화.
+- **CPU 워커 on-3 SSH-unreachable**(swap-thrash, on-2와 동일) → 코디 `wait_for_workers`(전 워커
+  hard-require) 320s hang. inventory에서 on-3/on-4 주석 → 안정적 5-워커 CUDA/AGX fleet로 축소
+  (parity/replicate와 동일 토폴로지), `config` 재배포.
+
+**검증 결과** (fleet 5/5 valid, 매 트라이얼 victim 1개만 배제):
+```
+reactive TTR(P) = 56.9 s − 0.18 s · P   (사실상 flat ~53 s, 음의 기울기는 노이즈)
+P=4 64.1s  P=8 48.2s  P=16 50.5s  P=24 53.5s  P=32 52.8s
+```
+P=32에서 parity 대비 ~176×, full-replay 대비 ~10× 느림. 비용은 재배치 중 cold model reload +
+position 0 재생이 지배(crash 위치 무관). 그림 fig_recovery_ttr_slide(5선, reactive 최상단)/
+fig_recovery_2d(로그-X, reactive 우하단).
+
+**의도된 한계**: 탐지를 heartbeat timeout 대신 명시적 mark_dead로 대행(실환경 탐지지연 ~5s를 뺀
+셈이나 52s 대비 무시 가능). 5-워커 측정(CPU 워커 제외) — reactive TTR은 cold reload 지배라 토폴로지
+robust. 출처 `b1_ft_fleet_reactive.json`.

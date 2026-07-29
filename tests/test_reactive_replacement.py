@@ -97,3 +97,29 @@ def test_reconfigure_endpoint_excludes_dead() -> None:
     assert body["excluded"] == ["on-1"]
     assert body["survivors"] == ["on-6"]
     assert calls["survivors"] == {DeviceId("on-6")}
+
+
+def test_pick_interior_victim_avoids_head_and_tail() -> None:
+    """The fleet reactive driver crashes a chain-INTERIOR stage (head has
+    special gateway handling, tail owns sampling). Verify the picker never
+    returns the first or last stage on a real-shaped placement, and returns
+    the single middle stage in the 3-stage case."""
+    from experiments.b1_ft_fleet import pick_interior_victim
+
+    place5 = [
+        {"device": "h", "start": 1, "end": 14},   # head
+        {"device": "a", "start": 15, "end": 16},
+        {"device": "b", "start": 17, "end": 17},
+        {"device": "c", "start": 18, "end": 21},
+        {"device": "t", "start": 22, "end": 24},   # tail
+    ]
+    dev, s, e = pick_interior_victim(place5)
+    assert dev not in ("h", "t")
+    assert (dev, s, e) in [("a", 15, 16), ("b", 17, 17), ("c", 18, 21)]
+
+    place3 = [
+        {"device": "h", "start": 1, "end": 8},
+        {"device": "m", "start": 9, "end": 16},
+        {"device": "t", "start": 17, "end": 24},
+    ]
+    assert pick_interior_victim(place3) == ("m", 9, 16)

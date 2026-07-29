@@ -99,8 +99,18 @@ for mode, (color, marker, label) in STYLE.items():
     slope_ms = f["slope"] * 1e3
     tail = f["intercept"] + f["slope"] * 36
     dy = {"parity": 11, "replicate": -13}.get(mode, 0)
-    ax.annotate(f"{label}\n{slope_ms:.2f} ms/pos" if slope_ms < 10
-                else f"{label}\n{slope_ms:.0f} ms/pos",
+    # reactive is flat at tens of seconds — a fitted per-position slope is pure
+    # measurement noise (a spurious sign), so label it with its LEVEL, not a
+    # slope. Its cold re-solve + reload + replay-from-0 cost does not depend on
+    # where the crash landed.
+    if mode == "reactive_replacement":
+        level_s = statistics.median(y for _, y in pts)
+        text = f"{label}\n~{level_s:.0f} s (flat)"
+    elif slope_ms < 10:
+        text = f"{label}\n{slope_ms:.2f} ms/pos"
+    else:
+        text = f"{label}\n{slope_ms:.0f} ms/pos"
+    ax.annotate(text,
                 xy=(36, tail), xytext=(8, dy), textcoords="offset points",
                 va="center", ha="left", fontsize=12.5, color=color,
                 fontweight="bold", linespacing=1.4, annotation_clip=False)
@@ -109,10 +119,12 @@ ax.set_xlabel("failure position  P   (tokens generated before the crash)")
 ax.set_ylabel("recovery time (s, log)")
 ax.set_yscale("log")
 ax.set_xlim(0, 36)
-ax.set_ylim(0.12, 9)
+# reactive lands at ~50–64 s — the axis must span from parity's ~0.2 s all the
+# way up to it, so the two-order-of-magnitude gap is the story the plot tells.
+ax.set_ylim(0.12, 130)
 ax.set_xticks([0, 8, 16, 24, 32])
-ax.set_yticks([0.2, 0.5, 1, 2, 5])
-ax.set_yticklabels(["0.2", "0.5", "1", "2", "5"])
+ax.set_yticks([0.2, 0.5, 1, 2, 5, 10, 50, 100])
+ax.set_yticklabels(["0.2", "0.5", "1", "2", "5", "10", "50", "100"])
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 ax.grid(True, axis="y", alpha=0.3)

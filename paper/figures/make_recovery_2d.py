@@ -41,13 +41,28 @@ if reactive_path.exists():
                 SUBJECT["reactive_replacement"], "v"))
 
 fig, ax = plt.subplots(figsize=SLIDE_FULL)
+# Log X: TTR spans 0.3 s (parity/replicate) to ~53 s (reactive) — 170x. On a
+# linear axis reactive shoves the whole low-TTR cluster (where the parity-vs-
+# replicate domination lives) into a sliver at x≈0. Log spreads all five so
+# each is legible; Pareto dominance is scale-invariant, so the frontier reads
+# the same. Y stays linear — full-replay and reactive store 0 bytes (log(0)).
 for name, x, y, color, marker in pts:
     ax.scatter(x, y, s=140, color=color, marker=marker, zorder=3)
-    ax.annotate(name, xy=(x, y), xytext=(8, 6), textcoords="offset points",
-                color=color, fontsize=13, fontweight="bold")
-ax.set_xlabel("recovery time at P=32  (s)")
+    # reactive is the rightmost point — flip its label to the left so it does
+    # not run off the axis; the others sit above-right of their marker.
+    dx = -8 if name == "reactive" else 8
+    ha = "right" if name == "reactive" else "left"
+    ax.annotate(name, xy=(x, y), xytext=(dx, 6), textcoords="offset points",
+                color=color, fontsize=13, fontweight="bold", ha=ha)
+ax.set_xlabel("recovery time at P=32  (s, log)")
 ax.set_ylabel("steady-state storage  (bytes)")
-ax.set_xlim(0, None); ax.set_ylim(0, None)
+ax.set_xscale("log")
+ax.set_xlim(0.2, 90)
+ax.set_xticks([0.2, 0.5, 1, 2, 5, 10, 50])
+ax.set_xticklabels(["0.2", "0.5", "1", "2", "5", "10", "50"])
+ax.set_ylim(0, None)
 strip_chrome(ax)
+ax.grid(True, axis="x", alpha=0.25)
+ax.set_axisbelow(True)
 fig.tight_layout()
 save_slide(fig, "fig_recovery_2d")
