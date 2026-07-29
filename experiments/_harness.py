@@ -343,6 +343,50 @@ def replication_overhead(placement: Placement, n_heads: int, head_dim: int, item
     }
 
 
+def shipping_overhead(placement: Placement, n_heads: int, head_dim: int, itemsize: int) -> dict:
+    """Steady-state worker->coord shipping bytes per decode step, per family.
+
+    Two shipments, verified against radp/worker/server.py:
+      - input mirror (activation, submit_mirror): ALWAYS-ON for every non-head
+        stage in ANY mode (server.py:438-451, gated only on _mirror not None +
+        start_layer>1 + not replay_only). hidden_dim*itemsize per stage.
+      - KV column (MirrorKV, _maybe_push_parity_kv): RADP_PARITY-gated
+        (server.py:473-484) -> parity/replicate only. Same per-stage KV column
+        replication_overhead computes.
+
+    So the mirror is the shared baseline; the KV column is the delta parity/
+    replicate pay on top. surgical/full_replay/reactive ship the mirror only.
+    """
+    hidden_dim = n_heads * head_dim
+    mirror = 0
+    kv = 0
+    per_stage_kv = []
+    per_stage_mirror = []
+    for stage in placement:
+        if int(stage.start_layer) == 1:  # head is coord-sourced, ships nothing
+            continue
+        n_layers = int(stage.end_layer) - int(stage.start_layer) + 1
+        stage_kv = n_layers * 2 * n_heads * head_dim * itemsize
+        stage_mirror = hidden_dim * itemsize
+        kv += stage_kv
+        mirror += stage_mirror
+        per_stage_kv.append(((int(stage.start_layer), int(stage.end_layer)), stage_kv))
+        per_stage_mirror.append(((int(stage.start_layer), int(stage.end_layer)), stage_mirror))
+    return {
+        "input_mirror_bytes_per_step": mirror,
+        "kv_column_bytes_per_step": kv,
+        "shipping_bytes_per_step": {
+            "full_replay": mirror,
+            "reactive": mirror,
+            "surgical": mirror,
+            "parity": mirror + kv,
+            "replicate": mirror + kv,
+        },
+        "per_stage_kv": per_stage_kv,
+        "per_stage_mirror": per_stage_mirror,
+    }
+
+
 # ---------------------------------------------------------------------------
 # JSON I/O
 # ---------------------------------------------------------------------------
