@@ -47,13 +47,27 @@ def main() -> None:
     )
     ids = tok(args.prompt, return_tensors="pt").input_ids.to(device)
     with torch.no_grad():
-        out = model.generate(ids, max_new_tokens=args.n, do_sample=False)  # greedy
-    toks = out[0].tolist()
+        out = model.generate(
+            ids, max_new_tokens=args.n, do_sample=False,  # greedy
+            output_scores=True, return_dict_in_generate=True,
+        )
+    toks = out.sequences[0].tolist()
+    # Per generated step: top-2 (id, logit). Lets the controller compute the
+    # decision margin (top1-top2) and the cross-tier logit drift, i.e. how close
+    # each greedy pick came to flipping.
+    margins = []
+    for step_scores in out.scores:  # each [1, vocab]
+        t2 = torch.topk(step_scores[0].float(), 2)
+        margins.append([
+            int(t2.indices[0]), float(t2.values[0]),
+            int(t2.indices[1]), float(t2.values[1]),
+        ])
     print(json.dumps({
         "device": device,
         "dtype": str(dtype).split(".")[-1],
         "n_prompt": int(ids.shape[1]),
         "token_ids": toks,
+        "margins": margins,
     }))
 
 
