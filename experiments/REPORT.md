@@ -512,7 +512,26 @@ parity    = max(non-head stage KV) = 4 layer분 (16384 B)   → 2.25× 적음
 정직한 한계: replicate와 parity는 **상시 네트워크(업로드)가 동일**하다(둘 다 같은 KV 컬럼 전송) —
 parity의 변별점은 오직 coordinator 저장 바이트다.
 
+**절대 격차는 컨텍스트·모델 크기로 커진다 (advisor 2026-07-30 #1).** 위 16384/36864 B는 **토큰
+1개**분이라 절대값이 작아 보인다 — 근데 KV 백업은 **position마다 누적**(× 컨텍스트 길이)되고 모델이
+크면 토큰당 KV도 커진다(× hidden × layers), parity는 그중 **max stage 1개(≈ 1/N)만** 보관한다.
+저장은 순수 geometry 계산이라 큰 모델을 **돌릴 필요 없이** extrapolation이 정당하다(게다가 1.3B+는
+Nano에 안 올라가 TTR은 못 재도 저장은 계산됨). `experiments/storage_scaling_models.py`:
+
+| 기준 | replicate | parity | 격차 |
+|---|---|---|---|
+| per-token (교수님이 본 것) | 36 KB | 16 KB | **20 KB** (작음) |
+| 실측 OPT-350M @2048 컨텍스트 | 72 MB | 32 MB | **40 MB** |
+| 계산 OPT-6.7B @2048 (balanced N=5) | 819 MB | 205 MB | **614 MB** |
+| 계산 OPT-13B @4096 | 2.5 GB | 640 MB | **1.9 GB** |
+
+즉 격차는 per-token에서만 KB고, realistic 컨텍스트·모델에서는 **MB~GB** — 8GB 엣지에서 decisive.
+"작다"는 우려는 per-token 관점이었고, replicate를 baseline에서 빼는 대신 **저장 축을 컨텍스트-스케일로
+프레이밍**하면 parity 우위가 살아난다. (실측 350M은 head가 15/24층인 head-heavy 배치라 ratio 2.25
+= 보수적 끝; 균등 배치는 더 큼.)
+
 그림: [`fig_recovery_ttr_slide`](../paper/figures/fig_recovery_ttr_slide.pdf) (4-선, 로그축),
+[`fig_storage_scaling_models`](../paper/figures/fig_storage_scaling_models.pdf) (격차 vs 컨텍스트·모델, KB→GB),
 [`fig_recovery_2d`](../paper/figures/fig_recovery_2d.pdf) (Pareto),
 [`fig_storage_scaling`](../paper/figures/fig_storage_scaling.pdf) (O(N) vs O(1)).
 출처: [`b1_ft_fleet_replicate.json`](results/b1_ft_fleet_replicate.json),
