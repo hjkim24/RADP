@@ -24,3 +24,18 @@ def test_shipping_overhead_families():
     # KV column term matches replication_overhead's Σ (replicate_bytes)
     o = replication_overhead(placement, n_heads=1, head_dim=1, itemsize=1)
     assert s["kv_column_bytes_per_step"] == o["replicate_bytes"]
+
+
+def test_replication_overhead_reports_raid6():
+    from experiments._harness import replication_overhead
+    from radp.common.types import Stage, LayerIdx, DeviceId
+    placement = [
+        Stage(LayerIdx(1), LayerIdx(4), DeviceId("head")),   # head, not stored
+        Stage(LayerIdx(5), LayerIdx(8), DeviceId("b")),      # 4 layers
+        Stage(LayerIdx(9), LayerIdx(10), DeviceId("c")),     # 2 layers
+    ]
+    r = replication_overhead(placement, n_heads=16, head_dim=64, itemsize=2)
+    # parity = max stage = 4 layers; raid6 = two blobs of that width
+    assert r["raid6_bytes"] == 2 * r["parity_bytes"]
+    # raid6 still < replicate when non-head stages >= 3; here 2 stages -> raid6 >= replicate
+    assert r["replicate_bytes"] == r["per_stage"][0][1] + r["per_stage"][1][1]

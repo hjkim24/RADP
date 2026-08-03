@@ -65,7 +65,11 @@ def main() -> None:
         full = L * per_layer * s
         rep = full * (N - 1) / N
         par = full * 1 / N
-        print(f"  {name:10} replicate {human(rep):>8}  parity {human(par):>8}  gap {human(rep-par):>8}")
+        raid6 = full * 2 / N
+        print(f"  {name:10} replicate {human(rep):>8}  raid6 {human(raid6):>8}  "
+              f"parity {human(par):>8}  gap(rep-raid6) {human(rep-raid6):>8}")
+    print(f"\n# raid6 (2 blobs) < replicate ({N-1} blobs) requires non-head stages > 2; "
+          f"at non-head <= 2 raid6 >= replicate (no storage win).")
 
     # Reconcile with the ACTUAL measured fleet placement (b1_ft_overhead.json).
     # Our fleet's head stage held 15/24 layers (ao-2 is a large AGX), so only 9

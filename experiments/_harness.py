@@ -338,6 +338,7 @@ def replication_overhead(placement: Placement, n_heads: int, head_dim: int, item
     return {
         "replicate_bytes": total,
         "parity_bytes": biggest,
+        "raid6_bytes": 2 * biggest,
         "ratio": (total / biggest) if biggest else 0.0,
         "per_stage": per_stage,
     }

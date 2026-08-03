@@ -51,6 +51,7 @@ def main() -> None:
         # storage
         "replicate_bytes": storage["replicate_bytes"],
         "parity_bytes": storage["parity_bytes"],
+        "raid6_bytes": storage["raid6_bytes"],
         "ratio": storage["ratio"],
         "per_stage": storage["per_stage"],
         # network (new)
@@ -62,6 +63,8 @@ def main() -> None:
     }
     path.write_text(json.dumps(out, indent=2))
     print(f"wrote {path}")
+    print(f"  storage: parity {storage['parity_bytes']} B  raid6 {storage['raid6_bytes']} B  "
+          f"replicate {storage['replicate_bytes']} B/token")
     print(f"  parity/replicate ship {ship['shipping_bytes_per_step']['parity']} B/step "
           f"= {bandwidth['parity']/1024:.1f} KB/s")
     print(f"  surgical/full_replay/reactive ship {ship['shipping_bytes_per_step']['surgical']} "
