@@ -2337,3 +2337,47 @@ stage·동일 기종(cuda↔cuda) 조합은 미검증(§B1-PARITY.2가 추정한
 `replicate_branch_ran=True`(자기 primary 경로를 실제로 탔을 때)에 한정 — 폴백 시 이 프로브의
 드리프트를 그대로 상속(§B1-OVERHEAD 참조). 지금까지 모든 fleet 트라이얼의 `sequence_match`(토큰
 출력)는 100% 일치 — 이 프로브가 잡는 건 argmax 이전 중간 텐서 수준의 차이.
+
+---
+
+## Phase B1-RAID6 — double-parity(k=2): O(1) 저장으로 동시 2-실패 복구 (2026-08-03)
+
+**목표**: parity(RAID-5, XOR blob 1개, 단일 실패만)를 GF(2⁸) double-parity(RAID-6)로 확장 —
+동시 2-stage 실패를 재계산 0으로 복원. 런타임 토글로 RAID-5로 되돌아올 수 있게 하고, 실 fleet에서
+RAID-5 / replicate / RAID-6 3-way 비교.
+
+**구현** (워커 무변경 — Q는 coord가 기존 push된 KV 컬럼으로 접음):
+- [radp/coordinator/gf256.py](radp/coordinator/gf256.py) — GF(2⁸) 필드(다항식 0x11d, gen 0x02)
+  + `solve_two_erasures`(Anvin RAID-6 2×2 연립). 순수 numpy.
+- [radp/coordinator/parity_cache.py](radp/coordinator/parity_cache.py) — `k` 파라미터 + 두 번째
+  blob Q(`gf_mul_scalar(gf_pow(2, coeff_index), col)` 누적). k=1 기본은 Q 미할당(RAID-5 byte-for-byte).
+- [radp/coordinator/gateway.py](radp/coordinator/gateway.py) — `parity_k` 배선 + stage→gⁱ coeff
+  map(원본 placement 기준, rewiring 무관) + `_gf_reconstruct_kv`/`_recover_parity_double`. dispatch는
+  `self._dead`의 non-head 2개 기준으로 attribution/head-check **앞에서** 분기(head-alive 가드).
+- `RADP_PARITY_K=1|2` env 토글([server.py](radp/coordinator/server.py), coord 전용).
+- 저장 회계: `replication_overhead`에 `raid6_bytes=2×parity` + `gen_overhead`/`storage_scaling_models`
+  + 그림 `make_storage_scaling_models`.
+- 드라이버 [experiments/b1_ft_fleet.py](experiments/b1_ft_fleet.py) — `pick_two_interior_victims`,
+  `set_parity_k`, `run_raid6_trial`(동시 2-victim 주입).
+
+**찾아낸 버그**: (1) `test_k2_q_grows_zero_padded`가 큰 컬럼을 먼저 넣어 Q-grow 경로 미실행 → 순서
+교정. (2) `pick_two_interior_victims`가 `start_layer`/`end_layer` 키를 읽는데 실제 `fetch_placement`는
+`start`/`end` → 라이브 KeyError 전에 수정. (3) **dispatch-precedence(라이브에서 발견, `7522c92`)**:
+first non-head victim(head 인접) 크래시가 gRPC trailer 유실 시 head로 오귀속돼 head-check가
+double-dispatch보다 먼저 발동 → surgical 폴백. `self._dead` 기준 dispatch를 attribution 앞으로 이동.
+
+**검증 결과**:
+- 유닛: `test_gf256.py`(6, 2-erasure 전 rank 쌍 bit-exact) + `test_raid6_recovery.py`(2: in-process
+  double-recovery bit-exact + dispatch-precedence 회귀) + `test_parity_cache.py`(9, k=1 회귀 포함) +
+  `test_parity_recovery.py`(13, single-failure 회귀 불변). 전부 통과.
+- 라이브 5/5 (`b1_ft_raid6.json`, victim=on-1[16]·on-6[17-19]): 전 포지션 `raid6_branch_ran=True`
+  + `sequence_match=True`(무장애 reference와 정확 일치). `TTR(P)=30.29 s+2.78 ms·P` — slope≈0
+  (zero-recompute, parity 0.87·replicate 2.67과 같은 평탄대; surgical 16.2·full-replay 164 대조).
+- 저장(이 placement): parity 16384 · raid6 32768 · replicate 36864 B/tok.
+
+**의도된 한계**: 절대 TTR 절편 30.3 s는 알고리즘이 아니라 **축퇴 복구테이블 인공물** — 이 fleet의 자동
+solve된 R이 non-head 백업을 전부 on-2로 몰아, 2-victim이면 약한 Nano(on-2)가 3-stage 호스팅+cold
+weight load(단일 실패 parity는 같은 fleet에서 284 ms). 집중은 상수 offset만 더해 slope는 오염 안 됨.
+백업이 분산된 R에서의 깨끗한 절대 TTR은 미측정(future work — 현 R로는 백업 분산된 2-victim 쌍이 없음).
+저장 이점도 head-heavy placement라 raid6/replicate=0.89로 얇음(balanced-N geometry가 2/N vs (N-1)/N).
+k≥3(일반 Reed-Solomon)은 범위 밖.

@@ -661,6 +661,32 @@ parity/replicate는 죽은 stage를 **다시 forward하지 않으므로**(raw ui
 
 ---
 
+## B1-RAID6 — double-parity(k=2): O(1) 저장으로 동시 2-실패까지 복구 (실 fleet, 2026-08-03)
+
+**무엇.** parity(RAID-5, XOR blob P 1개)를 GF(2⁸) double-parity(RAID-6)로 확장 — 생존 non-head stage들의 KV 컬럼을 P(단순 XOR)와 **Q(gⁱ 가중합, gen=0x02, 다항식 0x11d)** 두 blob에 누적하고, **동시 2-stage 실패**를 P·Q로 2×2 GF 연립을 풀어(Anvin RAID-6) 재계산 0으로 복원. 런타임 토글 `RADP_PARITY_K=1|2` — **k=1은 기존 RAID-5 경로 byte-for-byte**(Q 미할당, 회귀 13/13), k=2에서 단일 실패는 여전히 P만 써서 RAID-5를 **포함**. 워커 무변경(Q는 coord가 기존 push된 컬럼으로 접음). 코드: `radp/coordinator/gf256.py`(2-erasure solver), `parity_cache.py`(Q blob), `gateway.py`(`_recover_parity_double`).
+
+**라이브 5/5 — 2-실패 복원 bit-correct.** 같은 fleet, victim=**on-1[16]·on-6[17-19]**(첫 두 interior non-head, `pick_two_interior_victims`), 동시 dead 마킹 후 GF double-reconstruct: 5개 포지션(P=4,8,16,24,32) 전부 `raid6_branch_ran=True`(코디 로그 `RAID-6 reconstruct: victims=[(16,16),(17,19)] slots=N`) + **`sequence_match=True`**(출력이 무장애 reference와 정확히 일치). 즉 실 하드웨어에서 2-노드 동시장애 KV를 P+Q로 바이트 정확히 복원함이 확인됨.
+
+**TTR(P) = 30.29 s + 2.78 ms·P — 기울기 사실상 0(zero-recompute), 절편은 토폴로지 인공물.** slope 2.78 ms/pos는 parity(0.87)·replicate(2.67)와 같은 **평탄대**로, 재계산 계열(surgical 16.2, full-replay 164)과 근본적으로 다른 **flat-in-P** 시그니처 — 복구 비용이 실패 위치에 무관(P를 8배 늘려도 TTR +0.3%). 단 **절편 30.29 s는 RAID-6 고유 비용이 아니라 이 fleet의 축퇴 복구테이블 인공물이다**: 자동 solve된 R이 non-head 백업을 전부 한 노드로 몰았고(on-1→on-2, on-6→on-2, ao-1→on-2), 2-victim이면 약한 Orin Nano인 **on-2가 자기(24)+백업 2개(16,17-19)=3-stage를 떠안고** 2번째 promote가 cold weight load를 문다. 같은 fleet 단일 실패 parity가 284 ms였음을 고려하면 100× 절편은 토폴로지·eager-backup 아티팩트이지 알고리즘 비용이 아니다("측정이 클레임과 어긋나면 setup 의심" 원칙). **집중은 상수 offset만 더하므로 slope(=핵심 성질)는 오염되지 않음.** 깨끗한 절대 TTR은 백업이 서로 다른 노드로 분산된 R이 필요 — 이 fleet R로는 백업 분산된 2-victim 쌍이 없어(non-head 3개가 전부 on-2 백업) 미측정, future work.
+
+**저장(이 placement, non-head 1/3/4/1 layers).** parity **16384** · raid6 **32768** · replicate **36864** B/tok → raid6/replicate=**0.89(11% 절약만)**, parity/replicate=0.44. head-heavy placement(ao-2가 15층 head) + max non-head stage(ao-1 4층)가 합(9층)을 지배 → RAID-6의 O(1) 이점이 이 fleet에선 **얇음**(crossover: non-head가 적거나 한 stage가 지배하면 raid6≈replicate). balanced-N geometry(`paper/figures/fig_storage_scaling_models`)가 깨끗한 2/N vs (N-1)/N 이야기이며, 이 head-heavy fleet은 보수적 끝.
+
+**3-way 정리 (RAID-5 / replicate / RAID-6).**
+
+| 계열 | 단일 TTR slope | 동시 2-실패 | 상시 저장(이 fleet, B/tok) | 실패 내성 |
+|---|---|---|---|---|
+| parity (RAID-5) | 0.87 ms/pos (flat) | 폴백 — XOR underdetermined → surgical | 16384 (1 blob, max) | 1 |
+| replicate | 2.67 ms/pos (flat) | 복구 — 전체 KV 복제 | 36864 (Σ, N-1 blob) | 임의 |
+| **RAID-6** | 2.78 ms/pos (flat)† | **복구 — P+Q GF, 5/5 bit-correct** | 32768 (2 blob) | 2 |
+
+†절편 30.3 s는 축퇴 R 인공물(위). RAID-5의 "2-실패 폴백"은 XOR 방정식 1개로 미지수 2개를 못 풀어 발생하는 **수학적 필연**(단일 parity 완결성 게이트)이라 별도 라이브 측정 없이 확정 — replicate/RAID-6만 O(N)/O(1) 저장으로 2-실패를 실제 복구한다.
+
+**dispatch-precedence 버그(라이브에서 발견·수정, `7522c92`).** 첫 배포 후 스모크가 계속 surgical로 폴백(`raid6_branch=False`, `seq_match=False`, TTR 30 s)했는데, 원인은 first non-head victim(on-1, head 바로 뒤) 크래시가 gRPC trailer 유실 시 `_attribute_chain_failure`에서 **head(ao-2)로 오귀속**되고, `_recover_parity`의 head-check가 RAID-6 double-dispatch보다 **먼저** 실행돼 surgical로 새던 것(opus 리뷰가 "safe but suboptimal"로 예고했던 precedence가 라이브에선 측정 자체를 차단). `self._dead`의 non-head 2개 기준 double-dispatch를 attribution/head-check **앞으로** 이동(head-alive 가드) → 수정 후 5/5 정상. 회귀 테스트 `test_double_dispatch_precedes_head_attribution` 추가.
+
+출처: [`b1_ft_raid6.json`](results/b1_ft_raid6.json). 코드: `radp/coordinator/gf256.py`, `radp/coordinator/parity_cache.py`, `radp/coordinator/gateway.py` (`_recover_parity_double`), 드라이버 `experiments/b1_ft_fleet.py` (`run_raid6_trial`, `pick_two_interior_victims`). 유닛: `tests/test_gf256.py`, `tests/test_raid6_recovery.py`.
+
+---
+
 ## 11. 핵심 발견 정리 (페이퍼)
 
 1. **DP는 정상 운영에서 이김 — compute 이기종성이 유의미할 때.** OPT-125M 동질 Nano fleet (§3.3)에선 4 placement가 TBT ±3% 안에서 tie. OPT-350M 3-tier fleet (§4)에선 ours가 greedy 대비 **TBT -6.5%**, **처리량 +8.3%**, 조건당 n=300 샘플.
@@ -683,6 +709,8 @@ parity/replicate는 죽은 stage를 **다시 forward하지 않으므로**(raw ui
 8. **OPT-350M의 `project_in`과 safetensors prefix layout이 둘 다 함정** — 두 가지 실제 fix 가 필요했음 (`934ea27`, `246a02b`). loader를 다른 아키텍처로 확장하려는 사람을 위한 flag.
 
 9. **Profiler 가 hidden bug 두 개** (D2.2 §5): tokenizer padding silent no-op + CUDA async timing → AGX vs Nano gap 이 ~0 로 가려졌었음. Commit 382739b 의 fix 가 D2.3+ 의 모든 측정의 전제조건.
+
+16. **RAID-6 double-parity가 O(1) 저장으로 동시 2-실패를 재계산 0으로 복구 — 실 하드웨어에서 bit-correct (§B1-RAID6).** GF(2⁸) P+Q(`RADP_PARITY_K=2` 토글, k=1은 RAID-5 byte-for-byte)로 non-head 2개 동시장애를 2×2 GF 연립으로 복원. 라이브 5/5 `sequence_match=True`, `TTR(P)=30.29 s+2.78 ms·P`로 **slope≈0(zero-recompute, parity 0.87·replicate 2.67과 같은 평탄대)**. 절대 절편 30.3 s는 알고리즘이 아니라 **축퇴 복구테이블 인공물**(자동 R이 non-head 백업을 전부 on-2로 몰아 약한 Nano가 3-stage 호스팅+cold-load; 집중은 상수 offset만 더해 slope는 오염 안 됨) — 깨끗한 절대 TTR은 백업 분산 R 필요(future work). 저장은 이 head-heavy placement에서 raid6/replicate=0.89(얇음; max stage가 합을 지배하는 crossover), balanced-N에선 2/N vs (N-1)/N. 3-way: TTR shape 동일 평탄대, 저장 parity<raid6<replicate, 내성 1<2<임의. RAID-5의 2-실패 폴백은 XOR 미결정계의 수학적 필연. 라이브에서 dispatch-precedence 버그(head-adjacent victim 오귀속) 발견·수정(`7522c92`).
 
 15. **재계산 기반 복구(surgical/full-replay/reactive)에 새로운 정합성 축이 생긴다 — CUDA↔CPU 재계산이 실측으로 갈라짐 (§B1-FIDELITY).** 같은 OPT-350M non-head stage(`[16,17]`)를 같은 입력으로 cuda(`on-1`)·cpu(`on-3`) 두 tier에서 재계산해 KV를 바이트 비교하니 `recompute_diverges=true` — 원소 26.9% 불일치, 최대 절대오차 2⁻⁸(fp16 몇 ULP, CUDA/CPU BLAS 커널 reduction 순서 차이로 해석). parity/replicate는 forward를 안 하므로 by-construction bit-exact, 재계산 셋(surgical/full-replay/reactive)은 tier-dependent — 속도 축과 별개로 **정합성 축**이 새로 생긴다는 뜻. 캐비엇: parity/replicate의 bit-exact 보장은 `parity_branch_ran`/`replicate_branch_ran=True`(자기 primary 경로를 실제로 탔을 때)에 한정 — 게이트가 걸려 surgical로 폴백하면 이 드리프트를 그대로 상속한다. 한계: stage 1곳·tier 쌍 1개(cuda↔cpu)만 측정, 동일 기종(cuda↔cuda) 조합은 미검증, 지금까지 모든 fleet 트라이얼의 토큰 출력(`sequence_match`)은 100% 일치.
 
