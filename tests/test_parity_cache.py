@@ -103,9 +103,11 @@ def test_k2_q_grows_zero_padded():
     from radp.coordinator.gf256 import gf_mul_scalar, gf_pow
     pc = ParityCache(num_stages=2, k=2)
     big, small = bytes([1, 2, 3, 4, 5, 6]), bytes([10, 20])
-    pc.xor_in(_rid(1), (1, 6), 0, big, coeff_index=0)
+    # Insert small FIRST (size 2) so that when big (size 6) arrives, grow guard fires
     pc.xor_in(_rid(1), (7, 8), 0, small, coeff_index=1)
+    pc.xor_in(_rid(1), (1, 6), 0, big, coeff_index=0)
     q = np.frombuffer(pc.get_qparity(_rid(1), 0), np.uint8)
+    # Expected Q is same (XOR commutative): g^0·big ^ g^1·small.ljust(6)
     expect = (gf_mul_scalar(gf_pow(2, 0), np.frombuffer(big, np.uint8))
               ^ gf_mul_scalar(gf_pow(2, 1), np.frombuffer(small.ljust(6, b"\0"), np.uint8)))
     assert np.array_equal(q, expect)
