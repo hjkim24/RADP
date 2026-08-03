@@ -2380,4 +2380,8 @@ solve된 R이 non-head 백업을 전부 on-2로 몰아, 2-victim이면 약한 Na
 weight load(단일 실패 parity는 같은 fleet에서 284 ms). 집중은 상수 offset만 더해 slope는 오염 안 됨.
 백업이 분산된 R에서의 깨끗한 절대 TTR은 미측정(future work — 현 R로는 백업 분산된 2-victim 쌍이 없음).
 저장 이점도 head-heavy placement라 raid6/replicate=0.89로 얇음(balanced-N geometry가 2/N vs (N-1)/N).
-k≥3(일반 Reed-Solomon)은 범위 밖.
+**k≥3(일반 Reed-Solomon)은 검토 후 미구현** — 저장 geometry상 k-parity가 replicate를 이기려면
+`k < Σ(non-head)/max(non-head)`(balanced면 = non-head 개수)인데, 이 fleet은 Σ/max=2.25라 k=1,2만
+이기고 k=3부터는 저장이 replicate 초과(1.33×)+내성은 3개로 replicate("임의")보다 약함 = dominated.
+일반 RS는 non-head가 많고 균형 잡힌 큰 파이프라인(Σ/max 큰)에서만 값을 함 → future work. GF(2⁸)
+필드(`gf256.py`)는 재사용 가능, 확장 시 Cauchy 계수 + m×m GF 역산만 추가.
