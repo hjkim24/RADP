@@ -39,3 +39,4 @@ def test_replication_overhead_reports_raid6():
     assert r["raid6_bytes"] == 2 * r["parity_bytes"]
     # raid6 still < replicate when non-head stages >= 3; here 2 stages -> raid6 >= replicate
     assert r["replicate_bytes"] == r["per_stage"][0][1] + r["per_stage"][1][1]
+    assert r["raid6_bytes"] >= r["replicate_bytes"]  # non-head stages < 3 -> raid6 has no storage win
