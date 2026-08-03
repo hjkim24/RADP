@@ -43,7 +43,7 @@ ax.annotate("measured OPT-350M\n(our fleet, 40 MB)", xy=(2048, 20480 * 2048),
 KB, MB, GB = 1024, 1024**2, 1024**3
 ax.set_xscale("log"); ax.set_yscale("log")
 ax.set_xlabel("context length  (tokens: prompt + generated)")
-ax.set_ylabel("storage gap (replicate minus parity)")
+ax.set_ylabel("storage gap (DejaVu minus KV-RAID)")
 ax.set_xticks([1, 128, 512, 2048, 8192, 32768])
 ax.set_xticklabels(["1", "128", "512", "2K", "8K", "32K"])
 ax.set_yticks([10 * KB, 100 * KB, MB, 10 * MB, 100 * MB, GB, 10 * GB])
@@ -59,7 +59,7 @@ RAID6_GAP_FRAC = (N - 3) / N   # replicate - raid6, balanced N=5 -> 2/5
 Lb, kvhb, hdb = MODELS[PLOT[-1]]
 full_tok_b = Lb * per_layer_token_bytes(kvhb, hdb)
 ax.plot(CTX, full_tok_b * RAID6_GAP_FRAC * CTX, linestyle="--", color="#888888",
-        linewidth=1.8, label=f"{PLOT[-1]} raid6 gap", zorder=2)
+        linewidth=1.8, label=f"{PLOT[-1]} KV-RAID-6 gap", zorder=2)
 
 ax.legend(loc="upper left", fontsize=11, frameon=False, title="model size")
 fig.subplots_adjust(left=0.13, right=0.97, top=0.96, bottom=0.14)

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).parent))
-from _slide import BODY, SLIDE_FULL, SUBJECT, save_slide, strip_chrome  # noqa: E402
+from _slide import BODY, NAME, SLIDE_FULL, SUBJECT, save_slide, strip_chrome  # noqa: E402
 
 RESULTS = Path(__file__).parent.parent.parent / "experiments" / "results"
 par = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
@@ -26,10 +26,10 @@ def ttr_at(d, mode, P=32):
     return sum(t["ttr_seconds"] for t in xs) / len(xs)
 
 pts = [
-    ("full-replay", ttr_at(par, "full_replay"), 0,                      SUBJECT["full_replay"], "o"),
-    ("surgical",    ttr_at(par, "surgical"),    0,                      SUBJECT["surgical"],    "s"),
-    ("replicate",   ttr_at(rep, "replicate"),   ovh["replicate_bytes"], SUBJECT["replicate"],   "D"),
-    ("parity",      ttr_at(par, "parity"),      ovh["parity_bytes"],    SUBJECT["parity"],      "^"),
+    (NAME["full_replay"], ttr_at(par, "full_replay"), 0,                      SUBJECT["full_replay"], "o"),
+    (NAME["surgical"],    ttr_at(par, "surgical"),    0,                      SUBJECT["surgical"],    "s"),
+    (NAME["replicate"],   ttr_at(rep, "replicate"),   ovh["replicate_bytes"], SUBJECT["replicate"],   "D"),
+    (NAME["parity"],      ttr_at(par, "parity"),      ovh["parity_bytes"],    SUBJECT["parity"],      "^"),
 ]
 
 # reactive JSON lands after the controller-run reactive sweep (Task 6). Guard
@@ -37,7 +37,7 @@ pts = [
 reactive_path = RESULTS / "b1_ft_fleet_reactive.json"
 if reactive_path.exists():
     rea = json.load(open(reactive_path))
-    pts.append(("reactive", ttr_at(rea, "reactive_replacement"), 0,
+    pts.append((NAME["reactive_replacement"], ttr_at(rea, "reactive_replacement"), 0,
                 SUBJECT["reactive_replacement"], "v"))
 
 fig, ax = plt.subplots(figsize=SLIDE_FULL)
@@ -50,8 +50,8 @@ for name, x, y, color, marker in pts:
     ax.scatter(x, y, s=140, color=color, marker=marker, zorder=3)
     # reactive is the rightmost point — flip its label to the left so it does
     # not run off the axis; the others sit above-right of their marker.
-    dx = -8 if name == "reactive" else 8
-    ha = "right" if name == "reactive" else "left"
+    dx = -8 if name == NAME["reactive_replacement"] else 8
+    ha = "right" if name == NAME["reactive_replacement"] else "left"
     ax.annotate(name, xy=(x, y), xytext=(dx, 6), textcoords="offset points",
                 color=color, fontsize=13, fontweight="bold", ha=ha)
 ax.set_xlabel("recovery time at P=32  (s, log)")

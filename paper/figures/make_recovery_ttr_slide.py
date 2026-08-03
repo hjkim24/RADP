@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _slide import BODY, SLIDE_FULL, SUBJECT, save_slide  # noqa: E402
+from _slide import BODY, NAME, SLIDE_FULL, SUBJECT, save_slide  # noqa: E402
 
 RESULTS = Path(__file__).parent.parent.parent / "experiments" / "results"
 
@@ -48,11 +48,11 @@ if reactive_path.exists():
     fits.update(rea["fits"])
 
 STYLE = {
-    "full_replay": (SUBJECT["full_replay"], "o", "full-replay"),
-    "surgical":    (SUBJECT["surgical"],    "s", "surgical"),
-    "parity":      (SUBJECT["parity"],      "^", "parity"),
-    "replicate":   (SUBJECT["replicate"],   "D", "replicate"),
-    "reactive_replacement": (SUBJECT["reactive_replacement"], "v", "reactive"),
+    "full_replay": (SUBJECT["full_replay"], "o", NAME["full_replay"]),
+    "surgical":    (SUBJECT["surgical"],    "s", NAME["surgical"]),
+    "parity":      (SUBJECT["parity"],      "^", NAME["parity"]),
+    "replicate":   (SUBJECT["replicate"],   "D", NAME["replicate"]),
+    "reactive_replacement": (SUBJECT["reactive_replacement"], "v", NAME["reactive_replacement"]),
 }
 
 

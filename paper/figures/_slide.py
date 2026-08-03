@@ -42,10 +42,24 @@ GRID = "#E5E8E8"
 SUBJECT = {
     "full_replay": ALERT,    # 비싼 쪽에 시선이 먼저 가야 대비가 산다
     "surgical":    NAVY,     # 중간, 구조색
-    "parity":      ACCENT,   # 덱이 제목에 쓰는 강조 파랑 = 결론
+    "parity":      ACCENT,   # 덱이 제목에 쓰는 강조 파랑 = 결론 (= KV-RAID)
+    "raid6":       "#003D7A",   # KV-RAID-6 — KV-RAID accent 파랑의 진한 변주
     "baseline":    "#808080",
     "replicate":   "#808080",   # rival baseline — neutral grey, not parity's blue
     "reactive_replacement": "#595959",  # baseline anchor — muted grey, distinct
+}
+
+# Paper-facing display names (2026-08-03). Baselines take their reference
+# system's name where one exists; our method = KV-RAID. Internal recovery_mode
+# keys ("parity"/"replicate"/…) are UNCHANGED — this map is display-only, so
+# figures relabel without touching the code/results identifiers.
+NAME = {
+    "full_replay": "Recompute",             # naive strawman (cf. DéjàVu)
+    "surgical":    "Petals",                # input-replay (Petals, exact match)
+    "parity":      "KV-RAID",               # our method (KV-RAID-5 = single-fault)
+    "raid6":       "KV-RAID-6",             # our method, double-fault (k=2)
+    "replicate":   "DejaVu",                # KV replication baseline (ASCII — deck font lacks à/é)
+    "reactive_replacement": "Reconfigure",  # re-solve + cold restart (cf. SpotServe)
 }
 
 # --- slide-content geometry (inches, from DESIGN_SYSTEM.md §2) -------------
