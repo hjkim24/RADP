@@ -7,11 +7,17 @@ happened — the token index the victim died on — not how deep in the pipeline
 victim sat. We vary the victim's chain position separately, so the two must not
 share a word.
 
-**Log y-axis on purpose.** On a linear axis full-replay reaches 6 s and squashes
-surgical and parity into the bottom 5% of the plot — the very contrast the
-figure exists to show. Log keeps a flat line flat (parity's ~0 slope still reads
+**Log y-axis on purpose.** On a linear axis Recompute reaches 6 s and squashes
+Petals and KV-RAID into the bottom 5% of the plot — the very contrast the
+figure exists to show. Log keeps a flat line flat (KV-RAID's ~0 slope still reads
 as flat) while letting all three separate. The normal-decode-step line gives the
 audience an absolute anchor so the log axis can't overstate the win.
+
+Display names (paper-facing, via _slide.NAME): Recompute (full_replay), Petals
+(surgical), DejaVu (replicate), Reconfigure (reactive_replacement), KV-RAID
+(parity). The lowercase keys below (STYLE, the dy dict) are the INTERNAL
+recovery_mode identifiers that match the results-JSON ``t["mode"]`` strings and
+must NOT be renamed — only the rendered labels come from NAME.
 """
 from __future__ import annotations
 
@@ -31,8 +37,8 @@ RESULTS = Path(__file__).parent.parent.parent / "experiments" / "results"
 d = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
 trials, fits = list(d["trials"]), dict(d["fits"])
 
-# replicate JSON lands after the controller-run fleet sweep (Task 6). Guard
-# so this script still renders the 3-line parity figure until it exists.
+# DejaVu (replicate) JSON lands after the controller-run fleet sweep (Task 6).
+# Guard so this script still renders the 3-line KV-RAID figure until it exists.
 replicate_path = RESULTS / "b1_ft_fleet_replicate.json"
 if replicate_path.exists():
     rep = json.load(open(replicate_path))
@@ -94,13 +100,14 @@ for mode, (color, marker, label) in STYLE.items():
             color=color, linewidth=1.8, alpha=0.9, zorder=3)
 
     # 범례 대신 선 끝에 직접 이름을 붙인다. 눈이 범례와 선을 오갈 일이 없다.
-    # parity/replicate 는 둘 다 평평해 선 끝(≈0.3s)에서 라벨이 겹친다 —
+    # KV-RAID/DejaVu 는 둘 다 평평해 선 끝(≈0.3s)에서 라벨이 겹친다 —
     # 세로로 살짝 벌려 둘 다 읽히게 한다 (offset points 로 픽셀 단위 이동).
     slope_ms = f["slope"] * 1e3
     tail = f["intercept"] + f["slope"] * 36
-    # 오른쪽 아래는 surgical(0.83s)·parity·replicate(둘 다 ≈0.32s) 세 라벨이 몰린다.
-    # surgical 바로 위(full-replay 6.2s까지)는 비어 있으므로 surgical 을 위로 올려 공간을
-    # 내고, parity(위)·replicate(아래)를 그 밑에서 크게 벌린다 — 2줄 라벨이 안 겹치게.
+    # 오른쪽 아래는 Petals(0.83s)·KV-RAID·DejaVu(둘 다 ≈0.32s) 세 라벨이 몰린다.
+    # Petals 바로 위(Recompute 6.2s까지)는 비어 있으므로 Petals 를 위로 올려 공간을
+    # 내고, KV-RAID(위)·DejaVu(아래)를 그 밑에서 크게 벌린다 — 2줄 라벨이 안 겹치게.
+    # (키는 내부 recovery_mode 식별자 — 유지; 표시 이름은 STYLE 의 NAME[...] 에서.)
     dy = {"surgical": 20, "parity": 16, "replicate": -28}.get(mode, 0)
     # reactive is flat at tens of seconds — a fitted per-position slope is pure
     # measurement noise (a spurious sign), so label it with its LEVEL, not a
@@ -122,7 +129,7 @@ ax.set_xlabel("failure position  P   (tokens generated before the crash)")
 ax.set_ylabel("recovery time (s, log)")
 ax.set_yscale("log")
 ax.set_xlim(0, 36)
-# reactive lands at ~50–64 s — the axis must span from parity's ~0.2 s all the
+# Reconfigure lands at ~50–64 s — the axis must span from KV-RAID's ~0.2 s all the
 # way up to it, so the two-order-of-magnitude gap is the story the plot tells.
 ax.set_ylim(0.12, 130)
 ax.set_xticks([0, 8, 16, 24, 32])

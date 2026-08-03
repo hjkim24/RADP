@@ -36,9 +36,10 @@ for name, color in zip(PLOT, COLORS):
 # measured OPT-350M anchor (real fleet, head-heavy: gap 20480 B/token)
 ax.scatter([2048], [20480 * 2048], s=90, facecolor="white",
            edgecolor="#CB3E3A", linewidth=2.2, zorder=5)
-ax.annotate("measured OPT-350M\n(our fleet, 40 MB)", xy=(2048, 20480 * 2048),
-            xytext=(-8, -46), textcoords="offset points", ha="center",
-            fontsize=10, color="#CB3E3A")
+ax.annotate("measured OPT-350M fleet, 40 MB\n(head-heavy → below the balanced\nOPT-350M line = conservative)",
+            xy=(2048, 20480 * 2048),
+            xytext=(-8, -58), textcoords="offset points", ha="center",
+            fontsize=9.5, color="#CB3E3A")
 
 KB, MB, GB = 1024, 1024**2, 1024**3
 ax.set_xscale("log"); ax.set_yscale("log")
