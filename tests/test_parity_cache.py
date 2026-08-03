@@ -73,3 +73,39 @@ def test_sole_request_not_evicted_even_over_cap():
     assert pc.get_parity(_rid(1), 0) is None
     # Request 2 should remain (newest)
     assert pc.get_parity(_rid(2), 0) is not None
+
+
+def test_k2_maintains_q_blob():
+    """k=2: P = XOR, Q = g^0·A ^ g^1·B (coeff_index = stage rank)."""
+    import numpy as np
+    from radp.coordinator.gf256 import gf_mul_scalar, gf_pow
+    pc = ParityCache(num_stages=2, k=2)
+    A, B = bytes([1, 2, 3, 4]), bytes([9, 8, 7, 6])
+    pc.xor_in(_rid(1), (1, 2), 0, A, coeff_index=0)
+    pc.xor_in(_rid(1), (3, 4), 0, B, coeff_index=1)
+    assert pc.is_complete(_rid(1), 0)
+    assert pc.get_parity(_rid(1), 0) == bytes(a ^ b for a, b in zip(A, B))
+    an = np.frombuffer(A, np.uint8); bn = np.frombuffer(B, np.uint8)
+    expect_q = gf_mul_scalar(gf_pow(2, 0), an) ^ gf_mul_scalar(gf_pow(2, 1), bn)
+    assert pc.get_qparity(_rid(1), 0) == expect_q.tobytes()
+
+
+def test_k1_has_no_q_blob():
+    """Default k=1 keeps the RAID-5 path: no Q allocated."""
+    pc = ParityCache(num_stages=2)  # k defaults to 1
+    pc.xor_in(_rid(1), (1, 2), 0, bytes([1, 2]), coeff_index=0)
+    assert pc.get_qparity(_rid(1), 0) is None
+
+
+def test_k2_q_grows_zero_padded():
+    """Unequal column lengths: Q grows/zero-pads in lockstep with P."""
+    import numpy as np
+    from radp.coordinator.gf256 import gf_mul_scalar, gf_pow
+    pc = ParityCache(num_stages=2, k=2)
+    big, small = bytes([1, 2, 3, 4, 5, 6]), bytes([10, 20])
+    pc.xor_in(_rid(1), (1, 6), 0, big, coeff_index=0)
+    pc.xor_in(_rid(1), (7, 8), 0, small, coeff_index=1)
+    q = np.frombuffer(pc.get_qparity(_rid(1), 0), np.uint8)
+    expect = (gf_mul_scalar(gf_pow(2, 0), np.frombuffer(big, np.uint8))
+              ^ gf_mul_scalar(gf_pow(2, 1), np.frombuffer(small.ljust(6, b"\0"), np.uint8)))
+    assert np.array_equal(q, expect)
