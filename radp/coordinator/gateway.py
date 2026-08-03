@@ -1130,6 +1130,21 @@ class RequestGateway:
             return self._recover_surgical(
                 request_id, head_stage, error, current_position
             )
+
+        # RAID-6 (k=2): if two non-head stages are dead, reconstruct both via P+Q.
+        dead_nonhead = [
+            s for s in self.placement
+            if int(s.start_layer) > 1 and s.device in self._dead
+        ]
+        if self.parity_k == 2 and len(dead_nonhead) == 2:
+            return self._recover_parity_double(
+                request_id, head_stage, error, current_position, dead_nonhead
+            )
+        if self.parity_k == 2 and len(dead_nonhead) > 2:
+            log.warning("request=%d RAID-6: >2 dead non-head stages; surgical",
+                        request_id)
+            return self._recover_surgical(request_id, head_stage, error, current_position)
+
         if dead_stage.device not in self._dead:
             log.warning(
                 "request=%d parity recovery: chain failure attributed to "
@@ -1418,6 +1433,166 @@ class RequestGateway:
         return self._slot_major_to_layer_major(
             dead_slots, n_dead_layers, n_heads, head_dim, np_dtype
         )
+
+    def _gf_reconstruct_kv(
+        self,
+        request_id: RequestId,
+        dead_keys: list[tuple[int, int]],   # exactly 2, ordered by rank x<y
+        surv: list[tuple[Stage, bytes, int]],  # (stage, layer-major bytes, rank)
+        n_slots: int,
+        *,
+        n_heads: int,
+        head_dim: int,
+        np_dtype: Any,
+        itemsize: int,
+    ) -> dict[tuple[int, int], bytes]:
+        """Reconstruct TWO dead non-head stages' LAYER-major KV via GF(2^8) P+Q.
+
+        Per slot: Pxy = P ⊕ (XOR of survivor columns); Qxy = Q ⊕ (Σ g^rank·col);
+        solve_two_erasures(Pxy, Qxy, x, y) → the two dead columns concatenated in
+        rank order. Both dead stages share the same slot layout, but may differ in
+        bytes-per-slot (different layer counts), so slice each victim's own bytes
+        out of the solved column by its own geometry.
+        """
+        from radp.coordinator.gf256 import gf_mul_scalar, gf_pow, solve_two_erasures
+
+        (x_key, y_key) = dead_keys
+        x = self._parity_coeff[x_key]
+        y = self._parity_coeff[y_key]
+        x_bytes = (x_key[1] - x_key[0] + 1) * 2 * n_heads * head_dim * itemsize
+        y_bytes = (y_key[1] - y_key[0] + 1) * 2 * n_heads * head_dim * itemsize
+
+        # Survivor LAYER-major -> per-slot uint8 rows (same reshape/transpose as
+        # _xor_reconstruct_kv), plus each survivor's rank for the Q accumulation.
+        surv_rows: list[tuple[np.ndarray, int]] = []
+        for stage, buf, rank in surv:
+            n_l = int(stage.end_layer) - int(stage.start_layer) + 1
+            arr = np.frombuffer(buf, dtype=np_dtype).reshape(n_l, 2, n_heads, -1, head_dim)
+            slot_major = np.ascontiguousarray(
+                np.transpose(arr, (3, 0, 1, 2, 4))[:n_slots])
+            surv_rows.append((slot_major.reshape(n_slots, -1).view(np.uint8), rank))
+
+        x_slots = np.empty((n_slots, x_bytes), dtype=np.uint8)
+        y_slots = np.empty((n_slots, y_bytes), dtype=np.uint8)
+        for slot in range(n_slots):
+            p = self.parity_cache.get_parity(request_id, slot)
+            q = self.parity_cache.get_qparity(request_id, slot)
+            if p is None or q is None:
+                raise RuntimeError(f"request={request_id} P/Q missing at slot {slot}")
+            pxy = np.frombuffer(p, dtype=np.uint8).copy()
+            qxy = np.frombuffer(q, dtype=np.uint8).copy()
+            for rows, rank in surv_rows:
+                col = rows[slot]
+                pxy[: col.size] ^= col
+                qxy[: col.size] ^= gf_mul_scalar(gf_pow(2, rank), col)
+            dx, dy = solve_two_erasures(pxy, qxy, x, y)
+            x_slots[slot] = dx[:x_bytes]
+            y_slots[slot] = dy[:y_bytes]
+
+        return {
+            x_key: self._slot_major_to_layer_major(
+                x_slots, x_key[1] - x_key[0] + 1, n_heads, head_dim, np_dtype),
+            y_key: self._slot_major_to_layer_major(
+                y_slots, y_key[1] - y_key[0] + 1, n_heads, head_dim, np_dtype),
+        }
+
+    def _recover_parity_double(
+        self, request_id, head_stage, error, current_position, dead_nonhead,
+    ):
+        # order the two victims by rank (start_layer); mark both dead defensively
+        dead_nonhead = sorted(dead_nonhead, key=lambda s: int(s.start_layer))
+        dead_keys = [(int(s.start_layer), int(s.end_layer)) for s in dead_nonhead]
+        for s in dead_nonhead:
+            if s.device not in self._dead:
+                self.mark_dead(s.device)
+
+        survivors = [
+            s for s in self.current_plan()
+            if int(s.start_layer) > 1
+            and (int(s.start_layer), int(s.end_layer)) not in dead_keys
+        ]
+        if not survivors:
+            log.warning("request=%d RAID-6: no non-head survivors; surgical", request_id)
+            return self._recover_surgical(request_id, head_stage, error, current_position)
+
+        n_heads, head_dim, np_dtype, itemsize = self._kv_dims()
+        try:
+            surv_kv = []
+            for s in survivors:
+                buf, _ = self._fetch_stage_kv(request_id, s, current_position)
+                surv_kv.append((s, buf))
+        except Exception:  # noqa: BLE001
+            log.exception("request=%d RAID-6 survivor FetchKV failed; surgical", request_id)
+            return self._recover_surgical(request_id, head_stage, error, current_position)
+
+        # slot geometry — identical rule to the single path (min shared prefix)
+        slot_counts = []
+        for s, buf in surv_kv:
+            n_l = int(s.end_layer) - int(s.start_layer) + 1
+            bps = n_l * 2 * n_heads * head_dim * itemsize
+            if bps == 0 or len(buf) % bps != 0:
+                log.warning("request=%d RAID-6 survivor geometry bad; surgical", request_id)
+                return self._recover_surgical(request_id, head_stage, error, current_position)
+            slot_counts.append(len(buf) // bps)
+        if max(slot_counts) - min(slot_counts) > 1:
+            log.warning("request=%d RAID-6 survivor slot spread >1; surgical", request_id)
+            return self._recover_surgical(request_id, head_stage, error, current_position)
+        n_slots = min(slot_counts)
+        if n_slots == 0:
+            return self._recover_surgical(request_id, head_stage, error, current_position)
+        for slot in range(n_slots):
+            if not self.parity_cache.is_complete(request_id, slot):
+                log.warning("request=%d RAID-6 parity incomplete slot %d; surgical",
+                            request_id, slot)
+                return self._recover_surgical(request_id, head_stage, error, current_position)
+
+        # both victims need a mirrored input at the failed position to run live;
+        # we enter the chain at the upstream-most victim.
+        up_key = dead_keys[0]
+        history = self.cache.get_history(request_id, up_key)
+        if len(history) <= current_position:
+            log.warning("request=%d RAID-6 mirror history short; surgical", request_id)
+            return self._recover_surgical(request_id, head_stage, error, current_position)
+
+        # promote + rewire BOTH backups
+        for s in dead_nonhead:
+            backup_dev = self.recovery.get(s.device)
+            if backup_dev is None or self.worker_addresses.get(backup_dev) is None:
+                raise RuntimeError(f"no recovery/address for dead device {s.device}")
+            with WorkerClient(self.worker_addresses[backup_dev]) as client:
+                client.promote_backup(for_device_id=s.device)
+        self._rewire_chain()
+
+        surv_ranked = [
+            (s, buf, self._parity_coeff[(int(s.start_layer), int(s.end_layer))])
+            for s, buf in surv_kv
+        ]
+        recon = self._gf_reconstruct_kv(
+            request_id, dead_keys, surv_ranked, n_slots,
+            n_heads=n_heads, head_dim=head_dim, np_dtype=np_dtype, itemsize=itemsize,
+        )
+        for dkey in dead_keys:
+            backup_stage = next(
+                (s for s in self.current_plan()
+                 if (int(s.start_layer), int(s.end_layer)) == dkey), None)
+            if backup_stage is None:
+                raise RuntimeError(f"layer range {dkey} absent from post-recovery plan")
+            with WorkerClient(self.worker_addresses[backup_stage.device]) as client:
+                client.load_kv(request_id=request_id, start_layer=dkey[0],
+                               end_layer=dkey[1], kv_bytes=recon[dkey],
+                               num_positions=n_slots)
+
+        log.warning("request=%d RAID-6 reconstruct: victims=%s slots=%d, run pos %d live",
+                    request_id, dead_keys, n_slots, current_position)
+        entry_stage = next(
+            s for s in self.current_plan()
+            if (int(s.start_layer), int(s.end_layer)) == up_key)
+        last_resp = self._invoke(
+            entry_stage, request_id, history[current_position],
+            is_prefill=(current_position == 0), position=current_position,
+            replay_only=False,
+        )
+        return entry_stage, last_resp
 
     def _replay_through_chain(
         self,
