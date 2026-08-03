@@ -1120,6 +1120,30 @@ class RequestGateway:
         Cost: O(survivors) FetchKV + one LoadKV + one live position — no
         per-position replay. See design spec §10 (parity).
         """
+        # RAID-6 (k=2): when two NON-HEAD stages are already known dead (from
+        # self._dead), reconstruct both via P+Q BEFORE trusting attribution.
+        # _attribute_chain_failure can misblame the HEAD when the victim is the
+        # first non-head stage (adjacent to the head) and the gRPC trailer is
+        # lost; the head-check below would then force a surgical fallback even
+        # though both victims are non-head and recoverable. The dead set is
+        # authoritative, so dispatch off it directly — guarded on the head being
+        # ALIVE (parity can't reconstruct a coord-sourced head).
+        if self.parity_k == 2 and self.placement[0].device not in self._dead:
+            dead_nonhead = [
+                s for s in self.placement
+                if int(s.start_layer) > 1 and s.device in self._dead
+            ]
+            if len(dead_nonhead) == 2:
+                return self._recover_parity_double(
+                    request_id, head_stage, error, current_position, dead_nonhead
+                )
+            if len(dead_nonhead) > 2:
+                log.warning("request=%d RAID-6: >2 dead non-head stages; surgical",
+                            request_id)
+                return self._recover_surgical(
+                    request_id, head_stage, error, current_position
+                )
+
         dead_stage = self._attribute_chain_failure(head_stage, error)
         # Head is coord-sourced and never ships KV — not in the parity group.
         if int(dead_stage.start_layer) == 1:
@@ -1130,20 +1154,6 @@ class RequestGateway:
             return self._recover_surgical(
                 request_id, head_stage, error, current_position
             )
-
-        # RAID-6 (k=2): if two non-head stages are dead, reconstruct both via P+Q.
-        dead_nonhead = [
-            s for s in self.placement
-            if int(s.start_layer) > 1 and s.device in self._dead
-        ]
-        if self.parity_k == 2 and len(dead_nonhead) == 2:
-            return self._recover_parity_double(
-                request_id, head_stage, error, current_position, dead_nonhead
-            )
-        if self.parity_k == 2 and len(dead_nonhead) > 2:
-            log.warning("request=%d RAID-6: >2 dead non-head stages; surgical",
-                        request_id)
-            return self._recover_surgical(request_id, head_stage, error, current_position)
 
         if dead_stage.device not in self._dead:
             log.warning(

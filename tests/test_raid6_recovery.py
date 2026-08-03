@@ -149,3 +149,42 @@ def test_raid6_double_recovery_matches_reference(monkeypatch, caplog):
             assert torch.equal(torch.from_numpy(rk.copy()), torch.from_numpy(vk.copy()))
             assert torch.equal(torch.from_numpy(rv.copy()), torch.from_numpy(vv.copy()))
     assert recovered == reference, f"recovered={recovered}\nreference={reference}"
+
+
+def test_double_dispatch_precedes_head_attribution():
+    """The RAID-6 double dispatch must fire off self._dead BEFORE attribution.
+
+    Regression for the live-fleet failure: when the two victims are the FIRST
+    two non-head stages (adjacent to the head) and the gRPC trailer is lost,
+    _attribute_chain_failure misblames the HEAD, which — if the dispatch sat
+    after the head-check — trips the head-check and forces a surgical fallback
+    even though both victims are non-head and recoverable. The dead set is
+    authoritative, so dispatch must precede attribution.
+    """
+    gw = RequestGateway(
+        placement=[_Stage(LayerIdx(1), LayerIdx(4), DeviceId("h")),
+                   _Stage(LayerIdx(5), LayerIdx(6), DeviceId("a")),
+                   _Stage(LayerIdx(7), LayerIdx(8), DeviceId("b")),
+                   _Stage(LayerIdx(9), LayerIdx(12), DeviceId("c"))],
+        recovery={DeviceId("h"): DeviceId("a"), DeviceId("a"): DeviceId("b"),
+                  DeviceId("b"): DeviceId("c"), DeviceId("c"): DeviceId("a")},
+        worker_addresses={DeviceId("h"): "localhost:0", DeviceId("a"): "localhost:0",
+                          DeviceId("b"): "localhost:0", DeviceId("c"): "localhost:0"},
+        model_id=MODEL, recovery_mode="parity", parity_k=2,
+    )
+    gw._dead = {DeviceId("a"), DeviceId("b")}   # two head-ADJACENT victims, pre-marked
+    calls = {}
+
+    def fake_double(rid, hs, err, pos, dead_nonhead):
+        calls["double"] = sorted(int(s.start_layer) for s in dead_nonhead)
+        return ("stage", "resp")
+
+    gw._recover_parity_double = fake_double
+    # Attribution would blame the HEAD (the lost-trailer live bug); if the fix
+    # regresses, the head-check fires and we reach surgical instead of double.
+    gw._attribute_chain_failure = lambda hs, err: gw.placement[0]
+    gw._recover_surgical = lambda *a, **k: calls.setdefault("surgical", True)
+
+    gw._recover_parity(RequestId(1), gw.placement[0], error=None, current_position=5)
+    assert calls.get("double") == [5, 7], f"double not dispatched first: {calls}"
+    assert "surgical" not in calls, "regressed: head-check tripped a surgical fallback"
