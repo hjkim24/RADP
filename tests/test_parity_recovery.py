@@ -299,6 +299,35 @@ def test_gateway_record_kv_feeds_parity():
     assert gw.parity_cache.get_parity(RequestId(1), 0) == bytes([1 ^ 3, 2 ^ 4])
 
 
+def test_gateway_record_kv_feeds_p_and_q_when_k2():
+    from radp.coordinator.gateway import RequestGateway
+    from radp.common.types import Stage, LayerIdx, DeviceId
+    from radp.coordinator.gf256 import gf_mul_scalar, gf_pow
+    import numpy as np
+
+    gw = RequestGateway(
+        placement=[Stage(LayerIdx(1), LayerIdx(4), DeviceId("head")),
+                   Stage(LayerIdx(5), LayerIdx(8), DeviceId("b")),
+                   Stage(LayerIdx(9), LayerIdx(12), DeviceId("c"))],
+        recovery={},
+        worker_addresses={DeviceId("head"): "localhost:0",
+                          DeviceId("b"): "localhost:0",
+                          DeviceId("c"): "localhost:0"},
+        model_id=MODEL,
+        recovery_mode="parity",
+        parity_k=2,
+    )
+    # non-head stages by start_layer: (5,8)->0, (9,12)->1
+    assert gw._parity_coeff == {(5, 8): 0, (9, 12): 1}
+    A, B = bytes([1, 2]), bytes([3, 4])
+    gw.record_kv(RequestId(1), 5, 8, 0, A)
+    gw.record_kv(RequestId(1), 9, 12, 0, B)
+    assert gw.parity_cache.get_parity(RequestId(1), 0) == bytes([1 ^ 3, 2 ^ 4])
+    expect_q = (gf_mul_scalar(gf_pow(2, 0), np.frombuffer(A, np.uint8))
+                ^ gf_mul_scalar(gf_pow(2, 1), np.frombuffer(B, np.uint8)))
+    assert gw.parity_cache.get_qparity(RequestId(1), 0) == expect_q.tobytes()
+
+
 # --- Task 6: end-to-end zero-forward parity KV reconstruction --------------
 import logging
 import time

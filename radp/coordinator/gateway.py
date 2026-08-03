@@ -101,6 +101,7 @@ class RequestGateway:
         chain_mode: str = "sync",
         async_chain_timeout_seconds: float = 30.0,
         recovery_mode: str = "full_replay",
+        parity_k: int = 1,
     ) -> None:
         if recovery_mode not in {"full_replay", "surgical", "parity", "replicate"}:
             raise ValueError(
@@ -108,6 +109,9 @@ class RequestGateway:
                 f"'replicate', got {recovery_mode!r}"
             )
         self.recovery_mode = recovery_mode
+        if parity_k not in {1, 2}:
+            raise ValueError(f"parity_k must be 1 or 2, got {parity_k!r}")
+        self.parity_k = parity_k
         self.placement = placement
         self.recovery = recovery
         self.worker_addresses = worker_addresses
@@ -144,8 +148,20 @@ class RequestGateway:
         # len(placement) - 1 — using len(placement) would make
         # is_complete() unreachable (one stage would never contribute),
         # silently disabling parity recovery.
-        self.parity_cache = ParityCache(num_stages=max(len(placement) - 1, 0))
+        self.parity_cache = ParityCache(
+            num_stages=max(len(placement) - 1, 0), k=parity_k
+        )
         self.replica_cache = ReplicaCache(num_stages=max(len(placement) - 1, 0))
+        # gⁱ coefficient per non-head stage, i = 0-based rank by start_layer.
+        # Device-independent, so it survives placement rewiring during recovery.
+        non_head = sorted(
+            (s for s in placement if int(s.start_layer) > 1),
+            key=lambda s: int(s.start_layer),
+        )
+        self._parity_coeff = {
+            (int(s.start_layer), int(s.end_layer)): i
+            for i, s in enumerate(non_head)
+        }
         self._request_counter = itertools.count(start=1)
         self._requests: dict[RequestId, _RequestState] = {}
 
@@ -275,7 +291,8 @@ class RequestGateway:
             )
         else:
             self.parity_cache.xor_in(
-                RequestId(request_id), key, int(position), kv_bytes
+                RequestId(request_id), key, int(position), kv_bytes,
+                coeff_index=self._parity_coeff.get(key, 0),
             )
 
     def mirror_stats(self) -> dict[str, int]:

@@ -518,6 +518,7 @@ class CoordinatorServer:
                         "Call auto_schedule() first in auto mode."
                     )
                 recovery_mode = os.environ.get("RADP_RECOVERY_MODE", "full_replay")
+                parity_k = int(os.environ.get("RADP_PARITY_K", "1"))
                 self.gateway = RequestGateway(
                     placement=self.placement,
                     recovery=self.recovery,
@@ -527,8 +528,9 @@ class CoordinatorServer:
                     dtype=self.config.dtype,
                     chain_mode=self.config.chain_mode,
                     recovery_mode=recovery_mode,
+                    parity_k=parity_k,
                 )
-                log.info("gateway recovery_mode=%s", recovery_mode)
+                log.info("gateway recovery_mode=%s parity_k=%d", recovery_mode, parity_k)
             return self.gateway
 
     def start(self) -> None:
