@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _slide import (BODY, SLIDE_BAND, SLIDE_FULL, SLIDE_WIDE,  # noqa: E402
+from _slide import (BODY, NAME, SLIDE_BAND, SLIDE_FULL, SLIDE_WIDE,  # noqa: E402
                     SUBJECT, note, panel, save_slide)
 
 DEAD = SUBJECT["full_replay"]      # 죽은 노드
@@ -174,9 +174,9 @@ def recovery_families(only_existing: bool = False):
                title="filled = recomputed", right="cost per position")
 
     rows = [
-        ("full-replay", SUBJECT["full_replay"], [0, 1, 2, 3, 4], "164 ms"),
-        ("surgical",    SUBJECT["surgical"],    [2],             "16 ms"),
-        ("parity",      SUBJECT["parity"],      [],              "0.87 ms"),
+        (NAME["full_replay"], SUBJECT["full_replay"], [0, 1, 2, 3, 4], "164 ms"),
+        (NAME["surgical"],    SUBJECT["surgical"],    [2],             "16 ms"),
+        (NAME["parity"],      SUBJECT["parity"],      [],              "0.87 ms"),
     ]
     if only_existing:
         rows = rows[:2]
@@ -196,7 +196,7 @@ def recovery_families(only_existing: bool = False):
             box(ax, cx(i), y, CW, RH, n,
                 face=color if hit else OK,
                 text="white" if hit else BODY, fs=11.5, bold=hit)
-        if title == "parity":               # 재계산 대신 P에서 역산
+        if title == NAME["parity"]:          # 재계산 대신 P에서 역산 (KV-RAID)
             ax.annotate("⊕ P", xy=(cx(DEAD_IDX) + CW / 2, y), xytext=(0, -7),
                         textcoords="offset points", ha="center", va="top",
                         fontsize=13, color=color, fontweight="bold")
@@ -215,7 +215,7 @@ def recovery_families(only_existing: bool = False):
     ax.text(0.05, 0.5,
             "both re-run the dead stage — cost scales with how far in it died"
             if only_existing
-            else "parity solves for the dead stage instead of re-running it",
+            else f"{NAME['parity']} solves for the dead stage instead of re-running it",
             fontsize=13, color=BODY, va="center")
 
     save_slide(fig, "fig_recovery_families_before" if only_existing
@@ -323,7 +323,7 @@ def ghostserve_delta():
     # ── ours: across the network ──────────────────────────────────
     ax = panel(fig, [0.535, 0.30, 0.45, 0.58], (0, 10), (0, 4.2),
                title="Ours — same idea, different regime")
-    box(ax, 0.75, 3.05, 3 * 2.20 + 1.85, 0.80, "coordinator  (parity)",
+    box(ax, 0.75, 3.05, 3 * 2.20 + 1.85, 0.80, "coordinator  (KV-RAID)",
         face=PAR, text="white", fs=12, bold=True)
     for i in range(4):
         x = 0.75 + i * 2.20
