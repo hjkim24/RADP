@@ -52,6 +52,15 @@ ax.grid(True, which="major", alpha=0.25)
 ax.set_axisbelow(True)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
+
+# raid6 keeps 2/N vs replicate (N-1)/N -> gap (N-3)/N (dashed, model-agnostic ref
+# using the largest plotted model so it sits in range).
+RAID6_GAP_FRAC = (N - 3) / N   # replicate - raid6, balanced N=5 -> 2/5
+Lb, kvhb, hdb = MODELS[PLOT[-1]]
+full_tok_b = Lb * per_layer_token_bytes(kvhb, hdb)
+ax.plot(CTX, full_tok_b * RAID6_GAP_FRAC * CTX, linestyle="--", color="#888888",
+        linewidth=1.8, label=f"{PLOT[-1]} raid6 gap", zorder=2)
+
 ax.legend(loc="upper left", fontsize=11, frameon=False, title="model size")
 fig.subplots_adjust(left=0.13, right=0.97, top=0.96, bottom=0.14)
 save_slide(fig, "fig_storage_scaling_models")
