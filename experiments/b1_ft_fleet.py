@@ -273,13 +273,13 @@ def pick_two_interior_victims(placement: list[dict]) -> list[tuple[str, int, int
     the head (start_layer == 1) and the LAST stage (no downstream non-head
     survivor → parity gate would fall back). Returns the first two, ordered by
     start layer. Raises ValueError if fewer than two interior stages exist."""
-    ordered = sorted(placement, key=lambda s: int(s["start_layer"]))
-    interior = [s for s in ordered[:-1] if int(s["start_layer"]) > 1]
+    ordered = sorted(placement, key=lambda s: int(s["start"]))
+    interior = [s for s in ordered[:-1] if int(s["start"]) > 1]
     if len(interior) < 2:
         raise ValueError(
             f"need >=2 interior non-head stages for RAID-6, got {len(interior)}"
         )
-    return [(s["device"], int(s["start_layer"]), int(s["end_layer"]))
+    return [(s["device"], int(s["start"]), int(s["end"]))
             for s in interior[:2]]
 
 

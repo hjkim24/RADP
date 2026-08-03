@@ -4,7 +4,7 @@ from experiments.b1_ft_fleet import pick_two_interior_victims
 
 def _pl(*ranges):
     # each range = (device, start, end); mimic fetch_placement's dict shape
-    return [{"device": d, "start_layer": s, "end_layer": e} for d, s, e in ranges]
+    return [{"device": d, "start": s, "end": e} for d, s, e in ranges]
 
 
 def test_picks_two_interior_non_head_stages():
