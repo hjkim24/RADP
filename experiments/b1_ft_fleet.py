@@ -58,10 +58,12 @@ _DEFAULT_COORD_SSH = "isp@115.145.158.253"
 _DEFAULT_SSH_KEY = "~/.ssh/hjkim24-isp"
 _INVENTORY = str(Path(__file__).resolve().parent.parent / "deploy" / "inventory.ini")
 _DROPIN = "/etc/systemd/system/radp-coordinator.service.d/recovery.conf"
+_PARITY_K_DROPIN = "/etc/systemd/system/radp-coordinator.service.d/parity_k.conf"
 _WORKER_DROPIN_DIR = "/etc/systemd/system/radp-worker.service.d"
 _WORKER_DROPIN = f"{_WORKER_DROPIN_DIR}/parity.conf"
 _PARITY_LOG_MARKER = "PARITY reconstruct:"
 _REPLICATE_LOG_MARKER = "REPLICATE reconstruct:"
+_RAID6_LOG_MARKER = "RAID-6 reconstruct:"
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +86,23 @@ def set_recovery_mode(coord_host: str, mode: str) -> None:
         f"content='[Service]\nEnvironment=RADP_RECOVERY_MODE={mode}\n' dest={_DROPIN}",
     )
     log.info("recovery_mode drop-in set to %s", mode)
+
+
+def set_parity_k(coord_host: str, k: int) -> None:
+    """Write the coordinator RADP_PARITY_K drop-in (applied on next restart).
+
+    A SEPARATE drop-in file from ``_DROPIN`` (recovery.conf), not folded into
+    it: ``set_recovery_mode``'s ansible copy fully REPLACES that file's
+    content on every call, so writing RADP_PARITY_K there too would stomp
+    whichever RADP_RECOVERY_MODE line was written first (or vice versa).
+    systemd merges every ``*.conf`` under a ``.service.d`` directory, so a
+    second file coexists cleanly — same pattern as the worker's dedicated
+    ``_WORKER_DROPIN``."""
+    _ansible(
+        coord_host, "-b", "-m", "copy", "-a",
+        f"content='[Service]\nEnvironment=RADP_PARITY_K={k}\n' dest={_PARITY_K_DROPIN}",
+    )
+    log.info("parity_k drop-in set to %s", k)
 
 
 def set_worker_parity(on: bool) -> None:
@@ -247,6 +266,21 @@ def pick_interior_victim(placement: list[dict]) -> tuple[str, int, int]:
     interior = placement[1:-1] if len(placement) > 2 else placement
     mid = interior[len(interior) // 2]
     return str(mid["device"]), int(mid["start"]), int(mid["end"])
+
+
+def pick_two_interior_victims(placement: list[dict]) -> list[tuple[str, int, int]]:
+    """Two interior non-head victims for a RAID-6 double-failure trial: exclude
+    the head (start_layer == 1) and the LAST stage (no downstream non-head
+    survivor → parity gate would fall back). Returns the first two, ordered by
+    start layer. Raises ValueError if fewer than two interior stages exist."""
+    ordered = sorted(placement, key=lambda s: int(s["start_layer"]))
+    interior = [s for s in ordered[:-1] if int(s["start_layer"]) > 1]
+    if len(interior) < 2:
+        raise ValueError(
+            f"need >=2 interior non-head stages for RAID-6, got {len(interior)}"
+        )
+    return [(s["device"], int(s["start_layer"]), int(s["end_layer"]))
+            for s in interior[:2]]
 
 
 def clear_all_failures(coord_host: str, timeout: float = 30.0) -> None:
@@ -543,6 +577,112 @@ def run_reactive_replacement_trial(
     return row
 
 
+def run_raid6_trial(
+    stub_factory: Any, *, position: int, prompt: str, max_tokens: int,
+    reference: str | None, coord: str, coord_host: str, coord_ssh: str,
+    ssh_key: str,
+) -> dict[str, Any]:
+    """RAID-6 (k=2) double-victim measurement at failure position P.
+
+    Structural model is ``run_reactive_replacement_trial``: fetch the LIVE
+    placement after this trial's OWN restart (the fleet solve is only
+    quasi-deterministic, so a statically-passed victim can miss the deployed
+    chain — see that function's docstring) and pick the victims from it via
+    ``pick_two_interior_victims``. Recovery itself, though, is gateway-side
+    zero-forward reconstruction exactly like ``run_trial``'s "parity" mode
+    (not a coordinator DP re-solve), so TTR is read from the per-step tbt
+    array the same way ``run_trial`` does — NOT a whole-request wall delta
+    like reactive_replacement's.
+
+    Both victims are armed to compute-crash at the SAME position, but the
+    chain relay is synchronous (``chain_mode: sync``), so only the first one
+    hit on the wire ever raises a live exception — the other's RunStage is
+    never invoked and its fault file never fires. That's fine: both are ALSO
+    explicitly marked dead via ``mark_device_dead`` (/api/inject_failure)
+    before the request. That call only updates the gateway's ``self._dead``
+    bookkeeping and rebuilds its cached execution plan — it does NOT rewire
+    the physical chain (workers keep forwarding to whatever ``_rewire_chain``
+    last told them, and that's only invoked from inside a recovery function
+    itself), so the real crash still fires on the wire exactly as armed. When
+    the gateway attributes that crash, it finds BOTH victims already in
+    ``self._dead`` and its RAID-6 branch dispatches to
+    ``_recover_parity_double`` (see gateway.py's ``_recover_parity``, the
+    "RAID-6 (k=2)" check) instead of the single-victim ladder. ``clear_all_
+    failures`` runs first so a heartbeat flap elsewhere can't inflate the
+    dead-set past 2 and trip the ">2 dead non-head stages" surgical fallback.
+    """
+    reset_wall = restart_coordinator_and_wait(coord_host, coord_ssh, ssh_key)
+    placement = fetch_placement(coord)
+    (v1_dev, v1s, v1e), (v2_dev, v2s, v2e) = pick_two_interior_victims(placement)
+
+    clear_all_failures(coord)
+    mark_device_dead(coord, v1_dev)
+    mark_device_dead(coord, v2_dev)
+    arm_fault(v1_dev, v1s, v1e, position)
+    arm_fault(v2_dev, v2s, v2e, position)
+
+    stub = stub_factory()
+    rec = _bench_one_request(stub, prompt, max_tokens=max_tokens)
+
+    v1_fired = fault_fired(v1_dev)
+    v2_fired = fault_fired(v2_dev)
+    fired = v1_fired or v2_fired  # only the upstream-hit victim ever fires
+    tbt = rec["tbt_seconds_each"]
+    expected_idx = position - 1
+    ttr = tbt[expected_idx] if 0 <= expected_idx < len(tbt) else float("nan")
+    peak = max(tbt) if tbt else float("nan")
+    peak_idx = tbt.index(peak) if tbt else -1
+    median_tbt = statistics.median(tbt) if tbt else float("nan")
+    recovery_visible = bool(tbt) and ttr > 1.3 * median_tbt
+    seq_match = (reference is None) or (rec["decoded_text"] == reference)
+
+    # Same log-marker gate as parity/replicate in `run_trial`: proof the
+    # gateway actually took the RAID-6 double-reconstruct path rather than
+    # silently laddering to surgical.
+    coord_log = fetch_coordinator_log(coord_ssh, ssh_key)
+    raid6_branch_log = next(
+        (line for line in coord_log.splitlines() if _RAID6_LOG_MARKER in line),
+        None,
+    )
+    raid6_branch_ran = raid6_branch_log is not None
+
+    row = {
+        "mode": "raid6",
+        "position": position,
+        "ttr_seconds": ttr,
+        "ttr_step_index": expected_idx,
+        "expected_step_index": expected_idx,
+        "median_tbt_seconds": median_tbt,
+        "ttr_over_median": (ttr / median_tbt) if median_tbt else float("nan"),
+        "peak_seconds": peak,
+        "peak_step_index": peak_idx,
+        "peak_is_recovery": peak_idx == expected_idx,
+        "victim1_device": v1_dev,
+        "victim2_device": v2_dev,
+        "victim1_fired": v1_fired,
+        "victim2_fired": v2_fired,
+        "fired": fired,
+        "recovery_visible": recovery_visible,
+        "sequence_match": seq_match,
+        "raid6_branch_ran": raid6_branch_ran,
+        "raid6_branch_log": raid6_branch_log,
+        "text_tokens": rec["text_tokens"],
+        "reset_wall_seconds": reset_wall,
+        "tbt_seconds_each": [round(x, 4) for x in tbt],
+        "decoded_text": rec["decoded_text"],
+    }
+    valid = fired and recovery_visible and seq_match and raid6_branch_ran
+    log.info(
+        "%-11s P=%-2d  TTR=%.3fs (%.1fx median, step %d)  v1_fired=%s v2_fired=%s "
+        "seq_match=%s raid6_branch=%s%s  %s",
+        "raid6", position, ttr, (ttr / median_tbt) if median_tbt else float("nan"),
+        expected_idx, v1_fired, v2_fired, seq_match, raid6_branch_ran,
+        "" if raid6_branch_ran else " (FELL BACK TO SURGICAL)",
+        "OK" if valid else "!! INVALID",
+    )
+    return row
+
+
 def run(
     *, coord: str, coord_host: str, coord_ssh: str, ssh_key: str,
     victim_host: str, victim_stage: tuple[int, int], positions: list[int],
@@ -552,13 +692,14 @@ def run(
         ch = grpc.insecure_channel(coord, options=_GRPC_OPTIONS)
         return radp_pb2_grpc.CoordinatorServiceStub(ch)
 
-    # Parity AND replicate need the workers shipping KV columns for the
-    # ENTIRE sweep, not just their own trials — both gate on the SAME
-    # RADP_PARITY drop-in (see `set_worker_replication`), so arm it once up
-    # front, before any coordinator reschedule (including the
-    # healthy-reference one below), so it's never racing a trial. Not
-    # auto-disabled at the end: cleanup is a separate, explicit restore step.
-    if "parity" in modes or "replicate" in modes:
+    # Parity, replicate AND raid6 need the workers shipping KV columns for
+    # the ENTIRE sweep, not just their own trials — all three gate on the
+    # SAME RADP_PARITY drop-in (see `set_worker_replication`; raid6 is just
+    # parity recovery with k=2), so arm it once up front, before any
+    # coordinator reschedule (including the healthy-reference one below), so
+    # it's never racing a trial. Not auto-disabled at the end: cleanup is a
+    # separate, explicit restore step.
+    if "parity" in modes or "replicate" in modes or "raid6" in modes:
         set_worker_parity(True)
 
     # Healthy reference (no fault armed): the plan is fresh after the restart
@@ -584,13 +725,28 @@ def run(
     trials: list[dict[str, Any]] = []
     for mode in modes:
         if mode != "reactive_replacement":
-            set_recovery_mode(coord_host, mode)
+            # raid6 is gateway "parity" recovery with k=2 — "raid6" itself is
+            # a driver-level mode name, not a valid RADP_RECOVERY_MODE value
+            # (the gateway only knows full_replay/surgical/parity/replicate).
+            # parity_k is reset EVERY mode (not just raid6) so a previous
+            # raid6 run's k=2 drop-in can never silently leak into a later
+            # single-victim parity/replicate measurement in the same or a
+            # subsequent sweep.
+            set_recovery_mode(coord_host, "parity" if mode == "raid6" else mode)
+            set_parity_k(coord_host, 2 if mode == "raid6" else 1)
         for p in positions:
             if mode == "reactive_replacement":
                 trials.append(run_reactive_replacement_trial(
                     stub_factory, position=p, prompt=prompt,
                     max_tokens=max_tokens, victim_host=victim_host,
                     victim_stage=victim_stage, victim_device=victim_device,
+                    coord=coord, coord_host=coord_host,
+                    coord_ssh=coord_ssh, ssh_key=ssh_key,
+                ))
+            elif mode == "raid6":
+                trials.append(run_raid6_trial(
+                    stub_factory, position=p, prompt=prompt,
+                    max_tokens=max_tokens, reference=reference,
                     coord=coord, coord_host=coord_host,
                     coord_ssh=coord_ssh, ssh_key=ssh_key,
                 ))
@@ -602,14 +758,14 @@ def run(
                     coord_host=coord_host, coord_ssh=coord_ssh, ssh_key=ssh_key,
                 ))
 
-    # Linear fits over VALID trials only. For "parity" / "replicate",
+    # Linear fits over VALID trials only. For "parity" / "replicate" / "raid6",
     # validity additionally requires the real (non-surgical-fallback) branch
     # to have actually fired — a trial that silently fell back to surgical
     # must NOT contaminate that mode's fit. "reactive_replacement" rows carry
     # a different shape (no tbt-derived "recovery_visible" — TTR there is a
     # whole-request wall-clock delta, not a per-step one) so it gets its own
     # mutually-exclusive branch, gated on `reconfigured` the exact way
-    # parity/replicate gate on their own branch-ran flags.
+    # parity/replicate/raid6 gate on their own branch-ran flags.
     fits: dict[str, Any] = {}
     for mode in modes:
         if mode == "reactive_replacement":
@@ -620,7 +776,8 @@ def run(
             pts = [(t["position"], t["ttr_seconds"]) for t in trials
                    if t["mode"] == mode and t["fired"] and t["recovery_visible"] and t["sequence_match"]
                    and (mode != "parity" or t["parity_branch_ran"])
-                   and (mode != "replicate" or t["replicate_branch_ran"])]
+                   and (mode != "replicate" or t["replicate_branch_ran"])
+                   and (mode != "raid6" or t["raid6_branch_ran"])]
         if len(pts) >= 2:
             f = _linfit([p for p, _ in pts], [y for _, y in pts])
             fits[mode] = {**f, "n_points": len(pts)}
@@ -661,11 +818,16 @@ def main() -> None:
                    help="comma-separated failure depths P")
     p.add_argument(
         "--modes", default="full_replay,surgical",
-        help="comma-separated: full_replay,surgical,parity,replicate,"
+        help="comma-separated: full_replay,surgical,parity,replicate,raid6,"
              "reactive_replacement. reactive_replacement drives the "
              "coordinator's /api/reconfigure over HTTP (no gateway recovery "
              "mode) and REQUIRES the coordinator already deployed R={} "
-             "(backup_placement=False) — a separate controller-gated step.",
+             "(backup_placement=False) — a separate controller-gated step. "
+             "raid6 is gateway parity recovery with RADP_PARITY_K=2 and a "
+             "double-victim crash (see `run_raid6_trial`) — the --victim-* "
+             "flags are ignored for it (victims are picked live, two per "
+             "trial, via `pick_two_interior_victims`), same as "
+             "reactive_replacement ignores them for its own live pick.",
     )
     p.add_argument("--prompt", default="The quick brown fox")
     p.add_argument("--max-tokens", type=int, default=0,
