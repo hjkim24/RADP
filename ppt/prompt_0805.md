@@ -78,19 +78,19 @@ Y" 반전 쓰지 말고 사실을 직접 말해라.
 - **소제목(주장):** 패리티 blob 2개(P·Q)로 동시 2-stage 복원 — RAID-6 = k=2 Reed-Solomon
 - a. 기존 한계: KV-RAID-5는 XOR blob P 1개 → 방정식 1개로 미지수 2개 못 풂 → 2개 죽으면 Petals로 폴백(비쌈)
 - b. 작동: 두 번째 blob **Q(GF(2⁸) 가중합)** 추가. 2개 죽으면 P·Q로 **2×2 GF 연립** 풀어 둘 다 재계산 0으로 복원. 토글 `RADP_PARITY_K=1|2` — **k=1은 KV-RAID-5 그대로**, k=2도 단일 실패는 P만 써서 RAID-5 포함
-- b2. 선행: **RAID-6 = k=2 Reed-Solomon 소거부호**(Anvin). store-KV 데이터센터(DejaVu 복제 / GhostServe erasure-coding)를 이종 엣지 다중실패 레짐으로 옮긴 것 — GhostServe가 cross-node pipeline parity를 future work로 남긴 자리
-- 워커 무변경: Q는 coordinator가 기존 push된 컬럼으로 계산
+- b2. 선행: **RAID-6 = k=2 Reed-Solomon 소거부호**(Anvin). KV를 저장해 복구하는 데이터센터 방식(DejaVu 복제 / GhostServe erasure-coding)을 이종 엣지의 다중 실패 상황으로 옮긴 것 — GhostServe가 stage 간 parity를 다음 과제로 남긴 자리를 채움
+- 워커 코드는 안 건드림: Q는 워커가 원래 보내던 KV 조각으로 coordinator가 알아서 계산
 
 **2. KV-RAID-6 — 비용과 상한**
 - **소제목(주장):** 저장 blob 2개 — k≥3(일반 RS)은 DejaVu에 짐, 그래서 k=2가 상한
 - 시각물: **STASH의 fig_storage_tolerance** — 저장 × 실패내성. KV-RAID-5(1 blob, f=1)·KV-RAID-6(2 blob, f=2)이 DejaVu 선 아래, f≥3은 crossover 위로
-- c. 트레이드오프: 저장 = KV-RAID-5 **16384** / KV-RAID-6 **32768** / DejaVu **36864** B/tok. 단일 실패는 여전히 P만 → RAID-5 비용 그대로. 워커 무변경
-- d. 상한: **정확히 2개까지**. k-parity가 DejaVu 이기려면 `k < Σ/max` (balanced면 non-head 개수). 우리 fleet `Σ/max=2.25` → k=1,2만 이기고 **k=3부터 저장이 DejaVu 초과(1.33×)+내성 약함 = dominated**. 일반 RS는 balanced 큰 파이프라인 future work
+- c. 장단점: 저장은 KV-RAID-5 **16384** / KV-RAID-6 **32768** / DejaVu **36864** B/토큰. 1개만 죽으면 여전히 P만 쓰니 KV-RAID-5랑 비용 같음. 워커 코드는 안 건드림
+- d. 어디까지 되나: **딱 2개까지**. blob을 k개 두면 k개까지 복구되는데, DejaVu보다 저장이 적으려면 `k < Σ/max`여야 함(고르게 나눈 파이프라인이면 non-head stage 수). 우리 fleet은 `Σ/max=2.25`라 k=1, 2만 DejaVu보다 적음. **k=3부터는 저장이 DejaVu보다 오히려 많고(1.33배) 복구 내성도 약함 — 그냥 DejaVu 쓰는 게 나음.** 그래서 k=2가 상한. blob을 더 늘리는 일반 RS는 stage가 많고 고른 큰 파이프라인에서나 의미(다음 과제)
 
 **3. KV-RAID-6 — 라이브 실측 (이번 주 핵심)**
 - **소제목(주장) = 이번 주 헤드라인:** 동시 2-실패 라이브 복구 5/5 bit-correct, 복구시간 실패위치 무관
-- 실측(라이브 fleet, victim `on-1`+`on-6` 동시): 5개 포지션(P=4·8·16·24·32) 전부 **출력이 무장애 reference와 정확 일치(5/5)** + GF double-reconstruct 분기 발화 확인
-- `TTR(P) = 30.29 s + 2.78 ms·P` → **slope ≈ 0**(재계산 0 시그니처). 단일 실패 KV-RAID(0.87)·DejaVu(2.67)와 같은 평탄대, Petals(16.2)·Recompute(164) 대조
+- 실측(라이브 fleet, `on-1`·`on-6` 동시에 죽임): 5개 위치(P=4·8·16·24·32) 전부에서 **복구된 출력이 장애 없을 때 출력과 완전히 똑같음(5/5)**. GF로 2개를 되살리는 경로가 실제로 돌았는지도 로그로 확인
+- `TTR(P) = 30.29 s + 2.78 ms·P` → **기울기 ≈ 0**, 즉 실패 위치가 깊어져도 복구시간이 안 늘어남. 재계산을 안 하니까 그럼. 단일 실패 KV-RAID(0.87)·DejaVu(2.67)와 같은 평평한 그룹, Petals(16.2)·Recompute(164)는 위치에 따라 늘어남
 
   | 복구 방식 | slope (ms/pos) | shape |
   |---|---|---|
@@ -100,27 +100,27 @@ Y" 반전 쓰지 말고 사실을 직접 말해라.
   | DejaVu (replicate) | 2.67 | 평탄 |
   | **KV-RAID-6 (2-실패)** | **2.78** | **평탄** |
 
-- **정직 캐비엇(반드시 슬라이드에):** 절편 **30.3 s = 축퇴 복구테이블 인공물** — 알고리즘 비용 아님. 이 fleet 자동 R이 non-head 백업을 전부 `on-2`로 몰아, 2-victim이면 약한 Nano `on-2`가 3-stage 호스팅+cold-load(같은 fleet 단일 실패 KV-RAID는 284 ms). 집중은 상수 offset만 더해 **slope는 안 오염**. 깨끗한 절대 TTR은 백업 분산 R 필요(future work)
-- 라이브 버그 발견·수정: `on-1`이 head 바로 뒤라 크래시가 head로 오귀속 → double-dispatch보다 head-check가 먼저 발화해 폴백하던 것. dispatch를 dead-set 기준으로 앞당겨 수정, 5/5 정상
+- **꼭 짚을 점(슬라이드에 반드시):** 복구시간의 고정 부분 30.3초는 알고리즘 자체 비용이 아니라, 이 fleet의 백업 배치 탓이다. 지금 fleet은 백업이 전부 `on-2` 한 노드에 몰려 있다. 그래서 2개가 죽으면 약한 Nano인 `on-2` 하나가 stage를 3개나 떠안고, 모델 가중치를 새로 불러온다(cold load). 같은 fleet에서 1개만 죽었을 때 KV-RAID 복구는 284 ms였다. 이 몰림은 30초라는 **고정 지연만 더할 뿐 기울기는 안 건드린다** — 그래서 "재계산 0(기울기 ≈ 0)"이라는 결론은 그대로 믿을 수 있다. 백업을 여러 노드로 나눠 두면 절대 시간도 내려갈 것(다음 과제)
+- 라이브에서 버그 하나 발견·수정: `on-1`이 head 바로 뒤라, `on-1`이 죽으면 시스템이 그걸 head가 죽은 걸로 잘못 지목했다. 그러면 2개 복구 경로로 가기 전에 head 처리 로직이 먼저 걸려 폴백해 버렸다. 죽은 노드 목록을 먼저 보도록 순서를 바꿔 고쳤고, 이후 5/5 정상
 
 **4. DejaVu 인용 검증**
-- **소제목(주장):** 우리 DejaVu baseline은 원 논문 알고리즘을 충실히 대표 — 차이는 replica 위치뿐
-- DejaVu(replicate) baseline이 원 논문 알고리즘과 **핵심 동일**: KV state 비동기 복제 → 죽은 stage 재계산 대신 복원, 미복제 tail만 재계산
-- 차이는 **replica 위치** — DejaVu는 ring 이웃 워커(분산), 우리는 coordinator(중앙집중). 저장 O(N)·복구 프로파일은 동일 → baseline으로서 cost/recovery 충실히 대표
-- 인용: "DejaVu-style KV replication, adapted to our coordinator-centric architecture" — verbatim 재구현 아님(ring-neighbor·DejaVuLib·disaggregation은 미구현)
+- **소제목(주장):** 우리 DejaVu 베이스라인은 원 논문 알고리즘과 사실상 같음 — 다른 건 복제본을 어디 두느냐뿐
+- 원 논문과 **핵심이 같음**: KV를 미리 복제해 뒀다가, 노드가 죽으면 다시 계산하지 않고 복제본으로 되살림. 아직 복제 못 한 뒷부분만 다시 계산
+- **다른 점은 복제본 위치 하나** — 원 논문은 옆 워커에 두고(분산), 우리는 coordinator에 모아 둠(중앙). 저장량(O(N))과 복구 방식은 같아서, 베이스라인으로 쓰기에 비용·복구 특성을 제대로 대표함
+- 논문엔 "DejaVu-style KV replication, adapted to our coordinator-centric architecture"로 인용. 원 논문을 그대로 재구현한 건 아님(옆-워커 복제·DejaVuLib·disaggregation은 우리가 안 만듦)
 
 ### 한계 (반드시 슬라이드에 올릴 것)
 
-- **KV-RAID-6 깨끗한 절대 TTR 미측정** — 이 fleet 축퇴 R로 절편 30 s(slope는 무관). 백업 분산 R에서의 측정이 future work
-- **동시 2개까지만**(k=2). k≥3(일반 RS)은 이 fleet에서 DejaVu에 dominated
-- **DejaVu baseline은 replica 위치가 다름**(coordinator vs ring 이웃) — 알고리즘 핵심은 동일하나 verbatim 재구현 아님
-- 측정은 5-워커 CUDA/AGX fleet, 인접 2-victim(`on-1`+`on-6`). 비인접 쌍은 구조적으로 맞으나 미측정
+- **KV-RAID-6 절대 복구시간은 아직 제대로 못 잼** — 지금 fleet은 백업이 한 노드에 몰려서 고정 부분이 30초로 나옴(기울기는 이 문제와 무관). 백업을 여러 노드로 나눈 설정에서 다시 재는 게 다음 과제
+- **동시 2개까지만**(k=2). k=3 이상(일반 RS)은 이 fleet에선 DejaVu보다 못함
+- **우리 DejaVu 베이스라인은 복제본 두는 위치가 원 논문과 다름**(우리는 coordinator, 원 논문은 옆 워커) — 알고리즘 핵심은 같으나 그대로 재구현한 건 아님
+- 측정은 5-워커 CUDA/AGX fleet, 붙어 있는 2개(`on-1`·`on-6`)를 죽인 경우. 떨어진 2개는 원리상 되지만 아직 안 재봄
 
 ### 다음 1주 (P5, 3줄)
 
-- TII 원고 FT 절을 **KV-RAID 네이밍 + 저장×내성 프레이밍**으로 작성(intro는 recovery-first 초안 완료)
-- 백업 분산 R로 KV-RAID-6 깨끗한 절대 TTR 재측정 검토
-- 비인접 2-victim 커버리지 테스트 추가
+- TII 논문 FT 절을 새 이름(KV-RAID)과 저장×내성 관점으로 작성(intro는 recovery-first 초안 완료)
+- 백업을 여러 노드로 나눈 설정에서 KV-RAID-6 절대 복구시간 다시 재기 검토
+- 떨어진 2개를 죽이는 경우 테스트 추가
 
 ---
 
@@ -128,6 +128,6 @@ Y" 반전 쓰지 말고 사실을 직접 말해라.
 
 1 표지 / 2 목차 / **3 네이밍 정리(맨 앞 framing, 매핑 표 + fig_recovery_families)** /
 4 지난 계획↔이번 주 대응(P1) / 5 KV-RAID-6 작동 / 6 KV-RAID-6 비용·상한(storage×tolerance) /
-7 KV-RAID-6 실측(**헤드라인 소제목**, 표+캐비엇) / 8 DejaVu 인용 검증 / 9 한계 / 10 P5 계획 → 10장
+7 KV-RAID-6 실측(**헤드라인 소제목**, 표+꼭 짚을 점) / 8 DejaVu 인용 검증 / 9 한계 / 10 P5 계획 → 10장
 
 recap 슬라이드 없음(2026-08-05 skill 변경). 네이밍 framing 1장 + 계획↔대응 1장 + 작동·비용·실측 3장 + DejaVu 검증 1장.
