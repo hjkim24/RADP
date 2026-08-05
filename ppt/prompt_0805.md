@@ -26,7 +26,8 @@ Y" 반전 쓰지 말고 사실을 직접 말해라.
 
 > **네이밍 바뀜(이번 주부터).** baseline은 reference 논문명으로 — full-replay→**Recompute**,
 > surgical→**Petals**, replicate→**DejaVu**, reactive→**Reconfigure**. 우리 방식 parity→**KV-RAID**
-> (단일 실패 = KV-RAID-5, 이번 주 추가한 이중 실패 = KV-RAID-6). 덱 전체에서 새 이름만 쓴다.
+> (단일 실패 = KV-RAID-5, 이번 주 추가한 이중 실패 = KV-RAID-6). **이 매핑을 맨 앞 slide(목차
+> 다음)에서 먼저 소개**하고, 이후 덱 전체에서 새 이름만 쓴다.
 
 > **이번 주는 새 기술(KV-RAID-6) 도입 주다.** 원리(작동) → 비용/상한 → 실측 순서. 숫자를 원리
 > 앞에 두지 마라. Recompute/Petals/DejaVu/Reconfigure는 지난주(0730)에 이미 소개 — 반복하지 말고
@@ -43,6 +44,22 @@ Y" 반전 쓰지 말고 사실을 직접 말해라.
 > 아니라 **핵심 슬라이드의 소제목(=주장, 16pt 굵게)** 으로 간다. **표지는 원본 그대로 안 건드림.**
 > 각 슬라이드 소제목은 라벨이 아니라 주장 — 아래에 미리 박아둔다.
 
+### 네이밍 정리 (맨 앞 framing slide — 목차 다음)
+
+> 덱 전체가 새 이름을 쓰므로 매핑을 먼저 박아둔다. 이 slide는 §1(Summary)의 리드.
+
+- **소제목(주장):** 복구 계열 이름 정리 — baseline은 논문명, 우리 방식은 KV-RAID
+- 시각물: **STASH의 fig_recovery_families** — Recompute/Petals/KV-RAID 복구 비용 사다리(같은 장애, 계열별 재계산량). 새 이름이 그림에서도 일관
+- 네이밍 표:
+
+  | 구 | 신(reference) | 역할 |
+  |---|---|---|
+  | full-replay | **Recompute** | strawman (DejaVu가 이기는 null baseline) |
+  | surgical | **Petals** | input-replay (Petals, exact 매치) |
+  | replicate | **DejaVu** | KV replication baseline |
+  | reactive | **Reconfigure** | re-solve+cold restart (SpotServe) |
+  | parity (우리) | **KV-RAID** | 우리 방식 (KV-RAID-5 단일 / KV-RAID-6 이중) |
+
 ### 지난주 계획 → 대응 (P1 표)
 
 7/30 미팅의 「다음 1주」계획 대비 대응 + 이번 주 새 방향.
@@ -55,7 +72,7 @@ Y" 반전 쓰지 말고 사실을 직접 말해라.
 
 ### 워크스트림별 진행 (§2)
 
-> **흐름 고정.** recap(0) → KV-RAID-6 작동(1) → 비용·상한(2) → 실측(3, 헤드라인) → 네이밍·인용(4).
+> **흐름 고정.** (네이밍은 맨 앞 §1 리드에서 이미 소개) recap(0) → KV-RAID-6 작동(1) → 비용·상한(2) → 실측(3, 헤드라인) → DejaVu 검증(4).
 
 **0. 지난주 요약 (recap, 1장)**
 - **소제목(주장):** KV-RAID(=parity)만 좌하단 — 근데 단일 실패만 복구됨
@@ -92,20 +109,11 @@ Y" 반전 쓰지 말고 사실을 직접 말해라.
 - **정직 캐비엇(반드시 슬라이드에):** 절편 **30.3 s = 축퇴 복구테이블 인공물** — 알고리즘 비용 아님. 이 fleet 자동 R이 non-head 백업을 전부 `on-2`로 몰아, 2-victim이면 약한 Nano `on-2`가 3-stage 호스팅+cold-load(같은 fleet 단일 실패 KV-RAID는 284 ms). 집중은 상수 offset만 더해 **slope는 안 오염**. 깨끗한 절대 TTR은 백업 분산 R 필요(future work)
 - 라이브 버그 발견·수정: `on-1`이 head 바로 뒤라 크래시가 head로 오귀속 → double-dispatch보다 head-check가 먼저 발화해 폴백하던 것. dispatch를 dead-set 기준으로 앞당겨 수정, 5/5 정상
 
-**4. 네이밍 정리 + DejaVu 인용 검증**
-- **소제목(주장):** baseline은 논문명, 우리 방식은 KV-RAID — DejaVu 인용은 알고리즘 대조로 검증
-- 시각물: **STASH의 fig_recovery_families** — Recompute/Petals/KV-RAID 복구 비용 사다리(같은 장애, 계열별 재계산량). 새 이름이 그림에서도 일관
-- 네이밍 표:
-
-  | 구 | 신(reference) |
-  |---|---|
-  | full-replay | Recompute (strawman, DejaVu 인용) |
-  | surgical | Petals (input-replay, exact) |
-  | replicate | DejaVu (KV replication) |
-  | reactive | Reconfigure (SpotServe) |
-  | parity (우리) | **KV-RAID** (KV-RAID-5 / -6) |
-
-- DejaVu 인용 검증: 우리 DejaVu(replicate) baseline이 원 논문 알고리즘을 **충실히 대표** — 핵심 동일(KV state 비동기 복제 → 죽은 stage 재계산 대신 복원, 미복제 tail만 재계산). 차이는 **replica 위치**(DejaVu=ring 이웃 워커, 우리=coordinator) — 저장 O(N)·복구 프로파일은 동일. "DejaVu-style, adapted"로 인용
+**4. DejaVu 인용 검증**
+- **소제목(주장):** 우리 DejaVu baseline은 원 논문 알고리즘을 충실히 대표 — 차이는 replica 위치뿐
+- DejaVu(replicate) baseline이 원 논문 알고리즘과 **핵심 동일**: KV state 비동기 복제 → 죽은 stage 재계산 대신 복원, 미복제 tail만 재계산
+- 차이는 **replica 위치** — DejaVu는 ring 이웃 워커(분산), 우리는 coordinator(중앙집중). 저장 O(N)·복구 프로파일은 동일 → baseline으로서 cost/recovery 충실히 대표
+- 인용: "DejaVu-style KV replication, adapted to our coordinator-centric architecture" — verbatim 재구현 아님(ring-neighbor·DejaVuLib·disaggregation은 미구현)
 
 ### 한계 (반드시 슬라이드에 올릴 것)
 
@@ -124,8 +132,9 @@ Y" 반전 쓰지 말고 사실을 직접 말해라.
 
 ## 예상 구성 (참고 — 내용이 정하되 대략 이 정도)
 
-1 표지 / 2 목차 / 3 지난주 계획↔대응 /
-4 recap(KV-RAID 좌하단, 단일 실패만) / 5 KV-RAID-6 작동 / 6 KV-RAID-6 비용·상한(storage×tolerance) /
-7 KV-RAID-6 실측(**헤드라인 소제목**, 표+캐비엇) / 8 네이밍+DejaVu 검증 / 9 한계 / 10 P5 계획 → 10장
+1 표지 / 2 목차 / **3 네이밍 정리(맨 앞 framing, 매핑 표 + fig_recovery_families)** /
+4 지난주 계획↔대응 / 5 recap(KV-RAID 좌하단, 단일 실패만) / 6 KV-RAID-6 작동 /
+7 KV-RAID-6 비용·상한(storage×tolerance) / 8 KV-RAID-6 실측(**헤드라인 소제목**, 표+캐비엇) /
+9 DejaVu 인용 검증 / 10 한계 / 11 P5 계획 → 11장
 
-새 기술 도입 주라 지난주보다 김 — 작동·비용·실측 3장 + 네이밍 1장.
+새 기술 도입 주라 지난주보다 김 — 네이밍 framing 1장 앞에 + 작동·비용·실측 3장 + DejaVu 검증 1장.
