@@ -1,13 +1,14 @@
-"""Storage cost to tolerate f simultaneous non-head failures — KV-RAID vs DéjàVu.
+"""Storage cost to tolerate f simultaneous non-head failures — parity vs DéjàVu.
 
-The honest home for KV-RAID-6: its live TTR is contaminated by this fleet's
-concentrated recovery table (§B1-RAID6), so it does NOT go on the TTR Pareto.
-Its real, clean advantage is storage. KV-RAID stores f parity blobs (f × max
-non-head stage KV) to tolerate f simultaneous failures; DéjàVu stores every
-stage's KV (Σ) and tolerates any number. So KV-RAID is cheaper only while
-f < Σ/max (= non-head count when balanced). On this fleet Σ/max = 2.25, so
-KV-RAID-5 (f=1) and KV-RAID-6 (f=2) sit below DéjàVu while f≥3 crosses above —
-exactly why we stop at k=2. Geometry (per KV token), not a live run.
+The honest home for double-parity: its live TTR is contaminated by this fleet's
+concentrated recovery table (§B1-RAID6 in REPORT.md), so it does NOT go on the
+TTR Pareto. Its real, clean advantage is storage. Cross-stage parity stores f
+parity blobs (f × max non-head stage KV) to tolerate f simultaneous failures;
+DéjàVu stores every stage's KV (Σ) and tolerates any number. So parity is
+cheaper only while f < Σ/max (= non-head count when balanced). On this fleet
+Σ/max = 2.25, so single-parity (f=1) and double-parity (f=2) sit below DéjàVu
+while f≥3 crosses above — exactly why we stop at k=2. Geometry (per KV token),
+not a live run.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from _slide import ACCENT, BODY, NAME, SLIDE_FULL, SUBJECT, save_slide  # noqa: 
 
 # raid6-run placement geometry (OPT-350M fp16): non-head stages 1/3/4/1 layers,
 # per-layer KV = 2·16·64·2 = 4096 B -> max = 4L = 16384, Σ = 9L = 36864 B/token.
-MAX_STAGE = 16384                    # KV-RAID one parity blob (max non-head stage)
+MAX_STAGE = 16384                    # one parity blob (max non-head stage)
 SUM_STAGE = 36864                    # DéjàVu (Σ non-head)
 CROSSOVER = SUM_STAGE / MAX_STAGE    # = 2.25
 KB = 1024
@@ -35,7 +36,7 @@ ax.annotate(f"{NAME['replicate']}  —  stores all Σ, tolerates any f",
             xy=(4.4, SUM_STAGE / KB), xytext=(0, 5), textcoords="offset points",
             ha="right", color=SUBJECT["replicate"], fontsize=11, fontweight="bold")
 
-# KV-RAID: f parity blobs = f × max non-head stage.
+# Cross-stage parity: f parity blobs = f × max non-head stage.
 fs = np.array([1, 2, 3, 4])
 ax.plot(fs, fs * MAX_STAGE / KB, color=ACCENT, linewidth=2, marker="o",
         markersize=6, zorder=3, alpha=0.5)
@@ -43,14 +44,14 @@ ax.plot(fs, fs * MAX_STAGE / KB, color=ACCENT, linewidth=2, marker="o",
 # The two IMPLEMENTED points, highlighted.
 ax.scatter([1], [MAX_STAGE / KB], s=160, color=SUBJECT["parity"], marker="^", zorder=5)
 ax.scatter([2], [2 * MAX_STAGE / KB], s=160, color=SUBJECT["raid6"], marker="^", zorder=5)
-ax.annotate(f"{NAME['parity']}-5\n(1 blob, f=1)", xy=(1, MAX_STAGE / KB),
+ax.annotate(f"{NAME['parity']}\n(1 blob, f=1)", xy=(1, MAX_STAGE / KB),
             xytext=(9, -2), textcoords="offset points", color=SUBJECT["parity"],
             fontsize=11, fontweight="bold", va="center")
 ax.annotate(f"{NAME['raid6']}\n(2 blobs, f=2)", xy=(2, 2 * MAX_STAGE / KB),
             xytext=(9, -2), textcoords="offset points", color=SUBJECT["raid6"],
             fontsize=11, fontweight="bold", va="center")
 
-# f>=3: KV-RAID crosses above DéjàVu — dominated (more storage, less tolerance).
+# f>=3: parity crosses above DéjàVu — dominated (more storage, less tolerance).
 ax.annotate("f≥3: dominated by DejaVu\n(more storage, less tolerance)",
             xy=(3, 3 * MAX_STAGE / KB), xytext=(-6, 8), textcoords="offset points",
             ha="right", color=BODY, fontsize=9.5, alpha=0.8)

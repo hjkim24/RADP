@@ -196,7 +196,7 @@ def recovery_families(only_existing: bool = False):
             box(ax, cx(i), y, CW, RH, n,
                 face=color if hit else OK,
                 text="white" if hit else BODY, fs=11.5, bold=hit)
-        if title == NAME["parity"]:          # 재계산 대신 P에서 역산 (KV-RAID)
+        if title == NAME["parity"]:          # 재계산 대신 P에서 역산 (cross-stage parity)
             ax.annotate("⊕ P", xy=(cx(DEAD_IDX) + CW / 2, y), xytext=(0, -7),
                         textcoords="offset points", ha="center", va="top",
                         fontsize=13, color=color, fontweight="bold")
@@ -323,7 +323,7 @@ def ghostserve_delta():
     # ── ours: across the network ──────────────────────────────────
     ax = panel(fig, [0.535, 0.30, 0.45, 0.58], (0, 10), (0, 4.2),
                title="Ours — same idea, different regime")
-    box(ax, 0.75, 3.05, 3 * 2.20 + 1.85, 0.80, "coordinator  (KV-RAID)",
+    box(ax, 0.75, 3.05, 3 * 2.20 + 1.85, 0.80, "coordinator  (cross-stage parity)",
         face=PAR, text="white", fs=12, bold=True)
     for i in range(4):
         x = 0.75 + i * 2.20

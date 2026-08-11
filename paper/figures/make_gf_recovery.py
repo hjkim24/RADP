@@ -1,4 +1,4 @@
-"""GF(2^3) RAID-6 (KV-RAID-6) recovery, worked example — slide diagram.
+"""GF(2^3) double-parity recovery, worked example — slide diagram.
 
 Three panels: encode (P + GF-weighted Q) -> two blocks die -> recover on the
 field. Concrete numbers D0=5, D1=3, D2=6 so the audience can follow every GF
