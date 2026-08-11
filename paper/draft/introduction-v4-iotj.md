@@ -1,123 +1,123 @@
-# Introduction v4 — IEEE Internet of Things Journal
+# 서론 v4 — IEEE Internet of Things Journal
 
-## 문단 1 — IoT 현장에서는 local inference가 운영 전제다
+## 문단 1 — IoT 현장에서는 현장 추론이 운영 전제다
 
-- **주장:** 일부 IoT 배치는 cloud offload를 안정적으로 사용할 수 없으므로 LLM inference를 현장에 남겨야 한다.
+- **주장:** 일부 IoT 배치는 클라우드 오프로딩을 안정적으로 사용할 수 없으므로 LLM 추론을 현장에 남겨야 한다.
 - **근거 및 전개:**
-  - air-gapped 산업망은 외부 연결을 허용하지 않고, 원격 인프라·오지·해상 설비는 지속적인 cloud link를 전제하기 어렵다.
-  - 현장 로봇과 드론은 통신 단절 중에도 판단을 이어가야 하므로 per-token cloud round trip에 의존할 수 없다.
-  - LLM은 battery management, 항공 조립 fault diagnosis, industrial visual monitoring, ICS protocol emulation 등 IoT·산업 현장 문제에 이미 적용되고 있다 [Zhang'26 TII] [Liu'24 TII] [Wang'24 TII] [Chamotra'26 TII] **[확인 — IOTJ/IoT-venue citation needed]**.
-  - 이 논문의 local inference 동기는 cloud availability가 정하는 배치 조건에 둔다.
-- **다음 문단 연결:** local execution이 필요해도 모델과 실행 상태가 한 장치에 들어가지 않으면 여러 현장 노드를 묶어야 한다.
+  - 외부망과 격리된 산업망은 외부 연결을 허용하지 않고, 원격 인프라·오지·해상 설비는 지속적인 클라우드 연결을 전제하기 어렵다.
+  - 현장 로봇과 드론은 통신 단절 중에도 판단을 이어가야 하므로 토큰당 클라우드 왕복 통신에 의존할 수 없다.
+  - LLM은 배터리 관리, 항공 조립 결함 진단, 산업 시각 모니터링, ICS 프로토콜 에뮬레이션 등 IoT·산업 현장 문제에 이미 적용되고 있다 [Zhang'26 TII] [Liu'24 TII] [Wang'24 TII] [Chamotra'26 TII] **[확인 — IOTJ/IoT-venue citation needed]**.
+  - 이 논문의 현장 추론 동기는 클라우드 가용성이 정하는 배치 조건에 둔다.
+- **다음 문단 연결:** 현장 실행이 필요해도 모델과 실행 상태가 한 장치에 들어가지 않으면 여러 현장 노드를 묶어야 한다.
 
-## 문단 2 — 단일 장치의 capacity wall이 heterogeneous pipeline을 요구한다
+## 문단 2 — 단일 장치의 용량 한계가 이종 파이프라인을 요구한다
 
-- **주장:** billion-parameter model의 weight와 sequence length에 따라 누적되는 KV cache를 함께 수용하려면 여러 heterogeneous edge node에 layer를 나눠야 한다.
+- **주장:** 수십억 매개변수 모델의 가중치와 시퀀스 길이에 따라 누적되는 KV cache를 함께 수용하려면 여러 이종 엣지 노드에 레이어를 나눠야 한다.
 - **근거 및 전개:**
-  - autoregressive inference는 model weight와 매 token마다 증가하는 KV state를 계속 보존하므로 loader peak와 runtime state가 device memory를 함께 압박한다.
-  - 우리 fleet의 Jetson Orin Nano에서 single-bin OPT-1.3B (2.6 GB)는 세 번의 배포 시도 모두 실패했다. auto-placement의 18-layer load는 OOM reboot, 재시도의 18-layer LoadStage는 OS reboot, manual 4–5-layer placement는 swap-thrash를 일으켰다.
-  - 원인은 `torch.load`가 single-bin checkpoint 전체를 materialize해 layer split 이후에도 worker peak가 model size에 접근한 데 있다. Sharded checkpoint는 이 loader peak를 피하는 방법이며 본 연구 범위 밖이다.
-  - 이미 배치된 GPU tier와 CPU-only node의 처리량은 같은 fleet에서도 최대 **76×** 차이 나므로 균등 분할은 적절하지 않다.
-  - cloud–edge–end collaborative inference는 여러 장치에 computation을 나누는 접근을 확립했고 [Lin'20 TII] [Wu'21 TII], EdgeShard와 Jupiter는 heterogeneity와 memory budget을 반영해 layer placement를 최적화한다 [EdgeShard] [Jupiter].
-- **다음 문단 연결:** 이 pipeline은 한 장치의 memory 한계를 넘지만, 어느 한 stage의 failure가 전체 generation state를 끊는 새로운 failure domain을 만든다.
+  - 자기회귀 추론은 모델 가중치와 매 토큰마다 증가하는 KV 상태를 계속 보존하므로 로더 최대 사용량과 실행 상태가 장치 메모리를 함께 압박한다.
+  - 우리 장치군의 Jetson Orin Nano에서 단일 파일 OPT-1.3B (2.6 GB)는 세 번의 배포 시도 모두 실패했다. 자동 배치의 18개 레이어 적재는 OOM 재부팅, 재시도의 18개 레이어 LoadStage는 운영체제 재부팅, 수동 4–5개 레이어 배치는 스왑 과부하를 일으켰다.
+  - 원인은 `torch.load`가 단일 파일 체크포인트 전체를 메모리에 올려 레이어 분할 이후에도 워커 최대 사용량이 모델 크기에 접근한 데 있다. 분할 체크포인트는 이 로더 최대 사용량을 피하는 방법이며 본 연구 범위 밖이다.
+  - 이미 배치된 GPU 계층과 CPU 전용 노드의 처리량은 같은 장치군에서도 최대 **76×** 차이 나므로 균등 분할은 적절하지 않다.
+  - 클라우드–엣지–단말 협력 추론은 여러 장치에 연산을 나누는 접근을 확립했고 [Lin'20 TII] [Wu'21 TII], EdgeShard와 Jupiter는 이질성과 메모리 예산을 반영해 레이어 배치를 최적화한다 [EdgeShard] [Jupiter].
+- **다음 문단 연결:** 이 파이프라인은 한 장치의 메모리 한계를 넘지만, 어느 한 단계의 장애가 전체 생성 상태를 끊는 새로운 장애 영역을 만든다.
 
-## 문단 3 — Edge pipeline의 실제 공백은 unreliability다
+## 문단 3 — 엣지 파이프라인의 실제 공백은 신뢰성 부족이다
 
-- **주장:** heterogeneous placement가 성능 문제를 다뤘더라도, 실행 중 worker failure를 복구하지 못하면 IoT serving stream은 첫 장애에서 중단된다.
+- **주장:** 이종 배치가 성능 문제를 다뤘더라도, 실행 중 워커 장애를 복구하지 못하면 IoT 서빙 흐름은 첫 장애에서 중단된다.
 - **근거 및 전개:**
-  - IoT node는 energy depletion과 hardware malfunction에 노출되며 [Kaur'23 TII], 한 computing node의 failure는 data loss와 performance degradation으로 이어질 수 있다 [Xu'20 TII].
-  - 우리 fleet에서도 crash, OOM, network partition을 직접 관측했다.
-  - EdgeShard와 Jupiter는 heterogeneity를 정면으로 다루지만 각 layer의 active copy를 한 device에 두며 in-flight recovery path를 제공하지 않는다 [EdgeShard] [Jupiter].
-  - 따라서 한 stage가 사라지면 그 stage에 있던 KV state와 pipeline continuity가 함께 사라져 진행 중 stream이 abort된다.
-- **다음 문단 연결:** recovery path를 추가하려면 spare state를 어디에 둘지 결정해야 하며, memory-tightness가 가능한 해법을 제한한다.
+  - IoT 노드는 에너지 고갈과 하드웨어 고장에 노출되며 [Kaur'23 TII], 한 컴퓨팅 노드의 장애는 데이터 손실과 성능 저하로 이어질 수 있다 [Xu'20 TII].
+  - 우리 장치군에서도 크래시, OOM, 네트워크 분할을 직접 관측했다.
+  - EdgeShard와 Jupiter는 이질성을 정면으로 다루지만 각 레이어의 활성 사본을 한 장치에 두며 실행 중 복구 경로를 제공하지 않는다 [EdgeShard] [Jupiter].
+  - 따라서 한 단계가 사라지면 그 단계에 있던 KV 상태와 파이프라인 연속성이 함께 사라져 진행 중 흐름이 중단된다.
+- **다음 문단 연결:** 복구 경로를 추가하려면 예비 상태를 어디에 둘지 결정해야 하며, 메모리 제약이 가능한 해법을 제한한다.
 
-## 문단 4 — 기존 복구법의 운영 전제가 memory-tight IoT edge와 맞지 않는다
+## 문단 4 — 기존 복구법의 운영 전제가 메모리가 빠듯한 IoT 엣지와 맞지 않는다
 
-- **주장:** 기존 swarm·datacenter recovery는 guaranteed spare memory, 관리된 failure model, 고성능 interconnect를 전제로 하며 이 조건들은 memory-tight IoT fleet의 운영 조건과 맞지 않는다.
+- **주장:** 기존 스웜·데이터센터 복구는 보장된 예비 메모리, 관리된 장애 모델, 고성능 상호연결망을 전제로 하며 이 조건들은 메모리가 빠듯한 IoT 장치군의 운영 조건과 맞지 않는다.
 - **근거 및 전개:**
-  - Petals는 failed stage의 과거 입력을 replay할 replacement peer가 같은 layer를 이미 보유한다고 가정한다 [Petals].
-  - DejaVu의 full KV replication은 replica를 상시 보관할 memory headroom을 요구한다 [DejaVu].
-  - GhostServe의 erasure-coded checkpoint는 datacenter-class host memory와 intra-node serving infrastructure에 맞춰 설계되었다 [GhostServe].
-  - SpotServe는 예고된 preemption에 맞춘 migration과 stateful recovery를 사용하므로 abrupt crash·OOM·network partition이 발생하는 edge failure model과 조건이 다르다 [SpotServe].
-  - 이 regime에서 warm spare와 stored-KV replica는 보장된 capacity가 아니며, datacenter recovery substrate를 그대로 전제할 수 없다.
-- **다음 문단 연결:** 전제의 차이를 확인한 뒤에는 각 recovery family가 recovery time과 steady-state storage에서 지불하는 비용을 비교해야 한다.
+  - Petals는 장애 단계의 과거 입력을 재실행할 대체 peer가 같은 레이어를 이미 보유한다고 가정한다 [Petals].
+  - DejaVu의 전체 KV 복제는 복제본을 상시 보관할 메모리 여유를 요구한다 [DejaVu].
+  - GhostServe의 erasure coding 기반 체크포인트는 데이터센터급 호스트 메모리와 노드 내부 서빙 인프라에 맞춰 설계되었다 [GhostServe].
+  - SpotServe는 예고된 선점에 맞춘 이전과 상태 보존 복구를 사용하므로 갑작스러운 크래시·OOM·네트워크 분할이 발생하는 엣지 장애 모델과 조건이 다르다 [SpotServe].
+  - 이 영역에서 상시 대기 예비 자원과 저장된 KV 복제본은 보장된 용량이 아니며, 데이터센터 복구 기반 구조를 그대로 전제할 수 없다.
+- **다음 문단 연결:** 전제의 차이를 확인한 뒤에는 각 복구 계열이 복구 시간과 상시 저장에서 지불하는 비용을 비교해야 한다.
 
-## 문단 5 — Edge에 맞는 recovery strategy는 recovery time과 steady-state storage를 함께 봐야 한다
+## 문단 5 — 엣지에 맞는 복구 전략은 복구 시간과 상시 저장을 함께 봐야 한다
 
-- **주장:** recovery time과 steady-state storage의 두 축이 heterogeneous, memory-tight edge의 recovery design space를 정의하며, 이 regime에 맞는 strategy는 선행 연구에서 정립되지 않았다.
+- **주장:** 복구 시간과 상시 저장의 두 축이 이종이며 메모리가 빠듯한 엣지의 복구 설계공간을 정의하며, 이 영역에 맞는 전략은 선행 연구에서 정립되지 않았다.
 - **근거 및 전개:**
-  - recompute-from-scratch는 pipeline 전체를 다시 실행하고, Petals 계열 input replay는 failed stage만 mirror된 입력으로 다시 실행하므로 둘 다 failure position (P)까지의 진행량에 따라 recovery work가 증가한다 [Petals].
-  - stored-KV는 model forward pass를 제거하지만, DejaVu식 full replication은 모든 non-head stage의 KV를 보존해 pipeline depth N에 따라 steady-state storage가 증가한다 [DejaVu].
-  - GhostServe는 datacenter serving 안에서 erasure-coded KV checkpointing으로 replication storage를 줄인다 [GhostServe]. RADP는 coding group을 heterogeneous, memory-tight node의 pipeline stage들로 구성하며, 그 storage cost를 정하는 ψ가 recovery requirement의 제약도 함께 받는 문제를 다룬다.
-  - proactive backup 없이 survivor 위에서 placement를 다시 풀면 recovery는 P와 무관하게 약 **53초**의 median을 보였고, cold weight reload와 position 0 replay가 비용을 지배했다.
-  - SpotServe가 bipartite matching migration과 stateful recovery로 naive cold restart를 회피한 설계도 no-backup reconfiguration의 비용을 뒷받침한다 [SpotServe].
-- **다음 문단 연결:** RADP는 이 trade-off에서 recomputation과 stage-sum storage를 동시에 피하기 위해 cross-stage parity를 사용한다.
+  - 처음부터 재계산은 파이프라인 전체를 다시 실행하고, Petals 계열 입력 재실행은 장애 단계만 복제된 입력으로 다시 실행하므로 둘 다 실패 위치 (P)까지의 진행량에 따라 복구 작업량이 증가한다 [Petals].
+  - 저장된 KV는 모델 순전파를 제거하지만, DejaVu식 전체 복제는 모든 head 외 단계의 KV를 보존해 파이프라인 깊이 N에 따라 상시 저장이 증가한다 [DejaVu].
+  - GhostServe는 데이터센터 서빙 안에서 erasure coding 기반 KV 체크포인트로 복제 저장량을 줄인다 [GhostServe]. RADP는 코딩 그룹을 이종이며 메모리가 빠듯한 노드의 파이프라인 단계들로 구성하며, 그 저장 비용을 정하는 ψ가 복구 요구사항의 제약도 함께 받는 문제를 다룬다.
+  - 사전 backup 없이 생존 노드 위에서 배치를 다시 풀면 복구는 P와 무관하게 약 **53초**의 중앙값을 보였고, 가중치 콜드 재적재와 위치 0 재실행이 비용을 지배했다.
+  - SpotServe가 이분 매칭 기반 이전과 상태 보존 복구로 단순 콜드 재시작을 회피한 설계도 backup 없는 재구성의 비용을 뒷받침한다 [SpotServe].
+- **다음 문단 연결:** RADP는 이 상충관계에서 재계산과 단계 합산 저장을 동시에 피하기 위해 cross-stage parity를 사용한다.
 
-## 문단 6 — Cross-stage parity는 failed stage의 KV를 model forward 없이 복원한다
+## 문단 6 — Cross-stage parity는 장애 단계의 KV를 모델 순전파 없이 복원한다
 
-- **주장:** RADP의 single-parity 구성은 non-head stage들의 KV state를 하나의 parity column으로 결합해 단일 stage failure에서 원래 KV byte를 직접 복원한다.
+- **주장:** RADP의 single-parity 구성은 head 외 단계들의 KV 상태를 하나의 parity column으로 결합해 단일 단계 장애에서 원래 KV 바이트를 직접 복원한다.
 - **근거 및 전개:**
-  - 각 non-head stage는 새 KV column을 coordinator로 보내고, coordinator는 서로 다른 stage 길이를 zero-padding한 뒤 byte-wise parity로 누적한다.
-  - failure가 발생하면 coordinator는 parity column과 surviving stage의 KV column을 결합해 failed stage의 KV를 복원하고 promoted backup에 설치한다.
-  - 이 경로에는 model forward pass가 없으므로 recovery work가 failure position에 비례해 늘지 않는다.
-  - 저장된 byte를 역연산해 복원하므로 primary parity path가 실행된 경우 recovered KV는 원본과 bit-identical이라는 guarantee를 갖는다.
-  - 같은 stage를 CUDA와 CPU에서 재계산하면 KV 원소의 **26.9%**가 달랐고 최대 absolute error는 **2⁻⁸**이었다. 이 결과는 stored-byte recovery의 reproducibility guarantee를 지지한다.
-  - **3156**번의 token decision은 모두 일치했으므로 output error에 대한 개선 claim은 세우지 않는다.
-- **다음 문단 연결:** 이 메커니즘의 가치는 single-failure TTR의 (P)-의존성과 steady-state storage scaling을 함께 측정하면 드러난다.
+  - 각 head 외 단계는 새 KV 열을 코디네이터로 보내고, 코디네이터는 서로 다른 단계 길이를 영값으로 채운 뒤 바이트 단위 parity로 누적한다.
+  - 장애가 발생하면 코디네이터는 parity column과 생존 단계의 KV 열을 결합해 장애 단계의 KV를 복원하고 승격된 backup에 설치한다.
+  - 이 경로에는 모델 순전파가 없으므로 복구 작업량이 실패 위치에 비례해 늘지 않는다.
+  - 저장된 바이트를 역연산해 복원하므로 주 parity 경로가 실행된 경우 복구된 KV는 원본과 비트 단위로 동일하다는 보장을 갖는다.
+  - 같은 단계를 CUDA와 CPU에서 재계산하면 KV 원소의 **26.9%**가 달랐고 최대 절대 오차는 **2⁻⁸**이었다. 이 결과는 저장 바이트 복구의 재현성 보장을 지지한다.
+  - **3156**번의 토큰 결정은 모두 일치했으므로 출력 오류에 대한 개선 주장은 세우지 않는다.
+- **다음 문단 연결:** 이 메커니즘의 가치는 단일 장애 TTR의 (P)-의존성과 상시 저장의 증가 양상을 함께 측정하면 드러난다.
 
-## 문단 7 — Single-parity는 flat-in-P recovery와 O(1) storage를 동시에 보인다
+## 문단 7 — Single-parity는 P에 무관한 복구와 O(1) 저장을 동시에 보인다
 
-- **주장:** single-failure 실측에서 cross-stage parity는 stored-KV recovery의 낮은 TTR을 유지하면서 full replication보다 적은 steady-state storage를 사용한다.
+- **주장:** 단일 장애 실측에서 cross-stage parity는 저장된 KV 복구의 낮은 TTR을 유지하면서 전체 복제보다 적은 상시 저장을 사용한다.
 - **근거 및 전개:**
-  - 5-stage OPT-350M Jetson fleet에서 `TTR(P) = 284.1 ms + 0.87 ms·P`였으며, Petals 계열의 **16.21 ms/pos**보다 **19×**, recompute-from-scratch의 **164.32 ms/pos**보다 **188×** 완만했다.
-  - P=32에서 no-backup survivor reconfiguration은 cross-stage parity보다 약 **176×** 느렸다.
-  - DejaVu는 `239.3 ms + 2.67 ms·P`로 cross-stage parity와 사실상 동률이며, 두 계열이 모두 zero-recompute임을 확인한다 [DejaVu].
-  - 같은 head-heavy placement에서 cross-stage parity는 KV token당 **16,384 B**, DejaVu replication은 **36,864 B**를 저장해 전자가 **2.25×** 적다. 이 비율은 head가 15/24 layer를 가진 보수적인 배치에서 얻었다.
-  - parity storage는 max non-head stage 하나에 의해 정해져 pipeline depth에 대해 O(1)이고, replication은 non-head stage 합으로 정해져 O(N)이다.
-  - per-token 차이는 작지만 누적 격차는 OPT-350M의 2048-token context에서 약 **40 MB**, 균등 pipeline의 OPT-350M@4096에서 약 **230 MB**, OPT-13B@4096에서 약 **1.9 GB**로 커진다. 뒤의 두 값은 model geometry 계산이며 live measurement가 아니다.
-- **다음 문단 연결:** parity storage가 max stage 크기에 의해 결정된다는 사실은 fault tolerance를 placement 완료 뒤에 덧붙일 수 없음을 뜻한다.
+  - 5단계 OPT-350M Jetson 장치군에서 `TTR(P) = 284.1 ms + 0.87 ms·P`였으며, Petals 계열의 **16.21 ms/pos**보다 **19×**, 처음부터 재계산의 **164.32 ms/pos**보다 **188×** 완만했다.
+  - P=32에서 backup 없는 생존 노드 재구성은 cross-stage parity보다 약 **176×** 느렸다.
+  - DejaVu는 `239.3 ms + 2.67 ms·P`로 cross-stage parity와 사실상 동률이며, 두 계열 모두 재계산이 없음을 확인한다 [DejaVu].
+  - 같은 head 중심 배치에서 cross-stage parity는 KV token당 **16,384 B**, DejaVu 복제는 **36,864 B**를 저장해 전자가 **2.25×** 적다. 이 비율은 head가 15/24개 레이어를 가진 보수적인 배치에서 얻었다.
+  - parity 저장량은 가장 큰 head 외 단계 하나에 의해 정해져 파이프라인 깊이에 대해 O(1)이고, 복제는 head 외 단계 합으로 정해져 O(N)이다.
+  - 토큰당 차이는 작지만 누적 격차는 OPT-350M의 2048개 토큰 문맥에서 약 **40 MB**, 균등 파이프라인의 OPT-350M@4096에서 약 **230 MB**, OPT-13B@4096에서 약 **1.9 GB**로 커진다. 뒤의 두 값은 모델 구조 계산이며 실측이 아니다.
+- **다음 문단 연결:** parity 저장량이 최대 단계 크기에 의해 결정된다는 사실은 장애 허용을 배치 완료 뒤에 덧붙일 수 없음을 뜻한다.
 
-## 문단 8 — ψ와 R은 feasibility·storage·routing에서 결합된다
+## 문단 8 — ψ와 R은 실현 가능성·저장·경로 배정에서 결합된다
 
-- **주장:** finite recovery-hosting capacity에서는 ψ(layer placement)가 recovery storage와 R(recovery routing)의 feasibility·quality를 함께 결정한다.
+- **주장:** 한정된 복구 호스팅 용량에서는 ψ(레이어 배치)가 복구 저장량과 R(복구 경로 배정)의 실현 가능성·품질을 함께 결정한다.
 - **근거 및 전개:**
-  - **Storage coupling (structural):** parity column 크기는 `max(non-head stage KV)`이므로 ψ의 partition boundary가 steady-state recovery storage를 정확히 정한다.
-  - **Routing coupling (observed):** ψ와 독립적으로 푼 R이 모든 non-head backup을 약한 node 한 대에 집중시키는 degenerate recovery table을 우리 fleet에서 실제로 만들었다.
-  - **Feasibility condition:** peer k가 `free(k) − self(k) ≥ max_stage(ψ)`를 만족하지 못하는 memory regime에서는 cost-first ψ에 recovery table이 없을 수 있으므로 ψ와 R의 공동 탐색이 필요하다.
-  - **Controlled sweep:** live cluster snapshot의 reported free memory를 device당 600–300 MB로 제한하고 backup host를 pipeline device로 동일하게 맞춘 offline deterministic sweep에서, decoupled procedure는 recovery table을 찾지 못했지만 joint alternating DP는 feasible (ψ, R)을 찾았다. 이 결과는 production solver의 계산이며 live deployment failure가 아니다.
-  - **Scope limit:** uncapped OPT-350M fleet은 largest stage 576 MB에 대해 약 5 GB의 peer headroom을 가져 binding band 밖에 있다. 이 조건에서는 cost-only 2-stage와 production 4-stage의 차이가 feasibility 증거가 아니며, `REPORT.md` §12.3의 non-binding 결과와 일치한다.
-  - **Backup-host scope:** R이 whole fleet을 사용할 때 decoupled procedure는 250 MB cap까지 유지됐으며, pipeline에 선택되지 않는 CPU-only node의 5–6 GB free memory가 recovery capacity를 제공했다. 이는 backup hosting이 compute speed보다 memory·bandwidth에 좌우됨을 보이는 design-space 결과이며, whole-fleet R 분리는 아직 구현하지 않았다.
-- **다음 문단 연결:** RADP는 이 coupling을 ψ와 R이 서로의 제약을 갱신하는 alternating DP로 구현한다.
+  - **저장 결합 (구조적):** parity column 크기는 `max(non-head stage KV)`이므로 ψ의 분할 경계가 상시 복구 저장량을 정확히 정한다.
+  - **경로 배정 결합 (관측):** ψ와 독립적으로 푼 R이 모든 head 외 backup을 약한 노드 한 대에 집중시키는 축퇴된 복구 테이블을 우리 장치군에서 실제로 만들었다.
+  - **실현 가능성 조건:** peer k가 `free(k) − self(k) ≥ max_stage(ψ)`를 만족하지 못하는 메모리 영역에서는 비용 우선 ψ에 복구 테이블이 없을 수 있으므로 ψ와 R의 공동 탐색이 필요하다.
+  - **통제된 sweep:** 실제 클러스터 스냅샷의 보고된 여유 메모리를 장치당 600–300 MB로 제한하고 backup 호스트를 파이프라인 장치로 동일하게 맞춘 오프라인 결정론적 sweep에서, 분리 절차는 복구 테이블을 찾지 못했지만 결합 alternating DP는 실현 가능한 (ψ, R)을 찾았다. 이 결과는 운영 솔버의 계산이며 실제 배포 실패가 아니다.
+  - **범위 한계:** 제한을 두지 않은 OPT-350M 장치군은 최대 단계 576 MB에 대해 약 5 GB의 peer 여유를 가져 구속 구간 밖에 있다. 이 조건에서는 비용만 고려한 2단계와 운영 4단계의 차이가 실현 가능성 근거가 아니며, `REPORT.md` §12.3의 비구속 결과와 일치한다.
+  - **backup 호스트 범위:** `ClusterSpec.backup_hosts`로 backup 호스트 범위를 파이프라인 범위와 분리했으며, 값을 지정하지 않으면 기존 동작을 유지해 이전 측정에는 영향이 없다. 또한 round-robin 초기 배치에 실현 가능한 복구 테이블이 없으면 비용만 고려한 DP 결과로 한 번 보정해 가능한 (ψ, R)을 놓치지 않도록 했다. 같은 실제 클러스터 스냅샷을 운영 솔버로 계산한 오프라인 sweep에서, backup을 파이프라인 장치로 제한하면 비용 우선 절차는 600 MB 상한부터 복구 테이블을 잃지만 결합 alternating DP는 300 MB까지 유지되고, 전체 장치군으로 넓혀 파이프라인에서 제외된 CPU 전용 노드의 5–6 GB 여유 메모리도 활용하면 각각 250 MB와 200 MB까지 유지된다. 호스트 풀 확대는 두 절차의 격차를 없애지 않고 메모리 경계를 함께 낮춘다.
+- **다음 문단 연결:** RADP는 이 결합을 ψ와 R이 서로의 제약을 갱신하는 alternating DP로 구현한다.
 
 ## 문단 9 — RADP는 ψ와 R을 하나의 alternating DP에서 갱신한다
 
-- **주장:** RADP의 alternating DP는 recovery requirement를 placement feasibility에 반영하고 placement 결과를 다음 recovery-routing 결정에 되돌린다.
+- **주장:** RADP의 alternating DP는 복구 요구사항을 배치 실현 가능성에 반영하고 배치 결과를 다음 복구 경로 배정 결정에 되돌린다.
 - **근거 및 전개:**
-  - ψ update는 현재 R이 요구하는 backup-memory reservation을 feasibility check에 포함해 layer boundary와 active stage placement를 선택한다.
-  - R update는 현재 ψ가 만든 stage 크기와 남은 device capacity를 사용해 recovery destination을 선택한다.
-  - 갱신된 R의 reservation은 다음 ψ update로 돌아가며, 두 결정이 동시에 수용되는 placement와 recovery table을 구성한다.
-  - 하나의 cost knob가 latency-optimal regime [EdgeShard]과 throughput-optimal regime [Jupiter]을 같은 formulation에 담지만, 이 통합은 fault-tolerant feasibility를 지원하는 부수 기능이다.
-  - automatic node subset selection은 본 논문의 구현 범위 밖이며 future work로 남긴다.
-- **다음 문단 연결:** 이 공동 정식화는 parity column 수를 늘리는 제한된 multi-failure extension으로 이어진다.
+  - ψ 갱신은 현재 R이 요구하는 backup 메모리 예약을 실현 가능성 검사에 포함해 레이어 경계와 활성 단계 배치를 선택한다.
+  - R 갱신은 현재 ψ가 만든 단계 크기와 남은 장치 용량을 사용해 복구 대상을 선택한다.
+  - 갱신된 R의 예약은 다음 ψ 갱신으로 돌아가며, 두 결정이 동시에 수용되는 배치와 복구 테이블을 구성한다.
+  - 하나의 비용 조절값이 지연시간 최적 영역 [EdgeShard]과 처리량 최적 영역 [Jupiter]을 같은 정식화에 담지만, 이 통합은 장애 허용 실현 가능성을 지원하는 부수 기능이다.
+  - 자동 노드 부분집합 선택은 본 논문의 구현 범위 밖이며 후속 과제로 남긴다.
+- **다음 문단 연결:** 이 공동 정식화는 parity column 수를 늘리는 제한된 다중 장애 확장으로 이어진다.
 
-## 문단 10 — Multi-failure extension은 double-parity 검증 범위로 한정한다
+## 문단 10 — 다중 장애 확장은 double-parity 검증 범위로 한정한다
 
-- **주장:** cross-stage parity는 k개 parity column으로 동시 k개 failure를 견디도록 구성할 수 있으며, 본 연구는 double-parity (f=2)까지만 구현하고 live fleet에서 검증했다.
+- **주장:** cross-stage parity는 k개 parity column으로 동시 k개 장애를 견디도록 구성할 수 있으며, 본 연구는 double-parity (f=2)까지만 구현하고 실제 장치군에서 검증했다.
 - **근거 및 전개:**
-  - double-parity는 GF(2⁸)의 두 parity equation으로 두 failed non-head stage의 KV를 model forward 없이 복원한다.
-  - live trial에서 **5/5** sequence가 bit-correct하게 일치했고 TTR slope는 **2.78 ms/pos**로 flat-in-P 성질을 유지했다.
-  - double-parity의 steady-state storage는 KV token당 **32,768 B**다.
-  - k-parity가 replication보다 적게 저장하려면 `k < Σ(non-head)/max(non-head)`이어야 한다. 현재 placement의 비는 **2.25**이므로 k≥3은 저장이 더 크면서 failure tolerance는 더 약해져 구현하지 않았다.
-  - Reed–Solomon erasure-coding 계보에 연결할 확정 citation key는 **[확인]**이다.
-- **다음 문단 연결:** 이 제한된 확장까지 포함하면 기여는 recovery mechanism, measured trade-off, recovery-driven placement, 검증 범위로 정리된다.
+  - double-parity는 GF(2⁸)의 두 parity 방정식으로 장애가 난 두 head 외 단계의 KV를 모델 순전파 없이 복원한다.
+  - 실제 시험에서 **5/5** 시퀀스가 비트 단위로 정확하게 일치했고 TTR 기울기는 **2.78 ms/pos**로 P에 무관한 성질을 유지했다.
+  - double-parity의 상시 저장은 KV token당 **32,768 B**다.
+  - k중 parity가 복제보다 적게 저장하려면 `k < Σ(non-head)/max(non-head)`이어야 한다. 현재 배치의 비는 **2.25**이므로 k≥3은 저장이 더 크면서 장애 허용은 더 약해져 구현하지 않았다.
+  - Reed–Solomon erasure coding 계보에 연결할 확정 인용 키는 **[확인]**이다.
+- **다음 문단 연결:** 이 제한된 확장까지 포함하면 기여는 복구 메커니즘, 실측 상충관계, 복구 주도 배치, 검증 범위로 정리된다.
 
-## 문단 11 — Contributions
+## 문단 11 — 기여
 
-- **주장:** RADP의 기여는 heterogeneous IoT edge의 fault tolerance를 주축으로 하며 placement optimization은 그 fault tolerance를 feasible하게 만드는 역할을 맡는다.
+- **주장:** RADP의 기여는 이종 IoT 엣지의 장애 허용을 주축으로 하며 배치 최적화는 그 장애 허용을 실현 가능하게 만드는 역할을 맡는다.
 - **근거 및 전개:**
-  - **Fault-tolerance design space:** heterogeneous, memory-tight edge에서 recovery time과 steady-state storage를 함께 비교해야 함을 보이고, recomputation, input replay, KV replication, survivor reconfiguration 사이에서 cross-stage parity가 차지하는 operating point를 실측했다.
-  - **Cross-stage parity:** single-parity가 failed stage의 KV를 zero-recompute·bit-identical하게 복원하며, single-failure TTR이 flat-in-P이고 storage가 pipeline depth에 대해 O(1)임을 보였다.
-  - **Recovery-driven placement:** parity storage와 recovery-table quality가 ψ에 의존함을 보였고, matched backup-host scope의 controlled memory-cap sweep에서 decoupled procedure가 recovery table을 잃는 600–300 MB regime에서도 alternating DP가 feasible (ψ, R)을 찾음을 확인했다. Uncapped OPT-350M fleet은 이 binding regime 밖에 있다.
-  - **Live evidence:** 5-stage OPT-350M Jetson fleet에서 recovery family별 TTR slope, parity와 DejaVu의 TTR 동률, **2.25×** storage 차이, cross-tier recomputation의 bit-level divergence를 같은 fault-injection framework에서 확인했다.
-  - **Bounded multi-failure extension:** k-parity 구성을 제시하고 double-parity (f=2)을 구현해 **5/5** live sequence에서 zero-recompute recovery를 검증했으며 k≥3은 현재 storage geometry에서 제외했다.
-- **다음 문단 연결:** 이후 section은 이 순서에 맞춰 recovery model과 cross-stage parity를 먼저 설명하고, 그 제약을 수용하는 alternating DP와 evaluation을 뒤이어 제시한다.
+  - **장애 내성 설계공간:** 이종이며 메모리가 빠듯한 엣지에서 복구 시간과 상시 저장을 함께 비교해야 함을 보이고, 재계산, 입력 재실행, KV 복제, 생존 노드 재구성 사이에서 cross-stage parity가 차지하는 동작점을 실측했다.
+  - **Cross-stage parity:** single-parity가 장애 단계의 KV를 재계산 없이 비트 단위로 동일하게 복원하며, 단일 장애 TTR이 P에 무관하고 저장량이 파이프라인 깊이에 대해 O(1)임을 보였다.
+  - **복구 주도 배치:** parity 저장량과 복구 테이블 품질이 ψ에 의존함을 보였고, 동일하게 맞춘 backup 호스트 범위의 통제된 메모리 상한 sweep에서 분리 절차가 복구 테이블을 잃는 600–300 MB 영역에서도 alternating DP가 실현 가능한 (ψ, R)을 찾음을 확인했다. 제한을 두지 않은 OPT-350M 장치군은 이 구속 영역 밖에 있다.
+  - **실측 근거:** 5단계 OPT-350M Jetson 장치군에서 복구 계열별 TTR 기울기, parity와 DejaVu의 TTR 동률, **2.25×** 저장량 차이, 계층 간 재계산의 비트 수준 차이를 같은 장애 주입 프레임워크에서 확인했다.
+  - **제한된 다중 장애 확장:** k중 parity 구성을 제시하고 double-parity (f=2)을 구현해 **5/5** 실제 시퀀스에서 재계산 없는 복구를 검증했으며 k≥3은 현재 저장 구조에서 제외했다.
+- **다음 문단 연결:** 이후 절은 이 순서에 맞춰 복구 모델과 cross-stage parity를 먼저 설명하고, 그 제약을 수용하는 alternating DP와 평가를 뒤이어 제시한다.
