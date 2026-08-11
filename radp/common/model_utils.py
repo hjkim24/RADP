@@ -21,7 +21,7 @@ import torch
 from torch import nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from radp.common.architectures import get_architecture
+from radp.common.architectures import HeadModuleSet, get_architecture
 from radp.common.logging_utils import get_logger
 from radp.common.types import LayerIdx
 
@@ -432,3 +432,82 @@ def load_stage_blocks(
         rss_after / (1024 * 1024),
     )
     return blocks
+
+
+def load_head_modules(
+    model_id: str,
+    *,
+    dtype: str = "float32",
+    torch_device: str = "cpu",
+    weights_path: Path | None = None,
+) -> HeadModuleSet:
+    """Build only the embedding/tail modules and fill them from the checkpoint.
+
+    The lazy counterpart to ``load_model`` for callers that need to embed
+    tokens or produce logits but not run any transformer block: the
+    coordinator, the worker acting as chain tail, and nothing else.
+
+    ``weights_path`` reads a single safetensors file instead of the model's
+    own shards. The keys are identical — it is a cache of the same tensors —
+    so it exists purely for hosts that cannot store a full shard.
+    """
+    config = AutoConfig.from_pretrained(model_id)
+    arch = get_architecture(config.model_type)
+    torch_dtype = DTYPE_MAP[dtype]
+    hms = arch.make_head_modules(config, torch_dtype, torch_device)
+
+    if weights_path is not None:
+        loc = WeightsLocation(fmt="safetensors", path=Path(weights_path))
+    else:
+        loc = _find_weights_location(model_id)
+
+    rss_before = measure_resident_bytes()
+    reader = _open_weight_reader(loc, torch_device)
+    try:
+        all_keys = reader.keys()
+        # Same layout quirk load_stage_blocks handles: some OPT snapshots
+        # publish keys without the leading "model." prefix.
+        probe = hms.key_prefixes["embed_tokens"]
+        strip_model = (
+            probe.startswith("model.")
+            and not any(k.startswith(probe) for k in all_keys)
+            and any(k.startswith(probe[len("model."):]) for k in all_keys)
+        )
+        if strip_model:
+            log.info("checkpoint uses bare key layout; stripping 'model.' for head modules")
+
+        for attr, prefix in hms.key_prefixes.items():
+            module = hms.lm_head if attr == "lm_head" else getattr(hms.decoder, attr, None)
+            if module is None:
+                continue
+            if strip_model and prefix.startswith("model."):
+                prefix = prefix[len("model."):]
+            local_state = {
+                k[len(prefix):]: reader.get_tensor(k).to(dtype=torch_dtype)
+                for k in all_keys
+                if k.startswith(prefix)
+            }
+            if not local_state and attr == "lm_head" and getattr(
+                config, "tie_word_embeddings", False
+            ):
+                # Tied embeddings: the checkpoint has no separate lm_head.weight.
+                hms.lm_head.weight = hms.decoder.embed_tokens.weight
+                continue
+            if not local_state:
+                log.warning("no checkpoint keys under %r for %s", prefix, attr)
+                continue
+            missing, unexpected = module.load_state_dict(local_state, strict=False)
+            if missing:
+                log.warning("head module %s missing keys: %s", attr, missing)
+            if unexpected:
+                log.warning("head module %s unexpected keys: %s", attr, unexpected)
+    finally:
+        reader.close()
+
+    log.info(
+        "load_head_modules %s: rss +%.1f MB (now %.1f MB)",
+        model_id,
+        (measure_resident_bytes() - rss_before) / (1024 * 1024),
+        measure_resident_bytes() / (1024 * 1024),
+    )
+    return hms
