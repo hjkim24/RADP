@@ -15,10 +15,31 @@ Currently supported:
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import torch
 from torch import nn
+
+
+@dataclass
+class HeadModuleSet:
+    """The non-block modules a family needs for embed() and head().
+
+    ``decoder`` is a stand-in for the HF decoder object: it carries the same
+    attribute names ``embed()``/``head()`` already read, so those methods work
+    unchanged whether they are handed a real model's decoder or this stub.
+    ``key_prefixes`` maps each attribute to its checkpoint key prefix so a
+    generic loader can fill them without knowing the family.
+    """
+
+    decoder: nn.Module
+    lm_head: nn.Module
+    key_prefixes: dict[str, str] = field(default_factory=dict)
+
+
+class _DecoderStub(nn.Module):
+    """Attribute bag with nn.Module semantics (.to(), .eval(), parameters())."""
 
 
 class ModelArchitecture(Protocol):
@@ -40,6 +61,9 @@ class ModelArchitecture(Protocol):
     def make_aux(
         self, config: Any, dtype: torch.dtype, device: str
     ) -> dict[str, nn.Module]: ...
+    def make_head_modules(
+        self, config: Any, dtype: torch.dtype, device: str
+    ) -> HeadModuleSet: ...
     def run_block(
         self,
         block: nn.Module,
@@ -99,6 +123,46 @@ class OPTArchitecture:
     ) -> dict[str, nn.Module]:
         return {}
 
+    def make_head_modules(
+        self, config: Any, dtype: torch.dtype, device: str
+    ) -> HeadModuleSet:
+        from transformers.models.opt.modeling_opt import OPTLearnedPositionalEmbedding
+
+        stub = _DecoderStub()
+        stub.embed_tokens = nn.Embedding(
+            config.vocab_size, config.word_embed_proj_dim, config.pad_token_id
+        )
+        stub.embed_positions = OPTLearnedPositionalEmbedding(
+            config.max_position_embeddings, config.hidden_size
+        )
+        prefixes = {
+            "embed_tokens": "model.decoder.embed_tokens.",
+            "embed_positions": "model.decoder.embed_positions.",
+        }
+        # OPT-350M is the lone variant with word_embed_proj_dim != hidden_size;
+        # its project_in/out bridge the two spaces. Absent otherwise.
+        if config.word_embed_proj_dim != config.hidden_size:
+            stub.project_in = nn.Linear(
+                config.word_embed_proj_dim, config.hidden_size, bias=False
+            )
+            stub.project_out = nn.Linear(
+                config.hidden_size, config.word_embed_proj_dim, bias=False
+            )
+            prefixes["project_in"] = "model.decoder.project_in."
+            prefixes["project_out"] = "model.decoder.project_out."
+        if config.do_layer_norm_before:
+            stub.final_layer_norm = nn.LayerNorm(config.hidden_size)
+            prefixes["final_layer_norm"] = "model.decoder.final_layer_norm."
+
+        lm_head = nn.Linear(config.word_embed_proj_dim, config.vocab_size, bias=False)
+        prefixes["lm_head"] = "lm_head."
+
+        stub.to(device=device, dtype=dtype)
+        stub.eval()
+        lm_head.to(device=device, dtype=dtype)
+        lm_head.eval()
+        return HeadModuleSet(decoder=stub, lm_head=lm_head, key_prefixes=prefixes)
+
     def run_block(
         self,
         block: nn.Module,
@@ -142,6 +206,9 @@ class _RoPEArchitecture:
     def _rotary_cls(self) -> type[nn.Module]:
         raise NotImplementedError
 
+    def _norm_cls(self) -> type[nn.Module]:
+        raise NotImplementedError
+
     def make_block(self, config: Any, layer_idx: int) -> nn.Module:
         return self._block_cls()(config, layer_idx=layer_idx)
 
@@ -175,6 +242,30 @@ class _RoPEArchitecture:
         rope.to(device=device, dtype=dtype)
         rope.eval()
         return {"rotary_emb": rope}
+
+    def make_head_modules(
+        self, config: Any, dtype: torch.dtype, device: str
+    ) -> HeadModuleSet:
+        stub = _DecoderStub()
+        stub.embed_tokens = nn.Embedding(
+            config.vocab_size, config.hidden_size, config.pad_token_id
+        )
+        stub.norm = self._norm_cls()(config.hidden_size, eps=config.rms_norm_eps)
+        lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+        stub.to(device=device, dtype=dtype)
+        stub.eval()
+        lm_head.to(device=device, dtype=dtype)
+        lm_head.eval()
+        return HeadModuleSet(
+            decoder=stub,
+            lm_head=lm_head,
+            key_prefixes={
+                "embed_tokens": "model.embed_tokens.",
+                "norm": "model.norm.",
+                "lm_head": "lm_head.",
+            },
+        )
 
     def run_block(
         self,
@@ -221,6 +312,10 @@ class LlamaArchitecture(_RoPEArchitecture):
         from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
         return LlamaRotaryEmbedding
 
+    def _norm_cls(self) -> type[nn.Module]:
+        from transformers.models.llama.modeling_llama import LlamaRMSNorm
+        return LlamaRMSNorm
+
 
 class MistralArchitecture(_RoPEArchitecture):
     name = "mistral"
@@ -232,6 +327,10 @@ class MistralArchitecture(_RoPEArchitecture):
     def _rotary_cls(self) -> type[nn.Module]:
         from transformers.models.mistral.modeling_mistral import MistralRotaryEmbedding
         return MistralRotaryEmbedding
+
+    def _norm_cls(self) -> type[nn.Module]:
+        from transformers.models.mistral.modeling_mistral import MistralRMSNorm
+        return MistralRMSNorm
 
 
 # ---------------------------------------------------------------------------
