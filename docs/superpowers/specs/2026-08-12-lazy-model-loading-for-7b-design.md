@@ -155,7 +155,7 @@ A node that touches shard 1 needs ~10 GB free disk for it. Current state:
 
 Purging `~/.cache/huggingface` is authorised on the workers.
 
-### 4.1 The coordinator has nowhere to put a shard — OPEN DECISION
+### 4.1 The coordinator has nowhere to put a shard — DECIDED: (c) head bundle
 
 ax-1's 27 GB breaks down as `/usr` 14 GB (JetPack, CUDA toolkit), `/home/isp`
 9.6 GB, `/opt` 2.6 GB. None of it is HF cache, and `/usr` is not safely
@@ -179,13 +179,46 @@ Three ways out, to be decided before the plan is written:
   smallest thing to *ship*, but it adds a build step and a distribution artifact
   that §6 otherwise rules out.
 
-**Recommendation: try (a), fall back to (b).** (b) is zero code and reversible,
-and the fleet has already lost its original topology. (c) is worth building only
-if the coordinator must stay on ax-1 for a reason we do not currently have.
+**Decision: (c).** (a) was tried and fails: ax-1's home is `jinwoo` 3.4 GB and
+`yerin` 1.5 GB — other people's data, not ours to delete — plus `radp` 983 MB,
+`Downloads` 910 MB and ~450 MB of browser/pip cache. Only ~1.4 GB is safely
+reclaimable against a 13.5 GB requirement, and `/usr`'s 14 GB is the JetPack
+install on a shared lab machine.
 
-`ao-1` being down is not a blocker for this work — the fleet still has one AGX
-(`ao-2`, 29 GB, CUDA) plus the Nanos — but it does reduce the device pool for
-the later coupling measurement.
+(b) was rejected on cost, not effort. With `ao-1` offline, `ao-2` is the fleet's
+only remaining 32 GB node. Spending it as the coordinator removes the one device
+big enough to hold a stage the Nanos cannot back up — which is precisely the
+condition this whole work exists to reach. It would defeat the experiment it is
+meant to enable.
+
+(c) is small because the coordinator needs three tensors, confirmed against the
+checkpoint index:
+
+| tensor | shard |
+|---|---|
+| `model.embed_tokens.weight` | 1 |
+| `model.norm.weight` | 2 |
+| `lm_head.weight` | 2 |
+
+They span both shards — which is why the shard-download path would pull all
+13.5 GB — but together they are 32000×4096 + 4096 + 32000×4096 ≈ **512 MB in
+fp16**, 3.8 % of the checkpoint, and they fit in ax-1's free space.
+
+So: an offline extraction step writes those tensors to a single small
+safetensors file, and `load_head_modules` accepts a bundle as an alternative
+source to the HF shards. The bundle is a cache of the same tensors, not a
+different artifact — same keys, same dtype — so the unit test in §5 covers both
+sources with one comparison against `load_model`.
+
+This narrows §6's exclusion of a "weight distribution service": we ship one
+small file for the coordinator, and workers still stream shards from HF.
+
+`ao-1` is the only node down; the other seven answer. `ao-2` (29 GB, CUDA) plus
+three CUDA Nanos and two CPU-forced Nanos is enough to serve 7B — 13.5 GB of
+weights and 13.5 GB of backup against ~41 GB of free memory across the CUDA
+tier — and the arithmetic that makes it tight is the point: a stage large enough
+to suit `ao-2` is one no 5.5 GB Nano can back up. That is the coupling condition
+D2.9 could only reach by capping memory.
 
 ## 5. Testing
 
@@ -215,7 +248,9 @@ the later coupling measurement.
   arithmetic the coupling experiment depends on.
 - **Layer-granular re-sharding / a local weight distribution service.** Real
   edge value, but not needed to reach 7B: shard-level download plus mmap already
-  bounds resident memory, and disk is solvable by purging caches.
+  bounds resident memory on the workers. The one exception is the coordinator's
+  512 MB head bundle (§4.1), which exists because ax-1 has no disk, not because
+  the streaming path is inadequate.
 
 ## 7. Risks
 
