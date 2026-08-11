@@ -150,6 +150,7 @@ A node that touches shard 1 needs ~10 GB free disk for it. Current state:
 | on-2 | 22 GB | 12 GB | purge if needed |
 | on-3 | 34 GB | 8.1 GB | ok |
 | on-4 | 31 GB | 9.2 GB | ok |
+| on-5 | 30 GB | 9.2 GB | ok — restored to the fleet 2026-08-12, needs a redeploy (last synced at `382739b`) |
 | ao-2 | 33 GB | 1.3 GB | ok |
 | ao-1 | — | — | **offline** (no ICMP, no SSH) |
 
@@ -213,12 +214,13 @@ sources with one comparison against `load_model`.
 This narrows §6's exclusion of a "weight distribution service": we ship one
 small file for the coordinator, and workers still stream shards from HF.
 
-`ao-1` is the only node down; the other seven answer. `ao-2` (29 GB, CUDA) plus
-three CUDA Nanos and two CPU-forced Nanos is enough to serve 7B — 13.5 GB of
-weights and 13.5 GB of backup against ~41 GB of free memory across the CUDA
-tier — and the arithmetic that makes it tight is the point: a stage large enough
-to suit `ao-2` is one no 5.5 GB Nano can back up. That is the coupling condition
-D2.9 could only reach by capping memory.
+`ao-1` is the only node down; the other eight answer. `ao-2` (29 GB, CUDA) plus
+four CUDA Nanos (`on-1`, `on-2`, `on-5`, `on-6`) and two CPU-forced Nanos
+(`on-3`, `on-4`) is enough to serve 7B — 13.5 GB of weights and 13.5 GB of
+backup against ~47 GB of free memory across the CUDA tier — and the arithmetic
+that makes it tight is the point: a stage large enough to suit `ao-2` is one no
+5.5 GB Nano can back up. That is the coupling condition D2.9 could only reach by
+capping memory.
 
 ## 5. Testing
 
