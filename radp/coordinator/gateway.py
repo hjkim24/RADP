@@ -20,20 +20,23 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import os
 import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import grpc
 import numpy as np
 import torch
+from transformers import AutoConfig, AutoTokenizer
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 
 from radp.common.architectures import ModelArchitecture, get_architecture
 from radp.common.logging_utils import get_logger
-from radp.common.model_utils import ModelHandle, load_model, measure_resident_bytes
+from radp.common.model_utils import load_head_modules, measure_resident_bytes
 from radp.common.proto import radp_pb2, radp_pb2_grpc
 from radp.common.protocol import WorkerClient
 from radp.common.tensor_io import decode, encode
@@ -126,9 +129,18 @@ class RequestGateway:
             raise ValueError(f"No address for devices: {sorted(set(missing))}")
 
         log.info("coordinator loading model %s on %s", model_id, torch_device)
-        self.handle: ModelHandle = load_model(model_id, dtype=dtype, torch_device=torch_device)
-        self._arch: ModelArchitecture = get_architecture(self.handle.model.config.model_type)
-        self._decoder = self._arch.get_decoder(self.handle.model)
+        self._config = AutoConfig.from_pretrained(model_id)
+        self._tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self._arch: ModelArchitecture = get_architecture(self._config.model_type)
+        head_bundle = os.environ.get("RADP_HEAD_BUNDLE")
+        hms = load_head_modules(
+            model_id,
+            dtype=dtype,
+            torch_device=torch_device,
+            weights_path=Path(head_bundle) if head_bundle else None,
+        )
+        self._decoder = hms.decoder
+        self._lm_head = hms.lm_head
         rss_before = measure_resident_bytes()
         self._decoder.layers = torch.nn.ModuleList()
         if torch.cuda.is_available():
@@ -403,7 +415,7 @@ class RequestGateway:
                 generator=generator,
             )
 
-        tokenizer = self.handle.tokenizer
+        tokenizer = self._tokenizer
         try:
             t0 = time.perf_counter()
             stage_timings = self._prefill(request_id, prompt, sampler=sampler)
@@ -530,7 +542,7 @@ class RequestGateway:
         sampler: Callable[[torch.Tensor], int] = lambda x: int(torch.argmax(x).item()),
     ) -> list[StageTiming]:
         log.info("request=%d PREFILL prompt_len=%d", request_id, len(prompt))
-        inputs = self.handle.tokenizer(prompt, return_tensors="pt")
+        inputs = self._tokenizer(prompt, return_tensors="pt")
         input_ids: torch.Tensor = inputs["input_ids"].to(self.torch_device)
         attention_mask_2d = inputs.get("attention_mask", torch.ones_like(input_ids))
         attention_mask_2d = attention_mask_2d.to(self.torch_device)
@@ -1334,7 +1346,7 @@ class RequestGateway:
         """(n_heads, head_dim, numpy dtype, itemsize) for this model's KV
         tensors — mirrors StageRunner._kv_shape so reconstructed bytes match
         the workers' export/install layout exactly."""
-        config = self.handle.model.config
+        config = self._config
         n_heads = (
             getattr(config, "num_key_value_heads", None)
             or config.num_attention_heads
@@ -1884,7 +1896,7 @@ class RequestGateway:
         return self._arch.embed(self._decoder, input_ids, attention_mask_2d, past_kv_length)
 
     def _head(self, hidden: torch.Tensor) -> torch.Tensor:
-        return self._arch.head(self._decoder, self.handle.model.lm_head, hidden)
+        return self._arch.head(self._decoder, self._lm_head, hidden)
 
     # ------------------------------------------------------------------
     # Convenience used by tests and existing callers
@@ -1898,7 +1910,7 @@ class RequestGateway:
         request_id = self.new_request_id()
         attempts = 0
         try:
-            inputs = self.handle.tokenizer(prompt, return_tensors="pt")
+            inputs = self._tokenizer(prompt, return_tensors="pt")
             input_ids = inputs["input_ids"].to(self.torch_device)
             attention_mask_2d = inputs.get(
                 "attention_mask", torch.ones_like(input_ids)

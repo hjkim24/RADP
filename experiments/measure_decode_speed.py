@@ -66,7 +66,7 @@ def main() -> None:
         print(f"generated {len(tokens)} tokens in {elapsed:.3f}s "
               f"({elapsed/len(tokens)*1000:.1f} ms/token)")
         print(f"  tokens: {tokens}")
-        print(f"  text:   {gateway.handle.tokenizer.decode(tokens)!r}")
+        print(f"  text:   {gateway._tokenizer.decode(tokens)!r}")
 
     finally:
         a.stop()

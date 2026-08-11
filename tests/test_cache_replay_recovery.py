@@ -123,8 +123,8 @@ def test_mid_generation_kill_recovers_via_cache_replay(
     assert len(recovered) == n_tokens
     assert recovered == baseline, (
         f"recovered={recovered}\nbaseline={baseline}\n"
-        f"recovered_text={baseline_gw.handle.tokenizer.decode(recovered)!r}\n"
-        f"baseline_text ={baseline_gw.handle.tokenizer.decode(baseline)!r}"
+        f"recovered_text={baseline_gw._tokenizer.decode(recovered)!r}\n"
+        f"baseline_text ={baseline_gw._tokenizer.decode(baseline)!r}"
     )
     # Sanity: gateway should report worker-b dead.
     assert DeviceId("worker-b") in gw._dead

@@ -26,6 +26,7 @@ from radp.common.architectures import ModelArchitecture, get_architecture
 from radp.common.logging_utils import get_logger
 from radp.common.model_utils import (
     DTYPE_MAP,
+    load_head_modules,
     load_stage_blocks,
     measure_resident_bytes,
 )
@@ -132,23 +133,13 @@ class StageRunner:
         """Load the arch-specific head modules (final_layer_norm + project_out
         + lm_head) so this worker can serve as the chain tail with sampling.
         """
-        from radp.common.model_utils import load_model
         with self._lock:
             self._ensure_model(model_id)
-            handle = load_model(
-                model_id, dtype=self.dtype, torch_device=self.torch_device,
+            hms = load_head_modules(
+                model_id, dtype=self.dtype, torch_device=self.torch_device
             )
-            # The arch.head() signature wants a `decoder` from which it pulls
-            # `final_layer_norm` and `project_out`. For OPT that's
-            # model.model.decoder; we keep a reference so the modules live
-            # on the right device and stay attached for inference.
-            decoder = (
-                handle.model.model.decoder
-                if hasattr(handle.model, "model") and hasattr(handle.model.model, "decoder")
-                else getattr(handle.model, "model", handle.model)
-            )
-            self._head_decoder = decoder
-            self._head_lm_head = handle.model.lm_head
+            self._head_decoder = hms.decoder
+            self._head_lm_head = hms.lm_head
             log.info(
                 "worker=%s head loaded (rss=%.1f MB) — chain-tail sampling enabled",
                 self.device_id,
