@@ -170,6 +170,17 @@ class ClusterSpec:
     ({}), the DP solves Ψ with no backup burden, and a stage failure has no
     backup to promote (reactive re-placement baseline). Default True keeps every
     existing run unchanged."""
+    backup_hosts: list[DeviceProfile] | None = None
+    """Devices eligible to host a backup, if wider than ``devices``.
+
+    ``None`` (default) means R may only use devices that are also in the
+    pipeline — the historical behaviour, and what every prior run measured.
+    Widening matters because ``solve_alternating_best_order`` enumerates
+    device *subsets*: a node dropped from the pipeline for being slow is
+    dropped from R along with it, even when it is alive with GBs free.
+    Backup hosting needs memory and bandwidth, not compute, so the two
+    scopes need not coincide. Set this to the full fleet to decouple them.
+    """
     optimization_mode: str = "throughput"
     """Cost-function family for the DP. The scheduler tracks both Σ stage
     cost and max stage cost in every cell and ranks candidate placements

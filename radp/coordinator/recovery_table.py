@@ -12,6 +12,7 @@ from __future__ import annotations
 from radp.common.types import (
     ClusterSpec,
     DeviceId,
+    DeviceProfile,
     NoRecoveryError,
     Placement,
     RecoveryTable,
@@ -72,15 +73,25 @@ def determine_recovery_table(
     """
     placement_by_device: dict[DeviceId, Stage] = {s.device: s for s in current_placement}
 
+    # Candidate backup hosts. Defaults to the pipeline devices; a spec may
+    # widen it so that nodes excluded from the pipeline (too slow to earn a
+    # stage, but alive with free memory) can still hold a backup.
+    hosts: list[DeviceProfile] = list(spec.backup_hosts or spec.devices)
+    seen: set[DeviceId] = set()
+    for d in spec.devices:
+        if d.id not in {h.id for h in hosts}:
+            hosts.append(d)
+    hosts = [h for h in hosts if not (h.id in seen or seen.add(h.id))]
+
     # Precompute each device's own stage byte usage (the "in use" portion).
     self_usage: dict[DeviceId, int] = {
         d.id: _stage_bytes(spec, placement_by_device[d.id]) if d.id in placement_by_device else 0
-        for d in spec.devices
+        for d in hosts
     }
     # Running reservation per device as we assign backups; prevents the
     # heuristic from greedily pointing every source at the fastest peer when
     # that peer cannot actually hold all of them.
-    reserved: dict[DeviceId, int] = {d.id: 0 for d in spec.devices}
+    reserved: dict[DeviceId, int] = {d.id: 0 for d in hosts}
 
     recovery: RecoveryTable = {}
     for j in spec.devices:
@@ -93,7 +104,7 @@ def determine_recovery_table(
 
         best_k: DeviceId | None = None
         best_cost = float("inf")
-        for k in spec.devices:
+        for k in hosts:
             if k.id == j.id:
                 continue
             # Prefer the heartbeat-reported free_memory_bytes (what the device

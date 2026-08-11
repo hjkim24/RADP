@@ -164,6 +164,25 @@ class Scheduler:
         history: list[AlternatingIterationLog] = []
         best_consistent: AlternatingResult | None = None
 
+        # Under tight memory the round-robin seed can itself have no feasible
+        # recovery table. Iteration 1 would then raise with nothing recorded,
+        # and the solver reports failure even though feasible (Ψ, R) pairs
+        # exist — measured on the live snapshot at a 200 MB free-memory cap,
+        # where seeding with a cost-only placement converges immediately.
+        # Repair the seed once from the cost-only DP, which ignores backup
+        # burden and so still answers when the recovery-aware seed cannot.
+        if self.spec.backup_placement:
+            try:
+                determine_recovery_table(self.spec, prev_psi)
+            except NoRecoveryError:
+                try:
+                    A0, choice0 = self._forward({}, ref_placement=prev_psi)
+                    if not math.isinf(A0[self._L][self._M][0]):
+                        prev_psi = self._backtrack(choice0)
+                        log.debug("alternating: repaired infeasible seed via cost-only DP")
+                except NoFeasibleSolutionError:
+                    pass
+
         for i in range(1, max_iterations + 1):
             try:
                 r = (
@@ -352,6 +371,10 @@ class Scheduler:
                 activation_bytes=self.spec.activation_bytes,
                 eager_backup=self.spec.eager_backup,
                 backup_placement=self.spec.backup_placement,
+                # Subset enumeration narrows the pipeline; without this the
+                # backup scope narrows with it and nodes dropped for being
+                # slow stop being usable as backup hosts.
+                backup_hosts=self.spec.backup_hosts,
                 optimization_mode=self.spec.optimization_mode,
                 blend_alpha=self.spec.blend_alpha,
                 hop_overhead_seconds=self.spec.hop_overhead_seconds,
