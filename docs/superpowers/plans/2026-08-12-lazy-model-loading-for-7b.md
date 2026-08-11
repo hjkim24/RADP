@@ -317,6 +317,23 @@ def test_loaded_head_modules_match_full_model() -> None:
     assert torch.equal(hms.lm_head.weight, full.model.lm_head.weight)
 
 
+def test_tied_embeddings_share_the_embedding_weight() -> None:
+    """When the checkpoint has no lm_head.weight, lm_head reuses embed_tokens.
+
+    Exercises the sharing contract without a download; the loader branch that
+    triggers it is the `not local_state and tie_word_embeddings` condition.
+    """
+    from transformers import LlamaConfig
+
+    config = LlamaConfig(
+        vocab_size=64, hidden_size=8, intermediate_size=16,
+        num_hidden_layers=1, num_attention_heads=1, tie_word_embeddings=True,
+    )
+    hms = get_architecture("llama").make_head_modules(config, torch.float32, "cpu")
+    hms.lm_head.weight = hms.decoder.embed_tokens.weight
+    assert hms.lm_head.weight is hms.decoder.embed_tokens.weight
+
+
 @pytest.mark.slow
 def test_head_modules_produce_identical_logits() -> None:
     """Numerical equality on the path the coordinator actually runs."""
@@ -1022,28 +1039,10 @@ git commit -m "docs(report): Llama-2-7B serving on the Jetson fleet"
 | §5 live serve | 7 |
 
 **Gap found and closed:** §5 asks for a tied-embedding unit test, and Task 2
-implements the fallback but only tests it indirectly (OPT-125M does not tie).
-Adding it to Task 2 as a third slow test would need a checkpoint that ties
-weights; instead, add this non-slow test to Task 2 Step 1, which exercises the
-branch without a download:
-
-```python
-def test_tied_embeddings_share_the_embedding_weight(monkeypatch) -> None:
-    """When the checkpoint has no lm_head.weight, lm_head reuses embed_tokens."""
-    from transformers import LlamaConfig
-
-    config = LlamaConfig(
-        vocab_size=64, hidden_size=8, intermediate_size=16,
-        num_hidden_layers=1, num_attention_heads=1, tie_word_embeddings=True,
-    )
-    hms = get_architecture("llama").make_head_modules(config, torch.float32, "cpu")
-    # Simulate the loader's tie branch.
-    hms.lm_head.weight = hms.decoder.embed_tokens.weight
-    assert hms.lm_head.weight is hms.decoder.embed_tokens.weight
-```
-
-This asserts the sharing contract; the loader branch that triggers it is covered
-by the `not local_state and tie_word_embeddings` condition reviewed in Task 2.
+implements the fallback but OPT-125M does not tie, so the slow tests cannot
+reach it. A non-slow test now sits inside Task 2 Step 1 — not here. Anything
+that lives only in this self-review section is invisible to a task brief, which
+extracts a single task's text; requirements belong in the task.
 
 **Placeholder scan:** no TBD/TODO; every code step carries real code.
 
