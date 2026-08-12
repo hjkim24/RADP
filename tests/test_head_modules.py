@@ -116,3 +116,29 @@ def test_head_modules_produce_identical_logits() -> None:
         ref_logits = arch.head(ref_decoder, full.model.lm_head, hidden)
         new_logits = arch.head(hms.decoder, hms.lm_head, hidden)
         assert torch.equal(ref_logits, new_logits)
+
+
+@pytest.mark.slow
+def test_bundle_round_trips(tmp_path) -> None:
+    """A bundle must produce byte-identical modules to reading the shards."""
+    import subprocess
+    import sys
+
+    from radp.common.model_utils import load_head_modules
+
+    model_id = "facebook/opt-125m"
+    bundle = tmp_path / "head.safetensors"
+    subprocess.run(
+        [sys.executable, "scripts/extract_head_bundle.py", model_id, "-o", str(bundle)],
+        check=True,
+    )
+    assert bundle.exists()
+
+    from_hub = load_head_modules(model_id, dtype="float32", torch_device="cpu")
+    from_bundle = load_head_modules(
+        model_id, dtype="float32", torch_device="cpu", weights_path=bundle
+    )
+    assert torch.equal(
+        from_hub.decoder.embed_tokens.weight, from_bundle.decoder.embed_tokens.weight
+    )
+    assert torch.equal(from_hub.lm_head.weight, from_bundle.lm_head.weight)
