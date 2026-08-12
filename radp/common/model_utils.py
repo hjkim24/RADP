@@ -264,8 +264,15 @@ class _WeightReader:
             handle.__enter__()
             self._st = handle
         elif loc.fmt == "bin":
+            # mmap=True keeps the checkpoint file-backed instead of eagerly
+            # materializing every tensor into RSS; only the tensors this
+            # stage's layers actually read (via .to(dtype=...) below) get
+            # copied into resident memory. Without this, profiling/loading
+            # a single layer from a non-sharded .bin still pages in the
+            # whole checkpoint, defeating block-wise loading.
             self._state = torch.load(
-                str(loc.path), map_location=torch_device, weights_only=True
+                str(loc.path), map_location=torch_device, weights_only=True,
+                mmap=True,
             )
         elif loc.fmt in ("safetensors_sharded", "bin_sharded"):
             if self._weight_map is None or self._model_id is None:
@@ -338,7 +345,7 @@ class _WeightReader:
         log.info("downloading shard %s of %s", shard_filename, self._model_id)
         path = hf_hub_download(self._model_id, shard_filename)
         state: dict[str, torch.Tensor] = torch.load(
-            path, map_location=self._torch_device, weights_only=True
+            path, map_location=self._torch_device, weights_only=True, mmap=True
         )
         self._shard_state[shard_filename] = state
         return state

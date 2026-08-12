@@ -1,8 +1,11 @@
 """Per-layer compute time + memory profiler.
 
-Uses PyTorch forward hooks so we can profile every transformer block from a
-single full-model forward pass, without manually wrangling attention masks /
-rotary embeddings / position ids per architecture.
+Loads and profiles one transformer block at a time via `load_stage_blocks`,
+so peak memory tracks a single block instead of the whole checkpoint (a 7B
+model cannot be fully materialized on an 8 GB Jetson). Each block is fed a
+synthetic hidden state through `arch.run_block` — the same calling
+convention `stage_runner` uses for a real decoder block — then freed before
+the next block is loaded.
 
 Output feeds LayerProfile -> Scheduler. Runs on any device PyTorch supports
 (CPU on Mac, CUDA on Jetson). Profiling results on different machines can
@@ -12,21 +15,22 @@ be merged via `merge_profiles` to build a cross-device LayerProfile.
 from __future__ import annotations
 
 import json
-import statistics
 import time
 from pathlib import Path
-from typing import Any
+from statistics import median
 
 import torch
-from torch import nn
+from transformers import AutoConfig
+from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 
+from radp.common.architectures import get_architecture
 from radp.common.logging_utils import get_logger
 from radp.common.model_utils import (
     DTYPE_BYTES,
+    DTYPE_MAP,
     estimate_kv_cache_bytes,
-    get_transformer_layers,
     layer_param_bytes,
-    load_model,
+    load_stage_blocks,
 )
 from radp.common.types import DeviceId, LayerIdx, LayerProfile
 
@@ -53,100 +57,77 @@ def profile_layers(
     """
     del prompt  # legacy arg kept for CLI compat; we synthesise input_ids directly
     log.info("loading %s on %s (dtype=%s)", model_id, torch_device, dtype)
-    handle = load_model(model_id, dtype=dtype, torch_device=torch_device)
-    layers = get_transformer_layers(handle.model)
 
+    config = AutoConfig.from_pretrained(model_id)
+    arch = get_architecture(config.model_type)
+    num_layers = config.num_hidden_layers
+    hidden_size = config.hidden_size
+    torch_dtype = DTYPE_MAP[dtype]
+    aux = arch.make_aux(config, torch_dtype, torch_device)
     is_cuda = str(torch_device).startswith("cuda")
 
-    timings_s: dict[int, list[float]] = {i: [] for i in range(len(layers))}
-    starts_ns: dict[int, float] = {}
-    starts_ev: dict[int, list[Any]] = {i: [] for i in range(len(layers))}
-    ends_ev: dict[int, list[Any]] = {i: [] for i in range(len(layers))}
+    profiles: list[LayerProfile] = []
+    for global_idx in range(1, num_layers + 1):
+        blocks = load_stage_blocks(
+            model_id, LayerIdx(global_idx), LayerIdx(global_idx),
+            dtype=dtype, torch_device=torch_device,
+        )
+        block = blocks[0]
+        # A decoder block's real input is a hidden state — this is exactly how
+        # stage_runner invokes it. Values do not affect timing; shape does.
+        hidden = torch.zeros(
+            (1, seq_length, hidden_size), dtype=torch_dtype, device=torch_device
+        )
+        # run_block expects the additive 4D causal mask stage_runner receives
+        # from the gateway (built the same way there), not the raw 2D
+        # tokenizer-level mask -- OPTAttention indexes it as
+        # attention_mask[:, :, :, :key_len], which needs 4 dims.
+        attention_mask_2d = torch.ones(
+            (1, seq_length), dtype=torch.long, device=torch_device
+        )
+        attention_mask = _prepare_4d_causal_attention_mask(
+            attention_mask_2d, (1, seq_length), hidden, past_key_values_length=0
+        )
 
-    def _pre(idx: int) -> Any:
-        if is_cuda:
-            def hook(_module: nn.Module, _inputs: tuple[Any, ...]) -> None:
-                ev = torch.cuda.Event(enable_timing=True)
-                ev.record()
-                starts_ev[idx].append(ev)
-            return hook
-
-        def hook_cpu(_module: nn.Module, _inputs: tuple[Any, ...]) -> None:
-            starts_ns[idx] = time.perf_counter()
-        return hook_cpu
-
-    def _post(idx: int) -> Any:
-        if is_cuda:
-            def hook(_module: nn.Module, _inputs: tuple[Any, ...], _outputs: Any) -> None:
-                ev = torch.cuda.Event(enable_timing=True)
-                ev.record()
-                ends_ev[idx].append(ev)
-            return hook
-
-        def hook_cpu(_module: nn.Module, _inputs: tuple[Any, ...], _outputs: Any) -> None:
-            timings_s[idx].append(time.perf_counter() - starts_ns[idx])
-        return hook_cpu
-
-    handles = []
-    for i, layer in enumerate(layers):
-        handles.append(layer.register_forward_pre_hook(_pre(i)))
-        handles.append(layer.register_forward_hook(_post(i)))
-
-    try:
-        # Synthesise input_ids directly at exact seq_length to bypass any
-        # tokenizer padding gotchas (OPT's pad_token sometimes == eos_token,
-        # which causes padding="max_length" to silently no-op on long prompts).
-        # Token id 0 is in-vocab for all HF transformer models we care about.
-        input_ids = torch.zeros((1, seq_length), dtype=torch.long, device=torch_device)
-        attention_mask = torch.ones((1, seq_length), dtype=torch.long, device=torch_device)
-
-        log.info("warmup %dx (seq_length=%d)", warmup, seq_length)
+        samples: list[float] = []
         with torch.no_grad():
             for _ in range(warmup):
-                handle.model(input_ids=input_ids, attention_mask=attention_mask)
-        if is_cuda:
-            torch.cuda.synchronize()
-
-        # Reset after warmup
-        for k in timings_s:
-            timings_s[k] = []
-            starts_ev[k] = []
-            ends_ev[k] = []
-
-        log.info("measure %dx (seq_length=%d)", repeat, seq_length)
-        with torch.no_grad():
+                arch.run_block(block, hidden, attention_mask, None, 0, aux)
+            if is_cuda:
+                torch.cuda.synchronize()
             for _ in range(repeat):
-                handle.model(input_ids=input_ids, attention_mask=attention_mask)
-        if is_cuda:
-            torch.cuda.synchronize()
-            # Resolve cuda events -> seconds
-            for idx in range(len(layers)):
-                for s_ev, e_ev in zip(starts_ev[idx], ends_ev[idx]):
-                    timings_s[idx].append(s_ev.elapsed_time(e_ev) / 1000.0)
-    finally:
-        for h in handles:
-            h.remove()
+                if is_cuda:
+                    start_ev = torch.cuda.Event(enable_timing=True)
+                    end_ev = torch.cuda.Event(enable_timing=True)
+                    start_ev.record()
+                    arch.run_block(block, hidden, attention_mask, None, 0, aux)
+                    end_ev.record()
+                    torch.cuda.synchronize()
+                    samples.append(start_ev.elapsed_time(end_ev) / 1000.0)
+                else:
+                    t0 = time.perf_counter()
+                    arch.run_block(block, hidden, attention_mask, None, 0, aux)
+                    samples.append(time.perf_counter() - t0)
 
-    dtype_bytes = DTYPE_BYTES[dtype]
-    kv_bytes = estimate_kv_cache_bytes(handle.hidden_size, kv_cache_max_seq, dtype_bytes)
-    profiles: list[LayerProfile] = []
-    for idx, layer in enumerate(layers):
-        samples = timings_s[idx]
-        if not samples:
-            raise RuntimeError(
-                f"No timing samples for layer {idx + 1}; forward hook never fired."
-            )
-        median_seconds = statistics.median(samples)
-        weight_bytes = layer_param_bytes(layer)
+        param_bytes = layer_param_bytes(block)
+        kv_bytes = estimate_kv_cache_bytes(
+            hidden_size, kv_cache_max_seq, DTYPE_BYTES[dtype]
+        )
         profiles.append(
             LayerProfile(
-                layer_idx=LayerIdx(idx + 1),
-                memory_bytes=weight_bytes + kv_bytes,
-                compute_time={device_id: median_seconds},
+                layer_idx=LayerIdx(global_idx),
+                memory_bytes=param_bytes + kv_bytes,
+                compute_time={device_id: median(samples)},
             )
         )
-    log.info("profiled %d layers, slowest=%.4fs", len(profiles),
-             max(next(iter(p.compute_time.values())) for p in profiles))
+        log.info(
+            "layer %d/%d: %.3f ms median (%d samples)",
+            global_idx, num_layers, median(samples) * 1000, len(samples),
+        )
+        del blocks, block
+        if is_cuda:
+            torch.cuda.empty_cache()
+
     return profiles
 
 
