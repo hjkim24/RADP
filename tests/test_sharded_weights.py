@@ -138,6 +138,78 @@ def test_single_file_path_unchanged(tmp_path: Path) -> None:
         reader.close()
 
 
+def test_bin_reader_uses_cpu_map_location_regardless_of_torch_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Structural test, not a memory measurement (no GPU on this machine).
+
+    torch.load(mmap=True, map_location=<cuda>) resolves the location eagerly
+    per tensor *during* torch.load() itself (torch/serialization.py
+    _get_restore_location / load_tensor) -- i.e. passing the real target
+    device would copy the whole checkpoint onto the GPU right there, before
+    load_stage_blocks ever filters down to one layer's keys. Only
+    map_location="cpu" defers materialization. Pin that _WeightReader always
+    passes "cpu" here, independent of what torch_device the caller asked for.
+    """
+    p = tmp_path / "pytorch_model.bin"
+    torch.save({"a.weight": torch.tensor([1.0, 2.0, 3.0])}, str(p))
+
+    calls: list[dict[str, object]] = []
+    real_load = torch.load
+
+    def spy_load(*args: object, **kwargs: object) -> object:
+        calls.append(kwargs)
+        # Never actually touch a CUDA path on a machine that may have no GPU;
+        # just prove what _WeightReader asked for.
+        return {"a.weight": torch.tensor([1.0, 2.0, 3.0])} if kwargs.get(
+            "map_location"
+        ) == "cuda" else real_load(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "load", spy_load)
+
+    loc = WeightsLocation(fmt="bin", path=p)
+    reader = _open_weight_reader(loc, torch_device="cuda")
+    try:
+        assert calls[-1]["map_location"] == "cpu"
+        assert calls[-1]["mmap"] is True
+    finally:
+        reader.close()
+
+
+def test_sharded_bin_reader_uses_cpu_map_location_regardless_of_torch_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same pin as above, for the per-shard bin path (_get_shard_bin)."""
+    import huggingface_hub
+
+    shard_path = tmp_path / "pytorch_model-00001-of-00001.bin"
+    torch.save({"a.weight": torch.tensor([1.0, 2.0, 3.0])}, str(shard_path))
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: str(shard_path))
+
+    calls: list[dict[str, object]] = []
+    real_load = torch.load
+
+    def spy_load(*args: object, **kwargs: object) -> object:
+        calls.append(kwargs)
+        return {"a.weight": torch.tensor([1.0, 2.0, 3.0])} if kwargs.get(
+            "map_location"
+        ) == "cuda" else real_load(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "load", spy_load)
+
+    loc = WeightsLocation(
+        fmt="bin_sharded", path=tmp_path / "index.json",
+        model_id="fake/model", weight_map={"a.weight": "pytorch_model-00001-of-00001.bin"},
+    )
+    reader = _open_weight_reader(loc, torch_device="cuda")
+    try:
+        reader.get_tensor("a.weight")
+        assert calls[-1]["map_location"] == "cpu"
+        assert calls[-1]["mmap"] is True
+    finally:
+        reader.close()
+
+
 def test_index_json_parsed_into_weight_map(tmp_path: Path) -> None:
     """The index path stored on disk must round-trip through json correctly."""
     truth = _make_synthetic_sharded(tmp_path)

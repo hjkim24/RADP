@@ -264,14 +264,19 @@ class _WeightReader:
             handle.__enter__()
             self._st = handle
         elif loc.fmt == "bin":
-            # mmap=True keeps the checkpoint file-backed instead of eagerly
-            # materializing every tensor into RSS; only the tensors this
-            # stage's layers actually read (via .to(dtype=...) below) get
-            # copied into resident memory. Without this, profiling/loading
-            # a single layer from a non-sharded .bin still pages in the
-            # whole checkpoint, defeating block-wise loading.
+            # map_location="cpu" (never torch_device) is load-bearing, not
+            # cosmetic: torch.load(mmap=True, map_location=<cuda>) resolves
+            # the location eagerly per tensor during THIS call (see
+            # torch/serialization.py _get_restore_location / load_tensor),
+            # i.e. it copies the whole checkpoint onto the GPU right here --
+            # exactly the eager whole-model load mmap is meant to avoid. Only
+            # map_location="cpu" defers materialization until a tensor is
+            # actually read. The target-device copy still happens, just
+            # downstream and per-tensor: load_stage_blocks/load_head_modules
+            # do `.to(dtype=torch_dtype)` then `load_state_dict`, whose
+            # `param.copy_(input)` transfers cross-device for free.
             self._state = torch.load(
-                str(loc.path), map_location=torch_device, weights_only=True,
+                str(loc.path), map_location="cpu", weights_only=True,
                 mmap=True,
             )
         elif loc.fmt in ("safetensors_sharded", "bin_sharded"):
@@ -344,8 +349,10 @@ class _WeightReader:
         assert self._model_id is not None
         log.info("downloading shard %s of %s", shard_filename, self._model_id)
         path = hf_hub_download(self._model_id, shard_filename)
+        # map_location="cpu" for the same reason as the single-file "bin"
+        # branch above -- see the comment there.
         state: dict[str, torch.Tensor] = torch.load(
-            path, map_location=self._torch_device, weights_only=True, mmap=True
+            path, map_location="cpu", weights_only=True, mmap=True
         )
         self._shard_state[shard_filename] = state
         return state
