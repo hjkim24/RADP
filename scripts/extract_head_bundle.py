@@ -25,6 +25,48 @@ from radp.common.architectures import get_architecture
 from radp.common.model_utils import _find_weights_location, _open_weight_reader
 
 
+def _drop_tied_lm_head(
+    wanted: dict[str, torch.Tensor],
+    lm_head_prefix: str | None,
+    tie_word_embeddings: bool,
+) -> dict[str, torch.Tensor]:
+    """Drop lm_head keys that alias another kept tensor's storage.
+
+    Checkpoints with tied embeddings (e.g. opt-125m) store lm_head.weight as
+    a *view* over embed_tokens.weight's storage; safetensors refuses to save
+    two keys pointing at one buffer.
+
+    Dropping is only safe when the checkpoint's structural fact (storage
+    aliasing) agrees with the config's declared fact (tie_word_embeddings) —
+    load_head_modules()'s restore path is gated on the config flag, not on
+    storage layout. If they disagree, dropping would ship a bundle that
+    silently leaves lm_head at its random nn.Linear init on load (no
+    exception, just a warning). Raise here instead, on the machine with
+    disk, rather than let that reach the coordinator.
+    """
+    if not lm_head_prefix:
+        return wanted
+    other_ptrs = {
+        t.data_ptr() for k, t in wanted.items() if not k.startswith(lm_head_prefix)
+    }
+    aliased = {
+        k
+        for k, t in wanted.items()
+        if k.startswith(lm_head_prefix) and t.data_ptr() in other_ptrs
+    }
+    if not aliased:
+        return wanted
+    if not tie_word_embeddings:
+        raise SystemExit(
+            f"{sorted(aliased)} share storage with another kept tensor (the "
+            "checkpoint structurally ties them) but config.tie_word_embeddings "
+            "is False. Dropping it would make load_head_modules() silently "
+            "leave lm_head randomly initialized; refusing to write a bundle "
+            "that disagrees with its own config."
+        )
+    return {k: t for k, t in wanted.items() if k not in aliased}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("model_id")
@@ -47,21 +89,11 @@ def main() -> None:
     finally:
         reader.close()
 
-    # Tied-embedding checkpoints (e.g. opt-125m) store lm_head.weight as a
-    # view over the same storage as embed_tokens.weight; safetensors refuses
-    # to serialize two keys that alias one buffer. Drop the lm_head copy —
-    # load_head_modules()'s tie fallback (config.tie_word_embeddings)
-    # reconstructs it from embed_tokens on load.
-    lm_head_prefix = hms.key_prefixes.get("lm_head")
-    if lm_head_prefix:
-        other_ptrs = {
-            t.data_ptr() for k, t in wanted.items() if not k.startswith(lm_head_prefix)
-        }
-        wanted = {
-            k: t
-            for k, t in wanted.items()
-            if not (k.startswith(lm_head_prefix) and t.data_ptr() in other_ptrs)
-        }
+    wanted = _drop_tied_lm_head(
+        wanted,
+        hms.key_prefixes.get("lm_head"),
+        bool(getattr(config, "tie_word_embeddings", False)),
+    )
 
     if not wanted:
         raise SystemExit(

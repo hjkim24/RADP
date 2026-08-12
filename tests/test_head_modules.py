@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import torch
 from torch import nn
 from transformers import LlamaConfig, OPTConfig
 
 from radp.common.architectures import get_architecture
+
+
+def _load_extract_script():
+    """Import scripts/extract_head_bundle.py by path (scripts/ isn't a package)."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "extract_head_bundle.py"
+    spec = importlib.util.spec_from_file_location("extract_head_bundle", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
 
 
 def test_opt_head_modules_have_config_shapes() -> None:
@@ -142,3 +155,35 @@ def test_bundle_round_trips(tmp_path) -> None:
         from_hub.decoder.embed_tokens.weight, from_bundle.decoder.embed_tokens.weight
     )
     assert torch.equal(from_hub.lm_head.weight, from_bundle.lm_head.weight)
+
+
+def test_extractor_raises_when_alias_and_config_disagree() -> None:
+    """Storage aliasing (structural) and tie_word_embeddings (config) can
+    diverge: a checkpoint may alias lm_head.weight to embed_tokens.weight
+    while its config claims tie_word_embeddings=False. Silently dropping the
+    aliased key in that case would leave load_head_modules() unable to fill
+    lm_head at all (its restore path is gated on the config flag, not on
+    storage layout), so lm_head keeps its random nn.Linear init with no
+    error. The extractor must refuse instead of guessing.
+    """
+    mod = _load_extract_script()
+    shared = torch.zeros(4)
+    wanted = {
+        "model.decoder.embed_tokens.weight": shared,
+        "lm_head.weight": shared,  # same tensor object => same storage
+    }
+    with pytest.raises(SystemExit):
+        mod._drop_tied_lm_head(wanted, "lm_head.", tie_word_embeddings=False)
+
+
+def test_extractor_drops_aliased_lm_head_when_config_agrees() -> None:
+    """The one case dropping is safe: structural tie + config says tied."""
+    mod = _load_extract_script()
+    shared = torch.zeros(4)
+    wanted = {
+        "model.decoder.embed_tokens.weight": shared,
+        "lm_head.weight": shared,
+    }
+    result = mod._drop_tied_lm_head(wanted, "lm_head.", tie_word_embeddings=True)
+    assert "lm_head.weight" not in result
+    assert "model.decoder.embed_tokens.weight" in result
