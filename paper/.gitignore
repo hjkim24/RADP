@@ -15,3 +15,13 @@ skeleton.pdf
 # tectonic intermediate artifacts (--keep-intermediates)
 *.synctex.gz
 main.bbl
+
+# Local research corpus and prose notes are not part of the Overleaf source.
+draft/
+refs/*.pdf
+
+# Local-only editor and figure-generation files.
+.DS_Store
+__pycache__/
+*.pyc
+figures/*.py

@@ -1,6 +1,6 @@
 # AGENTS.md — RADP 프로젝트 에이전트 컨텍스트
 
-Recovery-Aware DP (RADP): 이종 Jetson 엣지 fleet 분산 LLM 추론, fault-tolerance 중심. 제출 타깃 IEEE TII.
+Recovery-Aware DP (RADP): 이종 Jetson 엣지 fleet 분산 LLM 추론, fault-tolerance 중심. 제출 타깃 IEEE Internet of Things Journal (IoT-J).
 
 > 이 파일은 Codex 등 `AGENTS.md`를 읽는 에이전트용. Claude Code는 별도로
 > `~/.claude/projects/-Users-hjkim24-RADP/memory/`(auto-memory)를 로드함 —
@@ -34,4 +34,5 @@ KV-RAID-6 = GF(2⁸) double-parity (P=XOR ⊕ Q=Σgⁱ·Dᵢ, 토글 `RADP_PARIT
 
 - 새 feature/phase 완료 시 `PHASES.md`에 섹션 추가.
 - `paper/refs`에 PDF 추가 시 `PAPERS.md`에 항목 + 파일명 `{System}_{Title-With-Dashes}.pdf`.
+- `paper/` 수정 완료 후 저장소 루트에서 `./sync-overleaf "커밋 메시지"`를 실행해 Overleaf에 반영.
 - 지도교수 방침(2026-07-16 이후): 논문 작성보다 실험 우선, FT를 중심축으로. network overhead는 논문에서 제외(2026-07-30).

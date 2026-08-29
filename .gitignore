@@ -37,6 +37,9 @@ logs/
 .idea/
 .DS_Store
 
+# Local Git metadata for syncing paper/ with the Overleaf project.
+.overleaf-git/
+
 # Claude Code runtime artifacts
 .claude/scheduled_tasks.lock
 .claude/plans/

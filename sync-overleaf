@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+git_dir="$root_dir/.overleaf-git"
+paper_dir="$root_dir/paper"
+
+if [ ! -d "$git_dir" ] || [ ! -d "$paper_dir" ]; then
+  echo "Overleaf 연결 또는 paper/ 디렉터리를 찾을 수 없습니다." >&2
+  exit 1
+fi
+
+# 온라인 편집을 덮어쓰지 않도록 push 전에 원격 상태를 확인한다.
+git --git-dir="$git_dir" fetch -q origin main
+local_head=$(git --git-dir="$git_dir" rev-parse refs/heads/main)
+remote_head=$(git --git-dir="$git_dir" rev-parse FETCH_HEAD)
+
+if [ "$local_head" != "$remote_head" ] && \
+   ! git --git-dir="$git_dir" merge-base --is-ancestor "$remote_head" "$local_head"; then
+  echo "Overleaf에 로컬에 없는 편집이 있습니다. 동기화를 중단합니다." >&2
+  exit 1
+fi
+
+git --git-dir="$git_dir" --work-tree="$paper_dir" add -A
+
+if ! git --git-dir="$git_dir" --work-tree="$paper_dir" diff --cached --quiet; then
+  message=${*:-"Update paper $(date '+%Y-%m-%d %H:%M')"}
+  git --git-dir="$git_dir" --work-tree="$paper_dir" commit -m "$message"
+fi
+
+local_head=$(git --git-dir="$git_dir" rev-parse refs/heads/main)
+if [ "$local_head" = "$remote_head" ]; then
+  echo "Overleaf와 이미 동기화되어 있습니다."
+  exit 0
+fi
+
+git --git-dir="$git_dir" push origin main
+echo "Overleaf 동기화 완료."
