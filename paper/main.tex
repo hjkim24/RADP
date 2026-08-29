@@ -1,5 +1,5 @@
-% RADP: Recovery-Aware DP for Distributed LLM Inference on Edge Clusters
-% Target: IEEE Transactions on Mobile Computing (IEEEtran journal, two-column)
+% KV-CARE: KV Cache Availability and Recovery at the Edge
+% Target: IEEE Internet of Things Journal (IEEEtran journal, two-column)
 %
 % Build:    pdflatex main && bibtex main && pdflatex main && pdflatex main
 % Or:       latexmk -pdf main.tex
@@ -50,14 +50,14 @@
 \setlength{\intextsep}{6pt plus 2pt minus 2pt}
 
 % --- Macros ------------------------------------------------------------
-\newcommand{\sys}{RADP\xspace}
+\newcommand{\sys}{KV-CARE\xspace}
 \newcommand{\psiR}{$\psi$-R\xspace}
 \newcommand{\todo}[1]{{\color{red}\textbf{[TODO: #1]}}}
 
 \begin{document}
 
 % --- Title -------------------------------------------------------------
-\title{\sys{}: Recovery-Aware Layer Placement for Distributed LLM Inference on Edge Clusters}
+\title{\sys{}: KV Cache Availability and Recovery for Distributed LLM Inference at the Edge}
 
 % --- Authors -----------------------------------------------------------
 % IEEEtran packs affiliations/emails/funding into \thanks blocks rather
@@ -71,8 +71,8 @@
   \thanks{Corresponding author: Wansu Lim.}}
 
 % Running heads: left = journal, right = author + short title.
-\markboth{IEEE Transactions on Mobile Computing,~Vol.~XX, No.~X, Month~2026}%
-{Kim \MakeLowercase{\textit{et al.}}: \sys{}: Recovery-Aware Layer Placement for Distributed LLM Inference}
+\markboth{IEEE Internet of Things Journal,~Vol.~XX, No.~X, Month~2026}%
+{Kim \MakeLowercase{\textit{et al.}}: \sys{}: KV Cache Availability and Recovery at the Edge}
 
 \maketitle
 
@@ -89,7 +89,6 @@ parallelism, fault tolerance, dynamic programming, heterogeneous devices.
 
 \input{sections/introduction}
 \input{sections/related}
-\input{sections/background}
 \input{sections/design}
 \input{sections/evaluation}
 \input{sections/discussion}

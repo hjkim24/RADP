@@ -10,7 +10,7 @@
 3. 상세 섹션 추가: 저자·년도·venue / 분야 태그 / 핵심 아이디어 / 실험 환경(scale·하드웨어·모델·실측 여부) / RADP 관련성.
 4. venue는 dblp 등에서 게재본 확인(vol/no/pages/doi), 없으면 arXiv id. 중복 파일은 md5 확인 후 정리.
 
-현재 32편.
+현재 37편.
 
 ## 인덱스
 
@@ -31,6 +31,7 @@
 | [Hetis](#hetis) | 2025 | SC '25 (The International Conference for High P... | Distributed Inference, Heterogeneous Clusters, Load Balancing | 데이터센터 | 실측+시뮬레이션 |
 | [HexGen-2](#hexgen-2) | 2025 | ICLR 2025 (Int'l Conf. on Learning Representati... | Disaggregated Serving, Heterogeneous Clusters, Distributed Inference | 데이터센터 | 실측 |
 | [Jupiter](#jupiter) | 2025 | IEEE INFOCOM 2025 (doi:10.1109/INFOCOM55648.202... | Collaborative Edge Inference, Distributed Inference, Model Partitioning/Placement | 엣지 | 실측 |
+| [A Survey on Malware Attacks in Industrial Air-Gap Systems](#a-survey-on-malware-attacks-in-industrial-air-gap-systems) | 2025 | International Journal of Information Security 24(3), article 146 | Industrial IoT/ICS, Air-Gapped Systems, Security | 산업 OT/ICS | 문헌조사 |
 | [MDI-LLM](#mdi-llm) | 2025 | IEEE LANMAN 2025 (doi:10.1109/LANMAN66415.2025.... | Distributed Inference, Collaborative Edge Inference, Model Partitioning/Placement | 엣지 | 실측 |
 | [Parallax](#parallax) | 2025 | arXiv:2509.26182 | Distributed Inference, Model Partitioning/Placement, Scheduling/SLO | 하이브리드 | 실측 |
 | [SLICE](#slice) | 2025 | arXiv:2510.18544v3 [cs.DC] (header shows placeh... | Scheduling/SLO, Edge LLM Serving, Batching/Rate Allocation | 엣지 | 실측 |
@@ -40,6 +41,7 @@
 | [Decentralized LLM Inference over Edge ](#decentralized-llm-inference-over-edge-networks-with-energy-harvesting) | 2024 | IEEE GLOBECOM 2024, pp.3703-3708 (doi:10.1109/G... | Distributed Inference, Collaborative Edge Inference, Energy Efficiency | 엣지 | 실측+시뮬레이션 |
 | [Distributed Mixture-of-Agents for Edge](#distributed-mixture-of-agents-for-edge-inference-with-large-language-models) | 2025 | IEEE PIMRC 2025 (doi:10.1109/PIMRC62392.2025.11275145); arXiv:2412.21200 | Distributed Inference, Collaborative Edge Inference, Mixture-of-Agents | 엣지 | 실측+시뮬레이션 |
 | [EdgeShard](#edgeshard) | 2024 | IEEE Internet of Things Journal, 2025 (doi:10.1... | Distributed Inference, Collaborative Edge Inference, Model Partitioning/Placement | 하이브리드 | 실측 |
+| [ER-OCN](#er-ocn) | 2024 | Computer Communications 222, pp.97-107 (doi:10.1016/j.comcom.2024.04.031) | Offshore IoT, Wireless Networking, SDN Routing | 해상 인프라 | 실제망 데이터 기반 실험 |
 | [HexGen](#hexgen) | 2024 | ICML 2024, pp.21946-21961 (PMLR 235) | Distributed Inference, Heterogeneous Clusters, Model Partitioning/Placement | 데이터센터 | 실측 |
 | [JARVIS](#jarvis) | 2024 | MILCOM 2024 (IEEE Military Communications Confe... | Distributed Inference, Collaborative Edge Inference, Fault Tolerance | 엣지 | 실측 |
 | [LLM-PQ](#llm-pq) | 2024 | ACM PPoPP 2024, pp.460-462 (doi:10.1145/3627535... | Distributed Inference, Heterogeneous Clusters, Quantization | 데이터센터 | 실측 |
@@ -47,6 +49,9 @@
 | [Privacy-Preserving Handover Optimizati](#privacy-preserving-handover-optimization-using-federated-learning-and-lstm-networks) | 2024 | Sensors (MDPI) 2024, vol. 24, article 6685, doi... | Wireless Networking, Privacy, Training | 엣지 | 실측+시뮬레이션 |
 | [SpotServe](#spotserve) | 2024 | ASPLOS'24 (Proceedings of the 29th ACM Internat... | Distributed Inference, Fault Tolerance, Model Partitioning/Placement | 데이터센터 | 실측 |
 | [Petals](#petals) | 2023 | 37th Conference on Neural Information Processin... | Distributed Inference, Fault Tolerance, Load Balancing | 하이브리드 | 실측+시뮬레이션 |
+| [ELECT](#elect) | 2023 | Future Generation Computer Systems 147, pp.179-194 (doi:10.1016/j.future.2023.04.030) | Remote IoT, Edge-Cloud Collaboration, Energy Efficiency | 원격 IoT | 시뮬레이션 |
+| [An Intelligent Fault-Tolerant Data Routing Scheme](#an-intelligent-fault-tolerant-data-routing-scheme-for-wireless-sensor-network-assisted-industrial-internet-of-things) | 2023 | IEEE TII 19(4), pp.5543-5553 (doi:10.1109/TII.2022.3204560) | IIoT, Fault Tolerance, WSN Routing | 산업 IoT | 실측+시뮬레이션 |
+| [Two-Tier MPC for AGVs](#two-tier-mpc-architecture-for-agvs-navigation-assisted-by-edge-computing-in-an-industrial-scenario) | 2023 | Internet of Things 21, article 100666 (doi:10.1016/j.iot.2022.100666) | AGV, Edge Computing, Networked Control | 산업 엣지 | 시뮬레이션 |
 | [LBRCQT](#lbrcqt) | 2021 | Journal of Communications and Networks, vol. 23... | Load Balancing, Wireless Networking, SDN Routing | 시뮬레이션 | 시뮬레이션 |
 
 ---
@@ -185,6 +190,16 @@
 - **평가 모델**: Llama2-7B and Llama2-13B (both INT4 quantized); datasets LiMA, Vicuna-80, WizardLM; Medusa speculative decoding; GPT-4o-powered FastChat for quality scoring
 - **RADP 관련성**: RADP와 동일한 문제 공간(heterogeneous edge cluster에서 pipeline 방식의 LLM layer partitioning/placement, Jetson 실측)을 다루는 직접적 관련 연구이자 대표 baseline 후보이며, DP 기반 memory/heterogeneity-aware partitioning은 RADP placement solver와의 비교 지점이다. 다만 Jupiter는 순수 성능(latency) 최적화만 다루고 device failure나 recovery/backup memory를 전혀 고려하지 않아, RADP의 recovery-aware placement 동기를 뒷받침하는 대비 사례로 인용하기 좋다.
 
+### A Survey on Malware Attacks in Industrial Air-Gap Systems
+
+- **파일**: `A-Survey-on-Malware-Attacks-in-Industrial-Air-Gap-Systems.pdf`
+- **저자**: Md Asdaque Hussain, Khouloud Samrouth, Nader Bakir
+- **년도/Venue**: 2025 — International Journal of Information Security, vol. 24, no. 3, article 146 (DOI 10.1007/s10207-025-01044-w)
+- **분야**: Industrial IoT/ICS, Air-Gapped Systems, Cybersecurity
+- **핵심 아이디어**: 제조·에너지·운송 등 산업 제어 시스템에서 air gap을 외부 비신뢰망과 의도적으로 분리하는 보안 조치로 설명하고, acoustic·electromagnetic·optical·magnetic·power·thermal covert channel을 통한 침투·유출 경로와 대응책을 문헌조사한다.
+- **실험 환경**: **문헌조사** — 산업 air-gapped ICS의 공격 벡터와 방어 연구를 종합한 survey; LLM inference나 edge testbed 평가는 없음.
+- **RADP 관련성**: 외부 public cloud 연결을 전제로 삼을 수 없는 일부 산업 OT/ICS 환경이 존재한다는 intro 동기를 직접 뒷받침한다. 다만 모든 OT에서 cloud offload가 정책적으로 금지된다는 보편 명제나, 분산 LLM worker 장애를 직접 입증하는 근거로 사용하면 안 된다.
+
 ### MDI-LLM — Model-Distributed Inference for Large Language Models at the Edge
 
 - **파일**: `MDI-LLM_Model-Distributed-Inference-for-Large-Language-Models-at-the-Edge.pdf`
@@ -273,6 +288,16 @@
 - **평가 모델**: Llama2-7B, Llama2-13B, Llama2-70B (full precision, WikiText-2, input 32 tokens / generate 96 tokens)
 - **RADP 관련성**: RADP와 동일한 문제 공간(heterogeneous edge 클러스터에서 DP 기반 layer-wise partitioning + device selection)을 다루는 가장 직접적인 baseline/related work이지만, failure나 recovery를 전혀 고려하지 않는 성능-only placement라서 RADP의 recovery-aware placement가 채우는 gap을 정확히 보여준다. Jetson Orin 계열 실측 testbed와 DP formulation(memory constraint 포함)이 RADP 실험 setup 및 cost model과 직접 비교 가능하다.
 
+### ER-OCN — Toward Efficient Network Routing in Ocean City Based on Deep Reinforcement Learning
+
+- **파일**: `ER-OCN_Toward-Efficient-Network-Routing-in-Ocean-City-Based-on-Deep-Reinforcement-Learning.pdf`
+- **저자**: Shu Yang, Yaofeng Liu, Laizhong Cui, Yidong Peng, Zhiqiang Li, Victor C. M. Leung
+- **년도/Venue**: 2024 — Computer Communications, vol. 222, pp. 97–107 (DOI 10.1016/j.comcom.2024.04.031)
+- **분야**: Offshore IoT, Wireless Networking, SDN Routing, Deep Reinforcement Learning
+- **핵심 아이디어**: 저신뢰성·협대역·동적 토폴로지를 갖는 해상망을 위해, Lagrangian relaxation으로 기본 경로를 계산한 뒤 DRL이 토폴로지·대역폭 변화를 감지해 경로를 갱신하는 2단계 SDN routing 기법 ER-OCN을 제안한다.
+- **실험 환경**: **해상 인프라** (실제망 데이터 기반 실험) — 해양 석유 플랫폼 네트워크의 실제 topology·traffic dataset으로 학습·평가하며 OSPF, load balancing, maximum-bandwidth path와 비교한다. 별도 LLM/DNN inference testbed는 없다.
+- **RADP 관련성**: 태풍 등으로 microwave link가 열화되어 해양 플랫폼과 관제실 사이 연결이 단절되거나 성능이 악화될 수 있다는 실제 해상 IoT 연결 제약을 뒷받침한다. 다만 네트워크 routing 연구이므로 분산 LLM worker failure나 recovery 효과의 직접 근거로 사용하면 안 된다.
+
 ### HexGen — HexGen: Generative Inference of Large Language Model over Heterogeneous Environment
 
 - **파일**: `HexGen_Generative-Inference-of-Large-Language-Model-over-Heterogeneous-Environment.pdf`
@@ -350,6 +375,36 @@
 - **평가 모델**: BLOOM-7.1B (fault-tolerance ablation), Llama 2 (70B) with 4-bit NormalFloat quantization, BLOOM (176B) with 8-bit matrix decomposition
 - **RADP 관련성**: RADP와 가장 직접적으로 경쟁/보완 관계인 선행 연구로, 서버 장애 시 attention cache 복구와 block 재할당(rebalancing)을 다루지만 failure recovery cost를 placement 결정 시점에 선반영하지 않고 사후(reactive) rebalancing에 의존한다는 점에서 RADP의 recovery-aware placement와 차별화 지점이 명확하다. backup memory와 placement의 coupled feasibility 논증 및 related work에서 반드시 인용해야 할 baseline이다.
 
+### ELECT — Energy-Efficient Intelligent Edge-Cloud Collaboration for Remote IoT Services
+
+- **파일**: `ELECT_Energy-Efficient-Intelligent-Edge-Cloud-Collaboration-for-Remote-IoT-Services.pdf`
+- **저자**: Jingling Yuan, Hua Xiao, Zhishu Shen, Tiehua Zhang, Jiong Jin
+- **년도/Venue**: 2023 — Future Generation Computer Systems, vol. 147, pp. 179–194 (DOI 10.1016/j.future.2023.04.030)
+- **분야**: Remote IoT, Edge-Cloud Collaboration, Energy Efficiency, Workflow Scheduling
+- **핵심 아이디어**: 원격 IoT 서비스에서 데이터 중요도에 따라 IoT node의 active/inactive 상태를 조절하고, DQN 기반 workflow scheduler가 device–edge–cloud 자원을 함께 사용해 makespan·energy·communication cost를 절충한다.
+- **실험 환경**: **원격 IoT** (시뮬레이션) — ANSYS로 원격 터널 structural health monitoring 데이터를 생성하고, sensor·edge·cloud workflow를 모사해 ELECT와 5개 비교 알고리즘을 평가한다. 실제 원격 지역 deployment나 LLM inference 실측은 없다.
+- **RADP 관련성**: 원격·농촌 IoT에서 access network 연결이 제한되어 intermittent하거나 낮고, 불안정한 data path가 service availability를 제한한다는 동기를 직접 뒷받침한다. 논문도 edge–cloud 협업을 전제하므로 public cloud가 물리적으로 항상 부재한다는 근거로 확대하면 안 된다.
+
+### An Intelligent Fault-Tolerant Data Routing Scheme for Wireless Sensor Network-Assisted Industrial Internet of Things
+
+- **파일**: `An-Intelligent-Fault-Tolerant-Data-Routing-Scheme-for-Wireless-Sensor-Network-Assisted-Industrial-Internet-of-Things.pdf`
+- **저자**: Gagandeep Kaur, Prasenjit Chanak
+- **년도/Venue**: 2023 — IEEE Transactions on Industrial Informatics, vol. 19, no. 4, pp. 5543–5553 (DOI 10.1109/TII.2022.3204560)
+- **분야**: Industrial IoT, Fault Tolerance, Wireless Sensor Networks, Data Routing
+- **핵심 아이디어**: battery depletion·hardware malfunction으로 생기는 IIoT sensor node/link failure를 탐지하고, K-means clustering과 reinforcement-learning whale optimization으로 대체 cluster head와 forwarding path를 선택하는 fault-tolerant routing을 제안한다.
+- **실험 환경**: **산업 IoT** (실측+시뮬레이션) — ns-3.29에서 10% faulty node를 주입한 simulation과, 건물 내 30×20 m²에 gas 3·temperature 3·smoke 2 sensor를 배치하고 ZigBee로 연결한 8-node fire-detection testbed를 평가한다.
+- **RADP 관련성**: 자원 제약 IIoT node와 link가 실제로 고장날 수 있고 복구 메커니즘이 service reliability에 필요하다는 산업 장애 동기를 보강한다. WSN packet routing 대상이므로 LLM pipeline worker failure나 KV recovery 성능의 직접 근거는 아니다.
+
+### Two-Tier MPC Architecture for AGVs Navigation Assisted by Edge Computing in an Industrial Scenario
+
+- **파일**: `Two-Tier-MPC-Architecture-for-AGVs-Navigation-Assisted-by-Edge-Computing-in-an-Industrial-Scenario.pdf`
+- **저자**: Rômulo A. L. V. de Omena, Danilo F. S. Santos, Angelo Perkusich, Dalton C. G. Valadares
+- **년도/Venue**: 2023 — Internet of Things, vol. 21, article 100666 (DOI 10.1016/j.iot.2022.100666)
+- **분야**: AGV, Edge Computing, Networked Control, Model Predictive Control
+- **핵심 아이디어**: 여러 AGV의 global trajectory는 edge MPC가 계획하고 각 AGV의 local MPC가 이를 추종하도록 하여, 원격 제어의 delay·packet loss에도 충돌을 피하는 2-tier 제어 구조를 제안한다.
+- **실험 환경**: **산업 엣지** (시뮬레이션) — edge-computing 환경과 robot simulator에서 다중 AGV를 구성하고 network delay·packet loss를 주입해 경로 추종과 collision avoidance를 평가한다. 실제 공장 AGV 배치는 아니다.
+- **RADP 관련성**: AGV가 신호 열화 구간을 지날 때 connection failure가 충돌·사고 위험을 높이고, 원격 cloud는 time-critical 제어 요구를 충족하지 못할 수 있다는 산업 edge 동기를 뒷받침한다. LLM inference나 worker recovery를 평가한 연구는 아니다.
+
 ### LBRCQT — Load Balancing Routing Under Constraints of Quality of Transmission in Mesh Wireless Network based on Software Defined Networking
 
 - **파일**: `LBRCQT_Load-Balancing-Routing-Under-Constraints-of-Quality-of-Transmission-in-Mesh-Wireless-Network-based-on-SDN.pdf`
@@ -399,11 +454,11 @@
 - **실험 환경**: A800-80GB, NVLink 200GB/s+10Gbps Ethernet, 200GB DRAM/노드, SGLang, Qwen3-14B/32B. **워커 = 모델 전체 사본**("a worker is a complete copy of the model weights") — 파이프라인 분할은 워커 내부 구현일 뿐. checkpoint 예산 80–160GB/워커. 실측+시뮬레이션.
 - **RADP 관련성**(해석): "장애 전 배치 결정"이라는 표현이 겹쳐 보이나 실체는 **full-replica들 사이 요청별 KV checkpoint 보관자 선택**이며, **layer placement와 backup placement의 결합 최적화는 없음**(모든 워커가 전 layer 보유라 결합할 대상 자체가 없음). RADP의 ψ+R(메모리 상한 하 layer×backup 공동 배치) novelty와 **비충돌** 확인. 단 "KV를 checkpoint해 재사용(재계산 회피)"은 입력-재생 대비 우월한 지점이라 related work에서 대응 필요.
 
-## TII 산업 프레이밍 논문 (venue-fit, 2026-07-08 추가)
+## 산업 프레이밍 논문 (기존 TII venue-fit 후보군, 2026-07-08 추가)
 
-> RADP를 **IEEE TII**에 제출 → 산업 관련성 인용 후보. **전부 IEEE TII 게재 확인(Crossref/dblp + `10.1109/TII.*` DOI).** 역할별 상세·원문 인용 문구는 [TII-industrial-refs.md](TII-industrial-refs.md).
+> TII 제출 단계에서 정리한 산업 관련성 인용 후보. 현재 **IoTJ revision**에서는 직접 근거가 맞는 항목만 선별해 사용한다. **전부 IEEE TII 게재 확인(Crossref/dblp + `10.1109/TII.*` DOI).** 역할별 상세·원문 인용 문구는 [TII-industrial-refs.md](TII-industrial-refs.md).
 > 역할: **A**=LLM이 이미 산업에, **B**=분산/협업 추론, **C**=엣지 offloading/scheduling, **D**=fault tolerance(RADP recovery 산업 명분 ★).
-> PDF: arXiv 프리프린트 있는 2편만 확보(✓), 나머지 18편은 IEEE 유료 → 메타데이터/DOI만.
+> PDF: 3편 확보(✓), 나머지 17편은 메타데이터/DOI만.
 
 | 논문 | 역할 | 년 | vol/pp | DOI | PDF | 요지 |
 |---|---|---|---|---|---|---|
@@ -422,7 +477,7 @@
 | Distributed Multidomain Resource Allocation for IIoT-Base... | C | 2024 | 20 no.12 pp.14006-14016 | 10.1109/TII.2024.3438280 | — | IIoT 제어 시스템용 multidomain 분산 자원할당 최적화. |
 | Robust Trajectory and Offloading for Energy-Efficient UAV... | C | 2024 | 20 no.1 pp.38-49 | 10.1109/TII.2023.3256375 | ✓ | UAV 엣지 computing의 trajectory+offloading joint 최적화(원격 IIoT). |
 | Task Co-Offloading for D2D-Assisted Mobile Edge Computing... | C | 2023 | 19 no.1 pp.480-490 | 10.1109/TII.2022.3158974 | — | D2D-assisted MEC에서 IIoT task co-offloading. |
-| An Intelligent Fault Tolerant Data Routing Scheme for Wir... | D | 2023 | 19 no.4 pp.5543-5553 | 10.1109/TII.2022.3204560 | — | WSN-IIoT에서 노드/링크 fault를 감지·허용하는 지능형 data routing. 인용: 'sensors ... vul… |
+| An Intelligent Fault Tolerant Data Routing Scheme for Wir... | D | 2023 | 19 no.4 pp.5543-5553 | 10.1109/TII.2022.3204560 | ✓ | WSN-IIoT에서 노드/링크 fault를 감지·허용하는 지능형 data routing. 인용: 'sensors ... vul… |
 | Performance Analysis of Fault-Tolerant Multiagent Coordin... | D | 2023 | 19 no.9 pp.9821-9832 | 10.1109/TII.2023.3234606 | — | faulty agent 하 분산 MAS coordination 성능 분석(FT 선택이 latency 4.2× 개선). |
 | Resource-Optimal Fault-Tolerant Scheduler Design for Task... | D | 2021 | 17 no.11 pp.7325-7337 | 10.1109/TII.2020.3042161 | — | supervisory control로 processor fault에도 deadline 지키는 resource-optimal F… |
 | DRPM: Dynamic Resource Provisioning With Fault Tolerance ... | D | 2020 | 16 no.9 pp.6172-6181 | 10.1109/TII.2019.2959258 | — | 장애 task 복구+makespan 재최적화하는 fault-tolerant 동적 provisioning. 인용: 'when a… |

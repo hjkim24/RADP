@@ -1,0 +1,140 @@
+% Standalone render of the pseudocode drafted for Sections IV and V.
+% Build: tectonic recovery_algorithms.tex
+\documentclass[10pt]{article}
+
+\usepackage[a4paper,margin=10mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{newtxtext,newtxmath}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{float}
+
+\pagestyle{empty}
+\setlength{\parindent}{0pt}
+\setlength{\floatsep}{0pt}
+\setlength{\textfloatsep}{0pt}
+\setlength{\intextsep}{0pt}
+\algrenewcommand\algorithmiccomment[1]{\hfill$\triangleright$ #1}
+
+\begin{document}
+\footnotesize
+
+\begin{algorithm}[H]
+  \caption{Cross-Stage Parity Maintenance and Recovery}
+  \label{alg:cross-stage-parity}
+  \begin{algorithmic}[1]
+    \Require Ordered protected stages $\mathcal{S}$; parity level $k\in\{1,2\}$
+    \Statex \Procedure{UpdateParity}{$r,q,s,D_s[q]$}
+      \If{$s\in C[r,q]$} \State \Return \Comment{ignore duplicate contribution} \EndIf
+      \State Zero-extend $P[r,q]$ and $D_s[q]$ to the longer byte length
+      \State $P[r,q]\gets P[r,q]\oplus D_s[q]$
+      \If{$k=2$}
+        \State Zero-extend $Q[r,q]$ to the same byte length
+        \State $Q[r,q]\gets Q[r,q]\oplus g^{\operatorname{rank}(s)}\otimes D_s[q]$
+      \EndIf
+      \State $C[r,q]\gets C[r,q]\cup\{s\}$
+    \EndProcedure
+    \Statex
+    \Statex \Procedure{Recover}{$r,p_f,\mathcal{F}$}
+      \If{$\mathcal{F}\nsubseteq\mathcal{S}$ \textbf{or} $|\mathcal{F}|=0$ \textbf{or} $|\mathcal{F}|>k$}
+        \State \Return \Call{ReplayFallback}{$r,p_f$}
+      \EndIf
+      \State Fetch the KV states of all $s\in\mathcal{S}\setminus\mathcal{F}$
+      \If{a fetch fails} \State \Return \Call{ReplayFallback}{$r,p_f$} \EndIf
+      \State $N\gets\min_{s\in\mathcal{S}\setminus\mathcal{F}}\Call{Slots}{D_s}$
+      \If{$N=0$ \textbf{or} the survivor slot-count spread exceeds one}
+        \State \Return \Call{ReplayFallback}{$r,p_f$}
+      \EndIf
+      \If{$\exists q<N:C[r,q]\neq\mathcal{S}$ \textbf{or} the failed-position input mirror is missing}
+        \State \Return \Call{ReplayFallback}{$r,p_f$}
+      \EndIf
+      \ForAll{$x\in\mathcal{F}$}
+        \State \Call{ActivateBackup}{$R(x)$}
+      \EndFor
+      \State \Call{RewirePipeline}{$R,\mathcal{F}$}
+      \If{$|\mathcal{F}|=1$}
+        \State $x\gets$ the failed stage
+        \For{$q=0$ to $N-1$}
+          \State $\widehat{D}_x[q]\gets P[r,q]\oplus\bigoplus_{s\neq x}\Call{Pad}{D_s[q]}$
+          \State $D_x[q]\gets\Call{Trim}{\widehat{D}_x[q],\ell_x}$
+        \EndFor
+      \Else
+        \State $(x,y)\gets$ the two failed stages ordered by stage rank
+        \State $a\gets g^{\operatorname{rank}(x)}$; $b\gets g^{\operatorname{rank}(y)}$
+        \For{$q=0$ to $N-1$}
+          \State $\widetilde{P}\gets P[r,q]\oplus\bigoplus_{s\notin\{x,y\}}\Call{Pad}{D_s[q]}$
+          \State $\widetilde{Q}\gets Q[r,q]\oplus\bigoplus_{s\notin\{x,y\}}g^{\operatorname{rank}(s)}\otimes\Call{Pad}{D_s[q]}$
+          \State $\widehat{D}_x[q]\gets(\widetilde{Q}\oplus b\otimes\widetilde{P})\oslash(a\oplus b)$
+          \State $\widehat{D}_y[q]\gets\widetilde{P}\oplus\widehat{D}_x[q]$
+          \State $D_x[q],D_y[q]\gets\Call{Trim}{\widehat{D}_x[q],\ell_x},\Call{Trim}{\widehat{D}_y[q],\ell_y}$
+        \EndFor
+      \EndIf
+      \ForAll{$x\in\mathcal{F}$}
+        \State \Call{InstallKV}{$R(x),D_x[0{:}N)$}
+      \EndFor
+      \State Execute position $p_f$ from the mirrored input of the earliest failed stage
+      \State \Return \textsc{Resume}
+    \EndProcedure
+  \end{algorithmic}
+\end{algorithm}
+
+\clearpage
+
+\begin{algorithm}[H]
+  \caption{Recovery-Aware Alternating Layer Placement}
+  \label{alg:recovery-aware-dp}
+  \begin{algorithmic}[1]
+    \Require Layers $1{:}L$; devices $\mathcal{D}$; backup hosts $\mathcal{H}$; $I_{\max}$
+    \Statex \Function{PlacementDP}{$S,R,\bar{\psi}$}
+      \State $A[0,0]\gets(0,0)$; all other states $\gets(\infty,\infty)$
+      \For{$n=1$ to $|S|$}
+        \For{$y=n$ to $L$}
+          \For{$l=n-1$ to $y-1$}
+            \State $u\gets(d_n,[l+1,y])$
+            \If{$A[l,n-1]=(\infty,\infty)$} \State \textbf{continue} \EndIf
+            \If{$W(u)+B(d_n;R,\bar{\psi})>M(d_n)$} \State \textbf{continue} \EndIf
+            \State $c\gets T(u)$
+            \If{throughput mode \textbf{and} $c>\mathrm{TBT}_{\mathrm{SLO}}$} \State \textbf{continue} \EndIf
+            \State $z\gets\bigl(A_\Sigma[l,n-1]+c,\max(A_{\max}[l,n-1],c)\bigr)$
+            \If{$\rho(z)<\rho(A[y,n])$}
+              \State $A[y,n]\gets z$; $\operatorname{choice}[y,n]\gets l$
+            \EndIf
+          \EndFor
+        \EndFor
+      \EndFor
+      \State \Return \Call{Backtrack}{$\operatorname{choice},L,|S|$}
+    \EndFunction
+    \Statex
+    \Statex \Procedure{AlternatingSearch}{$\mathcal{D},\mathcal{H}$}
+      \State $\mathrm{best}\gets\varnothing$
+      \ForAll{ordered subsets $S\subseteq\mathcal{D}$ with $|S|\ge2$}
+        \State $\psi\gets\Call{InitialPlacement}{S,L}$
+        \If{\Call{BuildRecovery}{$\psi,\mathcal{H}$} is infeasible}
+          \State $\psi\gets\Call{PlacementDP}{S,\varnothing,\psi}$ \Comment{repair the seed}
+        \EndIf
+        \State $R_{\mathrm{prev}}\gets\bot$; $\mathrm{best}_S\gets\varnothing$
+        \For{$i=1$ to $I_{\max}$}
+          \State $R\gets\Call{BuildRecovery}{\psi,\mathcal{H}}$
+          \If{$R$ is infeasible} \State \textbf{break} \EndIf
+          \State $\psi'\gets\Call{PlacementDP}{S,R,\psi}$
+          \If{$\psi'$ is infeasible} \State \textbf{break} \EndIf
+          \State $\mathrm{consistent}\gets\Call{MemoryFeasible}{\psi',R,\psi'}$
+          \If{$\mathrm{consistent}$ and $\rho(\psi')<\rho(\mathrm{best}_S)$}
+            \State $\mathrm{best}_S\gets(\psi',R)$
+          \EndIf
+          \If{$\mathrm{consistent}$ and $\psi'=\psi$ and $R=R_{\mathrm{prev}}$}
+            \State \textbf{break}
+          \EndIf
+          \State $\psi\gets\psi'$; $R_{\mathrm{prev}}\gets R$
+        \EndFor
+        \If{$\mathrm{best}_S\neq\varnothing$ and $\rho(\mathrm{best}_S)<\rho(\mathrm{best})$}
+          \State $\mathrm{best}\gets\mathrm{best}_S$
+        \EndIf
+      \EndFor
+      \State \Return $\mathrm{best}$
+    \EndProcedure
+  \end{algorithmic}
+\end{algorithm}
+
+\end{document}

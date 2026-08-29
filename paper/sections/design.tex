@@ -1,249 +1,265 @@
-\section{System Design}\label{sec:design}
+\section{\sys{} Design}\label{sec:design}
 
-% ~2 pages total. Four subsections.
+\subsection{System Overview and Architecture}\label{sec:design:overview}
 
-\subsection{Recovery-Aware DP ($\psi$+$R$ joint optimization)}\label{sec:design:dp}
+\sys{} consists of one coordinator and a set of heterogeneous edge workers.
+The coordinator profiles the workers, selects an active layer placement
+$\psi$, assigns backup workers through a recovery mapping $R$, and manages
+request recovery.  The placement partitions the decoder into contiguous
+stages.  An active worker stores its stage weights and the request KV cache,
+whereas a worker selected by $R$ reserves memory and preloads the weights of
+the stage that it may need to replace.  The coordinator is outside the
+protection domain; the current design targets fail-stop worker failures.
 
-\textbf{Problem.} Given $L$ transformer decoder layers and $|D|$
-heterogeneous devices, find a placement $\psi: \{1,\ldots,L\}
-\to D$ that partitions the layers into contiguous stages assigned
-to distinct devices, and a recovery table $R: D \to D$ assigning
-each device a backup peer that pre-reserves memory for that
-device's layers. Both must satisfy a per-device memory cap that
-\emph{includes} the backup reservation, and minimise a runtime
-cost that spans the latency--throughput axis with one $\alpha$
-knob.
+During normal decoding, an activation passes through the active stages in
+layer order.  Each protected non-head stage also sends its newly appended KV
+bytes to the coordinator.  The coordinator combines columns from the same
+request and token position into one or two cross-stage parity columns.  It
+also retains the input activation required to execute the current position at
+a replacement stage.  These two forms of state serve different purposes:
+parity restores the completed KV prefix, while the mirrored activation starts
+execution at the point where the failed stage stopped.  On failure, the
+coordinator reconstructs the lost KV, activates the assigned backup, installs
+the recovered state, and rewires the pipeline.
 
-\textbf{Cost.} Let $t(d,i)$ denote the per-layer decode time of
-layer $i$ on device $d$ (profiled at boot, \S\ref{sec:design:runtime}),
-$T(s) = \sum_{i \in s} t(d_s, i)$ the time of stage $s$ on its
-assigned device $d_s$, and $\mu(\psi) = \max(1, C_\star |\psi|/P)$
-a pool-saturation multiplier with target concurrency $C_\star$
-(default $1$, collapsing $\mu$ to $1$) and worker handler-pool
-size $P$. The rank function
-\begin{equation}\label{eq:rank}
-  \mathrm{rank}(\psi) = (1{-}\alpha) \sum_{s \in \psi} \mu(\psi) T(s)
-                       + \alpha \max_{s \in \psi} \mu(\psi) T(s)
-                       + \gamma_{\mathrm{stage}} |\psi|
+The architecture therefore separates two conditions that a recovery path must
+satisfy.  The request state must be reconstructable, and a surviving worker
+must have enough memory to execute the failed layer range.  Cross-stage parity
+addresses the first condition.  Recovery-aware placement addresses the
+second by admitting only $(\psi,R)$ pairs whose active and backup weights fit
+together.
+
+\subsection{Execution and Recovery Model}\label{sec:design:model}
+
+Let $\mathcal{S}$ denote the protected non-head stages and let $F\subseteq
+\mathcal{S}$ be the stages lost in one failure event.  A deployment configured
+with $k$ parity columns admits the parity path when $0<|F|\leq k$.  The current
+implementation supports $k\in\{1,2\}$: one parity column protects one failed
+stage, and two columns protect two simultaneous failed stages.  We assume an
+unannounced process crash, out-of-memory termination, or network partition is
+observed as a fail-stop event.  Byzantine corruption, coordinator failure, a
+head-stage failure, and more than $k$ simultaneous protected-stage failures
+are outside this guarantee.
+
+A failure count within the configured limit is necessary but not sufficient.
+Before decoding parity, the coordinator checks that (i) every failed stage is
+protected, (ii) the surviving KV columns have valid per-position lengths,
+(iii) the parity entries for the common completed prefix are complete, (iv)
+the mirrored input for the interrupted position is present, and (v) $R$
+identifies a live worker with the required weights loaded.  These checks form
+the recovery contract.  If the contract does not hold, \sys{} first attempts
+failed-stage replay using the retained stage inputs and then falls back to
+full-prefix replay.  Only a completed parity path carries the bit-exact
+KV-state guarantee; replay fallbacks regenerate the state through model
+execution.
+
+The recovery mapping cannot be appended after an otherwise independent
+placement decision.  Assigning more layers to a fast worker increases both
+its active weight footprint and the reservation required on its backup.  A
+placement that fits during normal execution can therefore leave no surviving
+worker able to host the failed stage.  Section~\ref{sec:design:dp} accounts for
+this coupling while constructing $\psi$.
+
+\subsection{Cross-Stage KV Parity}\label{sec:design:parity}
+
+For request $r$ and completed token position $q$, let $D_s[r,q]$ be the
+serialized KV bytes appended by protected stage $s\in\mathcal{S}$, and let
+$\ell_s$ be its unpadded length.  Stage sizes can differ because the placement
+may assign different numbers of layers to different workers.  \sys{} pads
+each column to $\ell_{\max}=\max_{s\in\mathcal{S}}\ell_s$ before encoding and
+records $\ell_s$ so that recovered bytes can be trimmed before installation.
+With one parity column, the coordinator stores
+\begin{equation}\label{eq:single-parity}
+  P[r,q] = \bigoplus_{s\in\mathcal{S}}
+            \operatorname{pad}\!\left(D_s[r,q]\right).
 \end{equation}
-spans EdgeShard's latency mode at $\alpha{=}0$ and Jupiter's
-throughput mode at $\alpha{=}1$; \texttt{optimization\_mode}
-exposes operator-friendly aliases (\texttt{latency},
-\texttt{throughput}, \texttt{blended}). The additive stage-count
-penalty $\gamma_{\mathrm{stage}}|\psi|$ (default $0$) breaks the
-homogeneous-fleet tie that $\mu$ alone leaves behind in the
-max-min (\S\ref{sec:eval:cost-model}).
+An update is applied at most once for each $(r,q,s)$ tuple.  The coordinator
+marks $P[r,q]$ complete only after it has received a column from every stage in
+$\mathcal{S}$, preventing a partial XOR value from being used for recovery.
 
-\textbf{Recurrence.} Fix a device ordering
-$D = (d_1, \ldots, d_{|D|})$. Let $A(y, n)$ be the minimum rank
-of placing the first $y$ layers across the first $n$ devices in
-order, with $d_n$ owning the last stage. The inner DP assumes
-every device in the ordering participates and reads the final
-solution from $A(L, |D|)$; the outer search restores subset
-selection by running this DP over every ordered
-$S \subseteq D$ with $|S| \geq 2$. This is the same problem
-decomposition as Jupiter's LLM-partition DP~\cite{ye2025jupiter},
-which our recurrence reduces to at $\alpha{=}1$ with no recovery
-and no hop overhead. For each $(y, n)$ we try every split $l<y$:
-\begin{equation}\label{eq:dp}
-  A(y, n) = \min_{n-1 \leq l < y}
-  \Bigl\{ A(l, n{-}1) + \mathrm{rank\_inc}(l{+}1, y, d_n) \Bigr\}
+For $k=2$, \sys{} stores a second column over $\mathrm{GF}(2^8)$.  Each stage
+has a distinct nonzero coefficient $a_s=g^{\operatorname{rank}(s)}$, where
+$g$ is a primitive field element, and
+\begin{equation}\label{eq:double-parity}
+  Q[r,q] = \bigoplus_{s\in\mathcal{S}}
+            a_s\otimes\operatorname{pad}\!\left(D_s[r,q]\right).
 \end{equation}
-with $\mathrm{rank\_inc}(l{+}1, y, d_n) = T_{\text{stage}}(l{+}1, y, d_n)
-+ T_{\text{comm}}(d_{n-1}, d_n)$, and
-$T_{\text{comm}}(u, v) = \mathrm{act\_bytes}/\mathrm{bw}(u, v)
-+ \mathrm{lat}(u, v) + \gamma_{\mathrm{hop}}$ where the per-hop
-constant $\gamma_{\mathrm{hop}}$ (default $0$, set to 8\,ms on
-our fleet) surfaces the gRPC framing and Python GIL contention
-that wire profiling misses. The recurrence is subject to the
-memory feasibility constraint
-\begin{equation}\label{eq:mem}
-  \underbrace{\mathrm{mem}_\psi(d)}_{\text{stage layers on } d}
-  + \sum_{p\,:\,R(p){=}d} \underbrace{\mathrm{mem}_\psi(p)}_{\text{peers backed up on } d}
-  \;\leq\; \mathrm{cap}(d),
-\end{equation}
-where $\mathrm{mem}_\psi(d) = \sum_{i\,:\,\psi(i)=d} \mathrm{mem}(i)$
-sums the per-layer weight memory across layers assigned to $d$ under
-the candidate placement.
-Equation~(\ref{eq:mem}) is the systemic point: $R$ enters the
-$\psi$-DP through the device cap, so changing $R$ changes which
-$\psi$ are feasible, and vice versa. A decoupled solver that
-chooses $\psi$ first and $R$ afterwards can pick a $\psi$ with no
-feasible $R$ on memory-tight edge.
+All operations are byte-wise, so the worker-side KV representation does not
+change.  A single-parity entry occupies $\ell_{\max}$ bytes per position and
+a double-parity entry occupies $2\ell_{\max}$ bytes, compared with
+$\sum_{s\in\mathcal{S}}\ell_s$ bytes for one full replica of every protected
+column.
 
-\textbf{Alternation.} Algorithm~\ref{alg:alt} solves the
-joint problem by alternation. The inner $\psi$-DP runs in
-$O(L^2 |D|)$ per device-ordering (the recurrence is
-$O(L^2)$ in $y, l$ and $O(|D|)$ in $n$); the greedy $R$ pass runs in
-$O(|D|^2)$ for a fixed $\psi$ (each device picks the unused peer
-that minimises backup-memory overflow). Cost is monotonically
-non-increasing across iterations, so the loop terminates in
-finitely many steps; in practice we observe convergence in
-$\leq 3$ iterations on every fleet we tested.
+\subsection{KV Recovery and Fallback}\label{sec:design:recovery}
+\label{sec:design:mirror}
+
+After identifying $F$, the coordinator fetches the surviving KV columns and
+checks their slot geometry.  A surviving byte stream must be divisible by its
+expected bytes per position.  Under synchronous pipeline execution, adjacent
+stages may differ by one completed slot because an upstream stage can finish
+the interrupted position before the failure propagates.  A larger difference
+indicates inconsistent state.  \sys{} therefore recovers only the common
+completed prefix $N$, defined by the minimum valid slot count, and requires a
+complete parity entry for every $q<N$.
+
+For one failed stage $x$, each prefix column is recovered as
+\begin{equation}\label{eq:recover-single}
+  \widehat{D}_x[r,q] = \operatorname{trim}_{\ell_x}\!\left(
+  P[r,q]\oplus\!\bigoplus_{s\in\mathcal{S}\setminus\{x\}}
+  \operatorname{pad}\!\left(D_s[r,q]\right)\right).
+\end{equation}
+For two failed stages $x$ and $y$, the surviving columns are first removed
+from $P$ and $Q$, yielding
+$\widetilde{P}=D_x\oplus D_y$ and
+$\widetilde{Q}=a_x\otimes D_x\oplus a_y\otimes D_y$.  The coordinator solves
+the resulting two-equation system byte by byte:
+\begin{align}
+  \widehat{D}_x &=(\widetilde{Q}\oplus
+    a_y\otimes\widetilde{P})\oslash(a_x\oplus a_y),
+    \label{eq:recover-double-x}\\
+  \widehat{D}_y &=\widetilde{P}\oplus\widehat{D}_x.
+    \label{eq:recover-double-y}
+\end{align}
+
+Algorithm~\ref{alg:cross-stage-parity} summarizes the guarded recovery path.
+After the reconstructed prefix has been installed on the backup, the
+coordinator executes the interrupted position once using its mirrored input
+activation and then continues with the next decode step.  Positions preceding
+the failure are not forwarded through the failed layer range again.  If any
+contract check fails, the algorithm returns to the replay ladder instead of
+using incomplete or inconsistent parity state.
 
 \begin{algorithm}[t]
-  \caption{Alternating $\psi$+$R$ optimization}
-  \label{alg:alt}
+  \caption{Guarded cross-stage parity recovery}
+  \label{alg:cross-stage-parity}
   \begin{algorithmic}[1]
-    \State $\psi_0 \gets \mathrm{greedy\text{-}placement}(D, L, \alpha)$
-    \Comment{ignore memory constraint}
-    \State $R_0 \gets \mathrm{greedy\text{-}backup}(\psi_0)$
-    \Comment{minimise per-device backup overflow}
-    \State $k \gets 0$
-    \Repeat
-      \State $\psi_{k+1} \gets \mathrm{DP}(D, L, R_k, \alpha)$
-      \Comment{Eq.~\ref{eq:dp} with Eq.~\ref{eq:mem}}
-      \State $R_{k+1} \gets \mathrm{greedy\text{-}backup}(\psi_{k+1})$
-      \State $k \gets k + 1$
-    \Until{$\mathrm{rank}(\psi_k) \geq \mathrm{rank}(\psi_{k-1})$}
-    \State \Return $(\psi_{k-1}, R_{k-1})$
+    \Require Request $r$, failed set $F$, interrupted position $q_f$
+    \If{$F\nsubseteq\mathcal{S}$ or $|F|=0$ or $|F|>k$}
+      \State \Return \Call{ReplayFallback}{$r,F$}
+    \EndIf
+    \State Fetch surviving KV and derive their slot counts
+    \If{slot geometry is invalid or the count spread exceeds one}
+      \State \Return \Call{ReplayFallback}{$r,F$}
+    \EndIf
+    \State $N\gets$ minimum surviving slot count
+    \If{parity is incomplete for some $q<N$}
+      \State \Return \Call{ReplayFallback}{$r,F$}
+    \EndIf
+    \If{the input at $q_f$ or a live loaded backup is missing}
+      \State \Return \Call{ReplayFallback}{$r,F$}
+    \EndIf
+    \For{$q\gets0$ to $N-1$}
+      \State Recover $D_s[r,q]$ for $s\in F$ using
+      Eq.~\ref{eq:recover-single} or Eqs.~\ref{eq:recover-double-x}--\ref{eq:recover-double-y}
+    \EndFor
+    \State Install recovered KV and activate the backup stage
+    \State Execute $q_f$ once from the mirrored input; rewire the chain
+    \State \Return resume decoding at $q_f+1$
   \end{algorithmic}
 \end{algorithm}
 
-\textbf{Complexity.} The inner DP is $O(L^2 |D|)$. The outer
-alternation adds a constant factor ($\leq 3$ iterations in
-practice). The outer subset+permutation search costs
-$O(2^{|D|} \cdot |D|!)$ in the worst case --- $\sim$80\,ms for
-$|D|{=}6$, 1956 candidates --- with automatic prune of
-pathologically-slow workers
-(\S\ref{sec:eval:cost-model}). For $|D| \gtrsim 12$ a fast
-top-$k$ heuristic ($O(L^2 k |D|)$) would replace the exhaustive
-search; we leave that to future work.
+\subsection{Recovery-Aware Layer Placement}\label{sec:design:dp}
 
-\subsection{Mirror cache and chain-aware recovery}\label{sec:design:mirror}
+Let $L$ be the number of decoder layers and $D$ the available workers.  A
+candidate placement partitions the layers into contiguous stages assigned to
+an ordered subset of $D$.  For a stage containing layers $i$ through $j$ on
+worker $d$, let $c(i,j,d)$ include its profiled execution time and the cost of
+receiving its input from the preceding stage.  The placement DP maintains the
+sum of stage costs, $z_{\Sigma}$, and the slowest stage cost, $z_{\max}$.  The
+configured optimization mode ranks a candidate by
+\begin{equation}\label{eq:rank}
+  \rho(z_{\Sigma},z_{\max})=
+  \begin{cases}
+    z_{\max}, & \text{throughput},\\
+    z_{\Sigma}, & \text{latency},\\
+    z_{\Sigma}+\alpha z_{\max}, & \text{blended}.
+  \end{cases}
+\end{equation}
+This retains both cumulative latency and bottleneck time in the DP state
+instead of converting one into a fixed additive increment.
 
-\textbf{Problem.} In sync chain forwarding the coordinator sees
-only the head stage's input locally; mid-chain activations live in
-flight between workers. If a middle worker dies, the coordinator
-has no activation history to feed to the promoted backup --- the
-chain has nothing to replay.
+For a fixed device order $(d_1,\ldots,d_n)$, let
+$A[y,n]=(A_{\Sigma}[y,n],A_{\max}[y,n])$ be the best state after placing the
+first $y$ layers on the first $n$ devices.  For a final split after layer
+$l$, define
+\begin{align*}
+  z_{\Sigma}(l) &= A_{\Sigma}[l,n-1]+c(l+1,y,d_n),\\
+  z_{\max}(l) &= \max\{A_{\max}[l,n-1],c(l+1,y,d_n)\},\\
+  z(l) &= (z_{\Sigma}(l),z_{\max}(l)).
+\end{align*}
+The recurrence is
+\begin{equation}\label{eq:dp}
+  A[y,n]=z(l^*),\qquad
+  l^*=\underset{\substack{n-1\leq l<y\\\text{feasible}}}
+  {\arg\min}\;\rho\!\left(z(l)\right).
+\end{equation}
+Candidate device orders supply subset selection.  As in heterogeneous
+partitioning systems such as EdgeShard and Jupiter, the resulting objective
+can prioritize end-to-end latency or the slowest pipeline stage
+~\cite{zhang2024edgeshard,ye2025jupiter}.
 
-\textbf{Mirror cache.} Before running its own stage, every worker
-fires a one-way \texttt{MirrorActivation} RPC to the coordinator
-carrying the incoming activation tensor plus a
-\texttt{(request\_id, position)} key. The coordinator stores it in
-a position-keyed dictionary; inserts are idempotent so duplicate
-retries and out-of-order arrivals are absorbed without
-coordination. Each worker uses a single-threaded mirror dispatcher,
-so ordered delivery is the common case and the position key handles
-the tail. Mirror RPCs run on a separate gRPC channel from
-\texttt{RunStage}, so a slow mirror cannot stall pipeline forward
-progress. The cost is one one-way RPC per non-head stage per
-decode step ($\sim$1.2\,ms on our fleet); the
-arithmetic-check experiment (\S\ref{sec:eval:recovery}) confirms an
-8-token Generate produces exactly 16 mirror pushes on a 3-stage
-chain ($8$ steps $\times$ 2 non-first stages).
+Recovery changes the feasible set.  Let $W_{\psi}(d)$ be the active weights
+placed on device $d$, $W_{\psi}(s)$ the weights in stage $s$, and $M(d)$ the
+usable model-memory capacity.  Every candidate must satisfy
+\begin{equation}\label{eq:mem}
+  W_{\psi}(d)+\sum_{s:R(s)=d}W_{\psi}(s)\leq M(d),
+  \qquad \forall d\in D.
+\end{equation}
+The second term is the memory reserved for backup weights.  Because the stage
+intervals determine this term while the reservations constrain the next
+placement, \sys{} alternates between constructing $R$ and solving the
+placement DP.  Each new pair is checked with its actual stage intervals, and
+the bounded search returns the best self-consistent pair found; it does not
+assume that every alternating step improves the objective.
 
-\textbf{Trailer-stamped attribution.} When a worker's downstream
-\texttt{RunStage} call raises an RpcError, the upstream worker
-catches it, stamps the failed stage's \texttt{(start\_layer,
-end\_layer)} pair onto the gRPC \emph{trailing metadata}, and
-re-aborts with \texttt{UNAVAILABLE}. The coordinator reads the
-trailer and resolves \texttt{(start, end)} against the
-\emph{original} placement $\psi_0$, not the live execution plan.
-This matters because the heartbeat path may have already
-substituted a backup as the chain head before the trailer arrives,
-and attributing the failure to that surrogate would
-mark-as-dead a perfectly healthy worker. The trailer carries the
-identity of the truly-dead stage independently of whatever rewiring
-$R$ has already performed, so attribution is correct under any
-heartbeat/trailer race.
+\begin{algorithm}[t]
+  \caption{Recovery-aware alternating placement}
+  \label{alg:recovery-aware-dp}\label{alg:alt}
+  \begin{algorithmic}[1]
+    \Require Workers $D$, layer count $L$, iteration limit $I_{\max}$
+    \State $\psi\gets$ \Call{InitialPlacement}{$D,L$}; $B\gets\bot$
+    \State $R_{\mathrm{prev}}\gets\bot$
+    \For{$i\gets1$ to $I_{\max}$}
+      \State $R\gets$ \Call{BuildRecovery}{$\psi$}
+      \State $\psi'\gets$ \Call{PlacementDP}{$D,L,R,\psi$}
+      \If{$\psi'=\bot$}
+        \State \textbf{break}
+      \EndIf
+      \If{\Call{RecoveryFeasible}{$\psi',R$}}
+        \State $B\gets$ better of $B$ and $(\psi',R)$ under Eq.~\ref{eq:rank}
+      \EndIf
+      \If{$\psi'=\psi$ and $R=R_{\mathrm{prev}}$}
+        \State \textbf{break}
+      \EndIf
+      \State $\psi\gets\psi'$; $R_{\mathrm{prev}}\gets R$
+    \EndFor
+    \State \Return $B$
+  \end{algorithmic}
+\end{algorithm}
 
-\textbf{Full chain replay.} On confirmed failure the coordinator
-(i) promotes $R(d_{\mathrm{dead}})$ and rewires the chain so the
-backup owns the dead stage's layers, (ii) evicts \emph{every}
-surviving worker's KV cache for the request, and (iii) replays the
-request from position~0 through the rewired chain, re-feeding the
-mirrored input history end-to-end so each stage rebuilds its KV
-from scratch. The full rebuild --- rather than a single-stage
-retry onto the backup --- is what keeps the result deterministic:
-async chain forwarding lets surviving upstream workers advance
-their KV by one step before the failure propagates back, so
-retrying only the backup would double-count that position. The
-cost is $O(\mathrm{positions} \times \mathrm{stages})$ replay RPCs,
-which is acceptable under the single-fault correctness guarantee
-but grows with how deep into generation the failure lands; a
-surgical alternative that rebuilds only the backup is left to
-future work (\S\ref{sec:discussion}). The end result is a
-deterministic rebuild: 60/60 tokens delivered with no client-
-visible error (\S\ref{sec:eval:recovery}).
+\subsection{Runtime Integration}\label{sec:design:runtime}
+\label{sec:design:async}
 
-\subsection{Asynchronous chain forwarding}\label{sec:design:async}
+At deployment time, the coordinator profiles layer execution and peer links,
+runs Algorithm~\ref{alg:alt}, loads the active stage weights, and preloads the
+backup weights selected by $R$.  During decoding, workers retain their local
+KV cache and report the new protected KV column after each completed position.
+Parity updates and input mirrors are keyed by request and position, making
+duplicate delivery idempotent and preventing state from different decode
+steps from being combined.
 
-\textbf{Hidden cost of sync chain.} The synchronous chain
-forwarding pattern --- each worker calls the next via blocking
-gRPC and returns once the nested response unwinds --- has a
-non-obvious cost we only saw under load. Each of $C$ in-flight
-streams holds one gRPC handler thread on \emph{every} chain stage
-for the full chain duration, so a chain of $N$ stages occupies
-$CN$ threads simultaneously. Throughput-placement's
-pipeline-parallel intent fails to materialise: every stage waits
-for its downstream return, so adding a stage adds latency without
-adding parallelism. The Phase F measurements
-(\S\ref{sec:eval:matrix}) show this directly: at $C{=}16$ on the
-4-stage chain, sync's $34.5$\,tok/s rises to $35.7$ with async on
-the T-placement row alone.
+The coordinator detects worker loss through the request RPC path or heartbeat.
+The failure report carries the original failed layer interval, which is
+resolved against the active placement rather than a partially rewired chain.
+The coordinator then freezes progress for the affected request, applies the
+contract in Algorithm~\ref{alg:cross-stage-parity}, promotes the backup, and
+updates the neighboring stage routes.  Normal execution may use synchronous or
+asynchronous chain forwarding; the recovery state and placement constraints
+are unchanged, while asynchronous forwarding relies on heartbeat when an RPC
+trailer can no longer propagate the failed interval.
 
-\textbf{Protocol.} Async chain inverts the call pattern. A worker
-dispatches the next-hop \texttt{RunStage} to a bounded thread pool
-and immediately ACKs its upstream caller with an empty response
-(\texttt{async\_chain=true} flag in the request distinguishes the
-two modes). Each handler thread frees as soon as its own work
-completes. The chain tail, instead of returning a result up the
-response chain, calls
-\texttt{CoordinatorService.ResultReady} directly on the
-coordinator carrying the final activation. The coordinator
-maintains a per-(\texttt{request\_id}, \texttt{position})
-\texttt{Event} that \texttt{\_invoke} waits on with a 30\,s timeout;
-when \texttt{ResultReady} arrives the Event fires and the
-coordinator's generation loop continues.
-
-\textbf{Per-request locking.} Async chain creates a race the sync
-pattern hid: two concurrent decode steps of the same request can
-arrive at the same worker out of order. Each worker holds a
-\texttt{request\_id}-keyed lock around its KV cache mutation
-(\texttt{DynamicCache.update}); the lock serialises in-order steps
-of a given request without serialising different requests.
-Forward progress at high $C$ depends on the lock being
-fine-grained (per-request, not global), which we measured directly
-in the matrix.
-
-\textbf{Trade-off.} Async chain breaks trailer-based attribution:
-once the response chain has unwound, there is no trailer to stamp.
-The coordinator falls back to (i) heartbeat for slow failures
-(typically $<$5\,s) and (ii) the 30\,s \texttt{ResultReady} timeout
-for the case where heartbeat misses. Attribution may name the
-chain head rather than the truly-dead worker; the $\psi$+$R$
-feasibility guarantee preserves correctness (the backup of
-whichever worker the coordinator names is itself feasible), but
-recovery pays one extra hop when heartbeat loses the race
-(\S\ref{sec:eval:recovery}). The operator-facing knob is
-\texttt{chain\_mode = sync $\mid$ async}: sync when failure
-attribution must be millisecond-tight, async when steady-state
-throughput dominates.
-
-\subsection{Runtime and implementation}\label{sec:design:runtime}
-
-\sys{} is implemented in Python 3.10 with gRPC for the inter-worker
-transport and PyTorch (NVIDIA-built Jetson CUDA wheels) for the
-forward-pass kernels. Loading is the only model-format-aware path:
-a sharded-safetensors loader handles HuggingFace's standard
-multi-file checkpoints (used for Llama-3.2-1B) and falls back to
-a single-shard path for OPT-style \texttt{.bin} files. The runtime
-exposes 11 RPCs in \texttt{radp.proto}: \texttt{LoadStage},
-\texttt{LoadBackup}, \texttt{PromoteBackup}, \texttt{RunStage}
-(carrying the \texttt{async\_chain}, \texttt{replay\_only}, and
-\texttt{position} flags that gate the sync/async/recovery
-semantics), \texttt{MirrorActivation}, \texttt{ResultReady},
-\texttt{SetNextHop}, \texttt{LoadHead}, \texttt{Heartbeat},
-\texttt{Ping}, \texttt{MeasurePeer}, and \texttt{ProfileLayers}.
-Auto-scheduling closes the loop at boot: the coordinator dispatches
-\texttt{ProfileLayers} and \texttt{MeasurePeer} sweeps to the fleet,
-collects per-layer compute times and the $|D|\times|D|$ network
-mesh, runs Algorithm~\ref{alg:alt}, and writes the result to
-\texttt{/tmp/radp\_scheduler\_stats.json} which experiments
-consume as the single source of truth. Ansible playbooks handle
-host bring-up: one command per push wires JetPack-version-aware
-PyTorch wheels, gated-HuggingFace tokens (injected via systemd
-\texttt{Environment=}, never persisted to disk), and the worker
-systemd units across the eight-host fleet.
+The prototype is implemented in Python with PyTorch and gRPC.  Workers expose
+stage loading, execution, KV transfer, backup promotion, routing, profiling,
+and health-check operations.  The coordinator owns placement, parity state,
+failure attribution, and request-level recovery, keeping the worker data path
+limited to stage execution and state transfer.

@@ -1,96 +1,92 @@
 \section{Introduction}\label{sec:intro}
 
-\IEEEPARstart{D}{istributed} LLM inference on edge clusters has moved
-from research curiosity to viable deployment.  Petals~\cite{borzunov2023petals,borzunov2023distributed}
-demonstrated that a collaborative swarm of consumer GPUs can serve
-billion-parameter models, EdgeShard~\cite{zhang2024edgeshard} added
-latency-optimal layer placement via dynamic programming, and
-Jupiter~\cite{ye2025jupiter} pushed throughput-optimal placement with
-explicit Token-Between-Time (TBT) constraints.  Yet these systems
-were built around two assumptions inherited from the data center
-that the edge regime breaks.  First, \emph{homogeneity}: edge
-fleets routinely mix GPU tiers (AGX Orin and Orin Nano) and
-sometimes CPU-only boards.  On our 6-worker Jetson fleet (plus
-AGX Xavier coordinator), AGX MAXN is $1.36\times$ faster than
-Nano CUDA at OPT-350M seq=64 (launch-bound regime; larger models
-would expose more), and including Nano CPU boards extends the
-within-fleet gap to $\sim$76$\times$
-(\S\ref{sec:eval:setup}).  Second,
-\emph{reliability}: boards crash, internal storage fills up, networks
-partition.  During the measurement campaign behind this paper we
-encountered all three on multiple boards, and placement that
-ignores them produces a system whose first worker failure aborts
-the stream.
+\IEEEPARstart{L}{arge} language models (LLMs) are increasingly being used
+for battery management, industrial fault diagnosis, visual monitoring, and
+industrial control system analysis~\cite{zhang2026finetuning,liu2024joint,
+wang2024largescale,chamotra2026advancing}.  Many of these deployments cannot
+assume an uninterrupted path to a public cloud.  Industrial operational
+technology networks may be physically isolated from untrusted external
+networks~\cite{hussain2025airgap}; remote and maritime sites operate over
+limited or time-varying links~\cite{yuan2023elect,yang2024erocn}; and mobile
+robots are sensitive to delay, packet loss, and disconnection in their control
+loop~\cite{omena2023twotier}.  Keeping inference on site avoids making these
+applications depend on a remote service, but the model weights and growing KV
+cache can exceed the memory of a single edge device.  Splitting consecutive
+decoder layers across several devices is therefore a practical way to pool
+the compute and memory already available at the site~\cite{macario2025mdi,
+zhang2024edgeshard,ye2025jupiter}.  Such a deployment is inherently
+heterogeneous: its pipeline may span GPUs, CPUs, and embedded accelerators
+with different execution rates and memory capacities.
 
-Existing systems treat layer placement~($\psi$) and recovery
-routing~($R$) as separate problems.  EdgeShard's DP optimizes
-$\psi$ assuming a redundant copy of every layer exists somewhere
-on the cluster --- a comfortable assumption on a memory-abundant
-consumer GPU but unaffordable on a 4\,GB Nano.  Petals' greedy placement leaks
-2.38$\times$ throughput on heterogeneous fleets~\cite{mei2025helix}
-and its swarm-redundancy recovery model presupposes spare memory
-the edge does not have.  Jupiter's throughput-optimal DP has no
-recovery story at all.  Composing these systems naively does not
-recover what each gives up: the systemic point we make in
-\S\ref{sec:background} is that $R$ and $\psi$ have \emph{coupled}
-feasibility regions on memory-tight edge.  Decoupling them gives
-up feasibility or performance, never both.
+Distribution removes a single-device capacity bottleneck, but makes each
+request depend on every stage of the pipeline.  IoT nodes are exposed to
+resource exhaustion, process crashes, hardware faults, and intermittent
+connectivity~\cite{kaur2023intelligent,xu2020dynamic}; we also encountered
+unexpected process exits and out-of-memory failures while operating our
+testbed.  This dependence is particularly consequential for autoregressive
+inference.  Each stage retains the KV cache produced for earlier tokens, so a
+failed stage loses both its assigned computation and the request-specific
+state needed to continue decoding.  EdgeShard and Jupiter optimize layer
+partitioning and placement across heterogeneous devices, but neither provides
+a runtime path that restores this lost state and resumes an in-flight
+request~\cite{zhang2024edgeshard,ye2025jupiter}.  Moving the failed layer range
+to another device is therefore insufficient by itself: the replacement must
+also recover the current KV state before the next token can be generated.
 
-\sys{} unifies $\psi$ and $R$ inside a single alternating dynamic
-program whose backup-memory reservation folds back into the
-placement feasibility check.  The same DP that decides which
-worker hosts which transformer block also decides which worker
-absorbs whose stage on failure, with one tunable cost knob $\alpha$
-that lets the optimizer span EdgeShard's latency regime ($\alpha
-{=}0$) and Jupiter's throughput regime ($\alpha{=}1$) under one
-framework (\S\ref{sec:design:dp}).  Two runtime mechanisms make the
-joint optimization viable on a real edge fleet: an
-\emph{asynchronous mirror cache} that ships per-stage activations
-back to the coordinator out-of-band, so a freshly-promoted backup
-can rebuild its KV state without disrupting the surviving chain
-(\S\ref{sec:design:mirror}); and \emph{asynchronous chain
-forwarding} with a \texttt{ResultReady} reverse channel, which
-breaks the synchronous nested-response unwind that we measured
-silently serializes nominally-pipelined chains
-(\S\ref{sec:design:async}).
+Existing recovery mechanisms make different trade-offs between recovery time
+and state retained during normal operation.  Recomputation keeps little or no
+backup state, but must replay model computation to regenerate the lost KV
+cache; its recovery work consequently grows with the prefix produced before
+the failure, even when replay is limited to the failed stage as in a
+Petals-style recovery path~\cite{borzunov2023petals}.  KV replication avoids
+most of this replay by streaming a second copy of the state, as in
+DejaVu~\cite{strati2024dejavu}, but its footprint grows with the sum of the
+protected stages' KV caches.  Reactive reconfiguration can avoid persistent
+KV backup altogether, yet a naive implementation must reload weights, rebuild
+the pipeline, and restart the request; systems such as SpotServe use stateful
+migration precisely to avoid this cold-restart path when preemption is known
+in advance~\cite{miao2024spotserve}.  GhostServe reduces replication through
+erasure-coded KV checkpoints, but targets intra-node tensor-parallel serving
+with parity stored in host memory~\cite{jayakody2026ghostserve}.  These designs
+do not establish how to protect KV state across the stages of a heterogeneous,
+memory-constrained edge pipeline while also ensuring that a surviving device
+has enough capacity to execute the failed stage.  Edge recovery must therefore
+consider \emph{Recovery Latency}, \emph{Recovery-State Footprint}, and
+\emph{Recovery Feasibility} together.
 
-We make the following contributions:
+We present \emph{KV Cache Availability and Recovery at the Edge}
+(\sys{}), which addresses state recovery and executable backup capacity in
+one system.  Its first component, \emph{cross-stage parity}, encodes the KV
+byte streams of protected non-head stages into one parity column.  After a
+single protected-stage failure, the coordinator reconstructs the lost KV from
+the parity column and the surviving stages without recomputing the prefix; the
+retained redundancy is proportional to the largest protected KV column rather
+than their sum.  Direct state reconstruction also has a distinct property on
+heterogeneous hardware.  Replaying the same stage through different execution
+backends can change KV bytes because operation order, precision, and kernel
+implementations differ.  We observed such bit-level differences in a
+cross-tier replay experiment, although none of the 3,156 paired greedy
+decisions changed its top-1 token.  We therefore treat \emph{KV-State
+Fidelity} as a state-level property, not as evidence of an output-correctness
+failure.  When its validation gates pass, the parity path reconstructs the
+stored bytes exactly; this guarantee does not extend to replay fallbacks or to
+general output equivalence.  The second component, \emph{recovery-aware layer
+placement}, ensures that the reconstructed state has somewhere to run.
+\sys{} searches active layer placement and backup assignment together and
+charges backup-weight reservations to each device's memory constraint.  This
+coupling excludes placements that execute normally but cannot admit a valid
+backup after failure.
 
-\begin{itemize}
-  \item A formal $\psi$+$R$ alternating DP with polynomial-time
-        convergence, generalizing EdgeShard's latency mode and
-        Jupiter's throughput mode under one $\alpha$-tunable
-        rank function (\S\ref{sec:design:dp}).
-  \item An asynchronous mirror cache plus chain-aware failure
-        attribution path that uses gRPC-trailer metadata to
-        identify the truly-dead worker even when the heartbeat
-        path has already substituted its backup
-        (\S\ref{sec:design:mirror}).
-  \item Asynchronous chain forwarding with per-request locking
-        and a coordinator-side \texttt{ResultReady} reverse
-        channel, yielding a chain-length-independent
-        17--47\% throughput gain at $C{=}16$ over synchronous
-        chains (\S\ref{sec:design:async}).
-  \item Live measurement on a 6-worker Jetson fleet (with an AGX
-        Xavier coordinator) across
-        \emph{24} operating points on OPT-350M (two chain lengths
-        $\times$ four architecture variants $\times$ three
-        concurrency levels) plus a nine-cell 4-stage sub-matrix
-        on a 3$\times$-larger Llama-3.2-1B, showing latency-optimal
-        placement dominates throughput-optimal placement at every
-        point with $C{\geq}4$ and that the dominance generalises
-        across a 3$\times$ model-size gap --- a structural
-        property of the $\psi$+$R$ joint optimization, not an
-        artifact of any specific topology, runtime, or model
-        (\S\ref{sec:eval:matrix}).  Under a mid-stream worker
-        SIGKILL, \sys{} delivers all 60 expected tokens
-        coherently while the placement-only baselines abort
-        after the 17--20 tokens already in flight
-        (\S\ref{sec:eval:recovery}).
-  \item A cost-model ablation that turns on outer subset
-        enumeration and a per-hop $\gamma_{\mathrm{hop}}$ term,
-        showing the L $\succ$ T gap \emph{widens} rather than
-        closes (\S\ref{sec:eval:cost-model}) --- evidence that
-        the residual gap is multi-stream system-level, not a
-        wire-cost miss.
-\end{itemize}
+This paper makes four contributions.  First, it formulates fault recovery for
+heterogeneous distributed LLM inference along the three operational axes of
+Recovery Latency, Recovery-State Footprint, and Recovery Feasibility, while
+separating KV-State Fidelity from output correctness.  Second, it introduces
+cross-stage KV parity that restores one failed stage without prefix
+recomputation and extends the construction with a second parity column for two
+simultaneous protected-stage failures.  Third, it develops a recovery-aware
+placement search that incorporates backup assignment and backup-weight
+reservation into placement feasibility.  Finally, it evaluates \sys{} on a
+heterogeneous multi-stage testbed against recomputation, Petals-style failed-
+stage replay, DejaVu-style replication, and reactive reconfiguration, measuring
+prefix-length scaling, retained recovery state, exact-state restoration, and
+the memory conditions under which recovery remains feasible.
