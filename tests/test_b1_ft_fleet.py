@@ -10,7 +10,12 @@ and get mislabeled — this predicate is how the driver catches that.
 
 from __future__ import annotations
 
-from experiments.b1_ft_fleet import _parity_branch_ran
+import pytest
+
+from experiments.b1_ft_fleet import (
+    _client_recovery_interval,
+    _parity_branch_ran,
+)
 
 # The real zero-forward XOR path's marker, exactly as formatted by
 # gateway.py's `_recover_parity` (the ``log.warning("request=%d PARITY
@@ -53,3 +58,20 @@ def test_parity_branch_ran_true_amid_other_lines():
         "trailing INFO line",
     ])
     assert _parity_branch_ran(log_text) is True
+
+
+def test_client_recovery_interval_ends_at_first_new_token():
+    interval, first_new = _client_recovery_interval(
+        [" A", " B"], [1.0, 2.0],
+        [" A", " B", " C", " D"], [10.0, 11.0, 12.5, 13.0],
+    )
+    assert interval == 10.5
+    assert first_new == 2
+
+
+def test_client_recovery_interval_rejects_mismatched_replay_prefix():
+    with pytest.raises(ValueError, match="replayed prefix"):
+        _client_recovery_interval(
+            [" A", " B"], [1.0, 2.0],
+            [" A", " X", " C"], [10.0, 11.0, 12.0],
+        )

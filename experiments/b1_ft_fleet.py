@@ -48,7 +48,7 @@ import grpc
 from experiments._harness import RESULTS_DIR
 from experiments.run_e2e_remote import _GRPC_OPTIONS, _bench_one_request
 from radp.common.logging_utils import configure_logging, get_logger
-from radp.common.proto import radp_pb2_grpc
+from radp.common.proto import radp_pb2, radp_pb2_grpc
 
 log = get_logger(__name__)
 
@@ -348,6 +348,58 @@ def _linfit(xs: list[float], ys: list[float]) -> dict[str, float]:
     return {"intercept": intercept, "slope": slope}
 
 
+def _stream_text_chunks(
+    stub: Any, prompt: str, max_tokens: int, *, allow_error: bool = False,
+) -> dict[str, Any]:
+    """Capture text-token arrival times, retaining partial output on failure."""
+    req = radp_pb2.GenerateRequest(
+        prompt=prompt,
+        max_tokens=max_tokens,
+        temperature=0.0,
+        top_k=0,
+        top_p=1.0,
+        eos_token_id=0,
+        seed=0,
+    )
+    sent_at = time.perf_counter()
+    texts: list[str] = []
+    times: list[float] = []
+    error: str | None = None
+    try:
+        for chunk in stub.Generate(req):
+            if chunk.text:
+                texts.append(chunk.text)
+                times.append(time.perf_counter())
+            if chunk.done:
+                break
+    except Exception as exc:  # noqa: BLE001 - expected for the faulted request
+        if not allow_error:
+            raise
+        error = str(exc)
+    return {
+        "sent_at": sent_at,
+        "completed_at": time.perf_counter(),
+        "texts": texts,
+        "times": times,
+        "error": error,
+    }
+
+
+def _client_recovery_interval(
+    failed_texts: list[str], failed_times: list[float],
+    replay_texts: list[str], replay_times: list[float],
+) -> tuple[float, int]:
+    """Return last pre-failure token -> first new post-replay token wall time."""
+    if not failed_texts or len(failed_texts) != len(failed_times):
+        raise ValueError("faulted request produced no timestamped prefix")
+    prefix_tokens = len(failed_texts)
+    if replay_texts[:prefix_tokens] != failed_texts:
+        raise ValueError("replayed prefix differs from the client-visible prefix")
+    if prefix_tokens >= len(replay_texts) or prefix_tokens >= len(replay_times):
+        raise ValueError("replay did not produce a new post-recovery token")
+    return replay_times[prefix_tokens] - failed_times[-1], prefix_tokens
+
+
 def run_trial(
     stub_factory: Any, *, mode: str, position: int, prompt: str, max_tokens: int,
     victim_host: str, victim_stage: tuple[int, int], reference: str | None,
@@ -465,8 +517,9 @@ def run_reactive_replacement_trial(
 
     The coordinator MUST be deployed in the R={} regime (backup_placement=
     False) for this line, so the crash aborts (no backup to promote) and
-    /api/reconfigure is the only way back. TTR = wall(crash -> replayed
-    recovered token) - healthy reference wall.
+    /api/reconfigure is the only way back. TTR is the client-observed interval
+    from the last token emitted before the crash to the first new valid token
+    after replay catches up with that emitted prefix.
 
     This is the fleet analog of the in-process ``run_reactive_replacement``
     baseline (see ``experiments/b1_ft_baselines.py``): reset -> timed healthy
@@ -503,10 +556,9 @@ def run_reactive_replacement_trial(
     # straight out of the stream — the request aborts. That IS the expected
     # outcome, not an error in the harness.
     arm_fault(victim_host, vstart, vend, position)
-    t_start = time.perf_counter()
-    with contextlib.suppress(Exception):
-        # expected: no backup entry -> abort IS the measured event
-        _bench_one_request(stub_factory(), prompt, max_tokens=max_tokens)
+    failed = _stream_text_chunks(
+        stub_factory(), prompt, max_tokens, allow_error=True,
+    )
     fired = fault_fired(victim_host)
 
     # 3. Coordinator re-solves the DP over survivors and redeploys.
@@ -522,29 +574,37 @@ def run_reactive_replacement_trial(
         clear_all_failures(coord)
         mark_device_dead(coord, victim_device)
         resp = reconfigure_over_survivors(coord)
-        rec = _bench_one_request(stub_factory(), prompt, max_tokens=max_tokens)
-        t_end = time.perf_counter()
+        replay = _stream_text_chunks(stub_factory(), prompt, max_tokens)
 
-        ttr = (t_end - t_start) - reference_wall
-        seq_match = rec["decoded_text"] == reference_text
+        ttr, prefix_tokens = _client_recovery_interval(
+            failed["texts"], failed["times"], replay["texts"], replay["times"],
+        )
+        replay_text = "".join(replay["texts"])
+        seq_match = replay_text == reference_text
         reconfigured = _reconfigured_over_survivors(resp["placement"], victim_device)
 
         row = {
             "mode": "reactive_replacement",
             "position": position,
             "ttr_seconds": ttr,
+            "metric": "client_observed_recovery_interval",
+            "pre_failure_tokens": prefix_tokens,
+            "first_new_token_index": prefix_tokens,
+            "failed_request_aborted": failed["error"] is not None,
+            "fault_to_abort_seconds": failed["completed_at"] - failed["times"][-1],
+            "replay_catchup_seconds": replay["times"][prefix_tokens] - replay["sent_at"],
             "sequence_match": seq_match,
             "reconfigured": reconfigured,
             "fired": fired,
             "reset_wall_seconds": reset_wall,
             "reference_wall_seconds": reference_wall,
-            "text_tokens": rec["text_tokens"],
-            "decoded_text": rec["decoded_text"],
+            "text_tokens": len(replay["texts"]),
+            "decoded_text": replay_text,
             "survivors": resp.get("survivors"),
             "excluded": resp.get("excluded"),
             "placement": resp.get("placement"),
         }
-        valid = fired and seq_match and reconfigured
+        valid = fired and failed["error"] is not None and seq_match and reconfigured
         log.info(
             "%-11s P=%-2d  TTR=%.3fs  fired=%s seq_match=%s reconfigured=%s  %s",
             "reactive", position, ttr, fired, seq_match, reconfigured,
@@ -558,6 +618,7 @@ def run_reactive_replacement_trial(
             "mode": "reactive_replacement",
             "position": position,
             "ttr_seconds": None,
+            "metric": "client_observed_recovery_interval",
             "sequence_match": False,
             "reconfigured": False,
             "fired": fired,
@@ -762,16 +823,16 @@ def run(
     # validity additionally requires the real (non-surgical-fallback) branch
     # to have actually fired — a trial that silently fell back to surgical
     # must NOT contaminate that mode's fit. "reactive_replacement" rows carry
-    # a different shape (no tbt-derived "recovery_visible" — TTR there is a
-    # whole-request wall-clock delta, not a per-step one) so it gets its own
+    # no tbt-derived "recovery_visible", so they get their own
     # mutually-exclusive branch, gated on `reconfigured` the exact way
-    # parity/replicate/raid6 gate on their own branch-ran flags.
+    # parity/replicate/raid6 gate on their own branch-ran flags. Its TTR is now
+    # the same client-visible token interval as the recovery-step rows.
     fits: dict[str, Any] = {}
     for mode in modes:
         if mode == "reactive_replacement":
             pts = [(t["position"], t["ttr_seconds"]) for t in trials
                    if t["mode"] == mode and t["fired"] and t["sequence_match"]
-                   and t["reconfigured"]]
+                   and t["reconfigured"] and t.get("failed_request_aborted")]
         else:
             pts = [(t["position"], t["ttr_seconds"]) for t in trials
                    if t["mode"] == mode and t["fired"] and t["recovery_visible"] and t["sequence_match"]
