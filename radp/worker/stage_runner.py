@@ -89,10 +89,31 @@ class StageRunner:
         with self._lock:
             self._ensure_model(model_id)
             key = (int(start), int(end))
-            blocks = load_stage_blocks(
-                model_id, start, end, dtype=self.dtype, torch_device=self.torch_device
-            )
-            self._stages[key] = blocks
+            # A new primary is the first signal of a NEW plan (fresh deploy or
+            # reactive reconfigure). Everything belonging to the previous plan
+            # goes first: stale stages, the backup registry, promotions, and
+            # per-request KV. Keeping them doubled a worker's weight footprint
+            # on every redeploy — harmless at 350M, an OOM kill mid-LoadStage
+            # at 6.7B on Jetson unified memory (on-6, 2026-08-31). A resident
+            # stage with the SAME key is reused instead of reloaded.
+            stale = [k for k in self._stages if k != key]
+            for k in stale:
+                del self._stages[k]
+            self._backup_for.clear()
+            self._promoted.clear()
+            self._kv_cache.clear()
+            if stale:
+                if str(self.torch_device).startswith("cuda"):
+                    torch.cuda.empty_cache()
+                log.info(
+                    "worker=%s dropped %d stale stage(s) from the previous plan",
+                    self.device_id, len(stale),
+                )
+            if key not in self._stages:
+                self._stages[key] = load_stage_blocks(
+                    model_id, start, end,
+                    dtype=self.dtype, torch_device=self.torch_device,
+                )
             self._primary = key
             log.info(
                 "worker=%s primary loaded layers[%d..%d] (rss=%.1f MB)",
