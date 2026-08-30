@@ -33,25 +33,20 @@ request~\cite{zhang2024edgeshard,ye2025jupiter}.  Moving the failed layer range
 to another device is therefore insufficient by itself: the replacement must
 also recover the current KV state before the next token can be generated.
 
-Existing recovery mechanisms make different trade-offs between recovery time
-and state retained during normal operation.  Recomputation keeps little or no
-backup state, but must replay model computation to regenerate the lost KV
-cache; its recovery work consequently grows with the prefix produced before
-the failure, even when replay is limited to the failed stage as in a
-Petals-style recovery path~\cite{borzunov2023petals}.  KV replication avoids
-most of this replay by streaming a second copy of the state, as in
-DejaVu~\cite{strati2024dejavu}, but its footprint grows with the sum of the
-protected stages' KV caches.  Reactive reconfiguration can avoid persistent
-KV backup altogether, yet a naive implementation must reload weights, rebuild
-the pipeline, and restart the request; systems such as SpotServe use stateful
-migration precisely to avoid this cold-restart path when preemption is known
-in advance~\cite{miao2024spotserve}.  GhostServe reduces replication through
-erasure-coded KV checkpoints, but targets intra-node tensor-parallel serving
-with parity stored in host memory~\cite{jayakody2026ghostserve}.  These designs
-do not establish how to protect KV state across the stages of a heterogeneous,
-memory-constrained edge pipeline while also ensuring that a surviving device
-has enough capacity to execute the failed stage.  Edge recovery must therefore
-consider \emph{Recovery Latency}, \emph{Recovery-State Footprint}, and
+Existing recovery mechanisms trade recovery time against the state retained
+during normal operation.  Recomputation, even when limited to the failed
+stage as in Petals~\cite{borzunov2023petals}, replays model computation whose
+cost grows with the prefix produced before the failure; KV replication, as in
+DejaVu~\cite{strati2024dejavu}, avoids that replay but stores the sum of the
+protected stages' KV caches; reactive reconfiguration stores nothing but must
+reload weights and restart the request, a cold path that SpotServe avoids only
+when preemption is announced in advance~\cite{miao2024spotserve}; and
+GhostServe's erasure-coded KV checkpoints target tensor-parallel serving with
+parity in host memory~\cite{jayakody2026ghostserve}.  None of these
+establishes how to protect KV state across the stages of a heterogeneous,
+memory-constrained edge pipeline while ensuring that a surviving device can
+execute the failed stage.  Edge recovery must therefore consider
+\emph{Recovery Latency}, \emph{Recovery-State Footprint}, and
 \emph{Recovery Feasibility} together.
 
 We present \emph{KV Cache Availability and Recovery at the Edge}

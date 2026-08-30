@@ -33,17 +33,16 @@ failure.
 
 \textbf{Recovery families.}  We compare five recovery paths under one
 coordinator and one injection mechanism.  \emph{Recompute} rebuilds the
-pipeline and replays the request from position~0 through every stage.
-\emph{Petals} keeps the inputs sent to each stage and replays only the failed
-layer range on the backup~\cite{borzunov2023petals}.  \emph{DejaVu} streams
-every protected stage's KV to the coordinator and installs the stored copy on
-the backup~\cite{strati2024dejavu}.  \emph{Reconfigure} keeps no backup
-($R=\emptyset$): after the failure the coordinator solves placement again on
-the surviving workers, cold-loads the weights, rebuilds the pipeline, and
-replays the request.  \sys{} is evaluated with one parity column ($k=1$) and,
-for two simultaneous failures, with two ($k=2$).  Recompute and Reconfigure
-are controlled baselines rather than reproductions of a named system
-(Section~\ref{sec:related}).
+pipeline and replays the request from position~0 through every stage;
+\emph{Petals} replays only the failed layer range on the backup from the
+retained stage inputs~\cite{borzunov2023petals}; \emph{DejaVu} installs the
+KV replica that every protected stage streamed to the
+coordinator~\cite{strati2024dejavu}; \emph{Reconfigure} keeps no backup
+($R=\emptyset$), re-solves placement on the surviving workers, cold-loads
+weights, rebuilds the pipeline, and replays the request; and \sys{} uses one
+parity column ($k=1$) or, for two simultaneous failures, two ($k=2$).
+Recompute and Reconfigure are controlled baselines rather than reproductions
+of named systems.
 
 \textbf{Failure injection.}  A worker-side fault raises a crash on the victim
 while it computes position $P$, after the victim's input for that position
@@ -138,12 +137,12 @@ we report the level and range rather than a slope.  Storing no recovery state
 thus costs two orders of magnitude in recovery latency relative to any family
 with a pre-assigned backup.
 
-\textbf{Victim sensitivity.}  Failing \texttt{on-6} (layers 18--19) instead of
-\texttt{on-1} gives the same ordering: Recompute 163\,ms, Petals 17.5\,ms,
-and \sys{} 1.43\,ms per position.  Relative to the median decode
-step, the parity recovery step stays between $1.6\times$ and $1.9\times$ for
-every $P$ and both victims, whereas Petals grows from $1.9\times$ to
-$5.0\times$ and Recompute from $6\times$ to $34\times$.
+\textbf{Victim sensitivity.}  Failing \texttt{on-6} (layers 18--19) instead
+of \texttt{on-1} gives the same ordering, 163, 17.5, and 1.43\,ms per position
+for Recompute, Petals, and \sys{}; relative to one decode step, the parity
+recovery stays at $1.6$--$1.9\times$ for every $P$ and both victims, whereas
+Petals grows from $1.9\times$ to $5.0\times$ and Recompute from $6\times$ to
+$34\times$.
 
 \begin{figure}[t]
   \centering
@@ -193,12 +192,10 @@ non-head stages.
 The per-token difference is small in absolute terms, but backup state
 accumulates over the context and grows with the model.  At a 2\,048-token
 context the measured placement retains 72\,MB under replication and 32\,MB
-under single parity (Fig.~\ref{fig:storage-scaling}).  Projecting the same
-geometry to a balanced five-stage pipeline, OPT-6.7B at 2\,048 tokens retains
-819\,MB versus 205\,MB, and OPT-13B at 4\,096 tokens retains 2.5\,GB versus
-640\,MB.  These projections are arithmetic on layer shape and token footprint,
-not measurements; on an 8\,GB edge device they separate a protection that fits
-from one that does not.
+under single parity (Fig.~\ref{fig:storage-scaling}); projected to a balanced
+five-stage pipeline, OPT-6.7B at 2\,048 tokens retains 819 versus 205\,MB and
+OPT-13B at 4\,096 tokens 2.5\,GB versus 640\,MB.  These projections are
+arithmetic on layer shape and token footprint, not measurements.
 
 \textbf{Two simultaneous failures.}  With $k=2$, we fail two protected stages
 at once (\texttt{on-1} and \texttt{on-6}) at each of the five positions.  All
@@ -275,7 +272,7 @@ compute times, and link profiles of the fleet and cap each device's free
 memory at $c$, sweeping $c$ from 6\,GB down to 200\,MB.  The
 \emph{cost-first} procedure runs the placement DP with $R=\emptyset$ and then
 hands the result to the production backup solver; the \emph{joint} procedure
-runs Algorithm~\ref{alg:alt}.  Both enumerate the same ordered subsets of the
+runs the alternating search of Section~\ref{sec:design:dp}.  Both enumerate the same ordered subsets of the
 five CUDA workers.  Backup hosts are either the pipeline devices
 (the coordinator's default) or the whole fleet, which adds two CPU-only Orin
 Nano boards that never earn a stage but hold 5--6\,GB.
@@ -314,20 +311,19 @@ IoT deployments occupy.
 \end{figure}
 
 Protection is paid for during every failure-free decode step, because each
-protected stage ships its new KV column to the coordinator.  We measure this
-on the same placement with protection off, single parity, double parity, and
-replication, three rounds each in interleaved order so that thermal state and
-ordering do not favour one mode; within a round the placement is identical,
-and all 2\,400 token intervals come from requests that completed 20 tokens
-with identical greedy output across modes.  Fig.~\ref{fig:protection-cost}
-reports the result (RQ5).  With protection off the pipeline decodes
-5.24\,tok/s with a median token interval of 183\,ms.  Single parity reduces
-throughput by
+protected stage ships its new KV column to the coordinator.  We measure it on
+the same placement with protection off, single parity, double parity, and
+replication, three rounds each in interleaved order; all 2\,400 token
+intervals come from requests that completed 20 tokens with identical greedy
+output across modes.  Fig.~\ref{fig:protection-cost} reports the result
+(RQ5).  With protection off the pipeline decodes 5.24\,tok/s with a median
+token interval of 183\,ms.  Single parity reduces throughput by
 $5.1\pm2.4$\% and raises the median token interval by $5.8\pm2.6$\%; double
 parity costs $6.3\pm0.3$\% and $7.3\pm0.5$\%; replication costs
 $6.3\pm1.2$\% and $7.2\pm0.7$\%.  Double parity and replication are
-indistinguishable (4.906 versus 4.906\,tok/s), which is expected: both ship
-the same KV columns, and the second GF($2^8$) column is folded at the
-coordinator, away from the workers' forward path.  Tolerating a second failure with parity
-costs one more retained column and no additional decode-time overhead.  Network traffic itself is not an evaluation axis in
-this paper.
+indistinguishable (4.906 versus 4.906\,tok/s): both ship the same KV columns,
+and the second GF($2^8$) column is folded at the coordinator, away from the
+workers' forward path.  Tolerating a second failure with parity costs one
+more retained column and no additional decode-time overhead.  Network traffic
+itself is not an evaluation axis in this paper.
+

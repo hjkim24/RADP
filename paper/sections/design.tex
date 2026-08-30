@@ -208,60 +208,31 @@ usable model-memory capacity.  Every candidate must satisfy
 \end{equation}
 The second term is the memory reserved for backup weights.  Because the stage
 intervals determine this term while the reservations constrain the next
-placement, \sys{} alternates between constructing $R$ and solving the
-placement DP.  Each new pair is checked with its actual stage intervals, and
-the bounded search returns the best self-consistent pair found; it does not
-assume that every alternating step improves the objective.
+placement, \sys{} alternates between the two: starting from a uniform
+placement, each iteration builds $R$ for the current $\psi$, re-solves the DP
+with that $R$ as the backup burden, keeps the new pair if it satisfies
+Eq.~\ref{eq:mem} under its own reservations and ranks better under
+Eq.~\ref{eq:rank}, and stops when $\psi$ and $R$ repeat or after a bounded
+number of iterations.  The best self-consistent pair found is returned; the
+search does not assume that every step improves the objective.  Candidate
+device orders and subsets are enumerated around this loop.
 
-\begin{algorithm}[t]
-  \caption{Recovery-aware alternating placement}
-  \label{alg:recovery-aware-dp}\label{alg:alt}
-  \begin{algorithmic}[1]
-    \Require Workers $D$, layer count $L$, iteration limit $I_{\max}$
-    \State $\psi\gets$ \Call{InitialPlacement}{$D,L$}; $B\gets\bot$
-    \State $R_{\mathrm{prev}}\gets\bot$
-    \For{$i\gets1$ to $I_{\max}$}
-      \State $R\gets$ \Call{BuildRecovery}{$\psi$}
-      \State $\psi'\gets$ \Call{PlacementDP}{$D,L,R,\psi$}
-      \If{$\psi'=\bot$}
-        \State \textbf{break}
-      \EndIf
-      \If{\Call{RecoveryFeasible}{$\psi',R$}}
-        \State $B\gets$ better of $B$ and $(\psi',R)$ under Eq.~\ref{eq:rank}
-      \EndIf
-      \If{$\psi'=\psi$ and $R=R_{\mathrm{prev}}$}
-        \State \textbf{break}
-      \EndIf
-      \State $\psi\gets\psi'$; $R_{\mathrm{prev}}\gets R$
-    \EndFor
-    \State \Return $B$
-  \end{algorithmic}
-\end{algorithm}
 
 \subsection{Runtime Integration}\label{sec:design:runtime}
 \label{sec:design:async}
 
-At deployment time, the coordinator profiles layer execution and peer links,
-runs Algorithm~\ref{alg:alt}, loads the active stage weights, and preloads the
-backup weights selected by $R$.  During decoding, workers retain their local
-KV cache and report the new protected KV column after each completed position.
-Parity updates and input mirrors are keyed by request and position, making
-duplicate delivery idempotent and preventing state from different decode
-steps from being combined.
-
-The coordinator detects worker loss through the request remote procedure call
-(RPC) path or heartbeat.
-The failure report carries the original failed layer interval, which is
-resolved against the active placement rather than a partially rewired chain.
-The coordinator then freezes progress for the affected request, applies the
-contract in Algorithm~\ref{alg:cross-stage-parity}, promotes the backup, and
-updates the neighboring stage routes.  Normal execution may use synchronous or
-asynchronous chain forwarding; the recovery state and placement constraints
-are unchanged, while asynchronous forwarding relies on heartbeat when an RPC
-trailer can no longer propagate the failed interval.
-
-The prototype is implemented in Python with PyTorch and gRPC.  Workers expose
-stage loading, execution, KV transfer, backup promotion, routing, profiling,
-and health-check operations.  The coordinator owns placement, parity state,
-failure attribution, and request-level recovery, keeping the worker data path
-limited to stage execution and state transfer.
+At deployment time the coordinator profiles layer execution and peer links,
+runs the alternating search, loads the active stage weights, and preloads the
+backup weights selected by $R$.  During decoding, workers report each new
+protected KV column, and parity updates and input mirrors are keyed by request
+and position, so duplicate delivery is idempotent.  The coordinator detects
+worker loss through the request remote procedure call (RPC) path or
+heartbeat; the failure report carries the failed layer interval, which is
+resolved against the active placement.  The coordinator then freezes the
+affected request, applies the contract in Algorithm~\ref{alg:cross-stage-parity},
+promotes the backup, and updates the neighboring stage routes.  Forwarding may
+be synchronous or asynchronous; asynchronous forwarding relies on heartbeat
+when an RPC trailer can no longer carry the failed interval.  The prototype is
+implemented in Python with PyTorch and gRPC; the coordinator owns placement,
+parity state, failure attribution, and request-level recovery, and the worker
+data path is limited to stage execution and state transfer.

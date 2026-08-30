@@ -2,188 +2,120 @@
 
 \subsection{Distributed LLM Inference and Fault Tolerance}
 
-EdgeShard profiles per-layer execution time and memory use together with
-inter-device communication cost, then assigns consecutive layers to a selected
-set of heterogeneous edge and cloud devices~\cite{zhang2024edgeshard}.  Its
-latency-oriented dynamic program minimizes cumulative stage time, whereas its
-throughput-oriented formulation minimizes the slowest stage.  EdgeShard also
-starts autoregressive generation without waiting for an entire micro-batch to
-finish.  These optimizations determine the active placement, but reserve
-neither KV redundancy nor executable backup capacity.  A failed device
-therefore removes its layer range and the request state stored at that stage.
-
-Jupiter likewise partitions consecutive decoder layers across heterogeneous
-edge devices~\cite{ye2025jupiter}.  It balances the slowest stage under device
-memory and token-between-time constraints, and separately plans subsequence
-boundaries for intra-sequence pipeline-parallel prefill.  Its runtime combines
-this pipeline with speculative and outline-based decoding.  The partitioning
-and decoding algorithms reduce normal-operation latency, but do not restore KV
-state or select a backup after a worker failure.  Thus, EdgeShard and Jupiter
-answer where a model should run under heterogeneous performance; they do not
-test whether the resulting placement remains executable after a stage fails.
-Heterogeneity-aware placement is also established for datacenter GPU
-clusters: Helix, HexGen, HexGen-2, Hetis, and LLM-PQ solve placement,
-parallelism, or quantization as a coupled optimization over GPUs of different
-classes~\cite{mei2025helix,jiang2024hexgen,jiang2025hexgen2,mo2025hetis,
-zhao2024llmpq}.  These systems assume datacenter memory and provide no path
-that restores an in-flight request's state; HexGen reacts to a departed GPU by
-re-running its placement search.  Fault tolerance for heterogeneous edge
-pipelines has been addressed for training, where FTPipeHD replicates weights
-and re-partitions the pipeline after a failure~\cite{chen2024ftpipehd}; its
-recovery unit is model weights and its budget is a training batch, whereas
-decoding must restore per-request KV state within a token interval.
-
-JARVIS considers failures in a tactical edge network whose wired and wireless
-nodes form a token-ring execution path~\cite{sirera2024jarvis}.  It proposes
-layer redundancy and peer-level retrieval, while the reported prototype
-evaluates route reconfiguration and layer skipping.  Automatic detection and
-failover to a duplicated layer are not described or evaluated in detail, and
-layer placement is supplied through a manual configuration.  The reported
-MMLU samples and generation examples also show that skipping is degraded
-execution: its effect depends on which layer is bypassed and can include an
-incorrect answer or failed generation.  This makes JARVIS a close edge-side
-comparison, but leaves recovery-state fidelity and recovery-aware placement
-unresolved.
+EdgeShard profiles per-layer execution time, memory use, and inter-device
+communication cost, then assigns consecutive layers to a selected set of
+heterogeneous edge and cloud devices so as to minimize either cumulative
+stage time or the slowest stage~\cite{zhang2024edgeshard}.  Jupiter likewise
+partitions decoder layers across heterogeneous edge devices under memory and
+token-between-time constraints and adds intra-sequence pipeline-parallel
+prefill and speculative decoding~\cite{ye2025jupiter}.  Both determine the
+active placement but reserve neither KV redundancy nor executable backup
+capacity, so a failed device removes its layer range together with the
+request state stored there.  Heterogeneity-aware placement is also
+established for datacenter GPU clusters: Helix, HexGen, HexGen-2, Hetis, and
+LLM-PQ solve placement, parallelism, or quantization as a coupled
+optimization over GPUs of different classes~\cite{mei2025helix,
+jiang2024hexgen,jiang2025hexgen2,mo2025hetis,zhao2024llmpq}.  These systems
+assume datacenter memory and restore no in-flight request state; HexGen
+reacts to a departed GPU by re-running its placement search.  For
+heterogeneous edge pipelines, fault tolerance has been addressed in training,
+where FTPipeHD replicates weights and re-partitions the pipeline after a
+failure~\cite{chen2024ftpipehd}; its recovery unit is model weights and its
+budget a training batch, whereas decoding must restore per-request KV state
+within a token interval.  JARVIS considers failures in a tactical edge
+network and proposes layer redundancy and peer-level retrieval, but its
+prototype evaluates route reconfiguration and layer skipping, a degraded
+execution whose effect depends on the bypassed layer~\cite{sirera2024jarvis};
+automatic failover and recovery-aware placement remain unaddressed.
 
 \subsection{Recomputation}
 
-Recomputation rebuilds lost KV state by executing model layers again.  Our
-\emph{Recompute} baseline retains no recovery copy of the KV cache.  After a
-failure, it obtains a replacement execution path and replays the prompt and
-generated-token history from position zero through the full pipeline.  Its
-recovery work therefore includes every stage and grows with the failure
-position.  Recompute is a controlled lower bound on retained recovery state,
-not the name of a prior system.
-
-Petals narrows this replay to the failed stage~\cite{borzunov2023petals,
-borzunov2023distributed}.  During inference, the client keeps the inputs sent
-to each remote block range.  If a server disconnects, the client selects a
-replacement that already holds the missing blocks using observed network and
-computation costs, forms a new server chain, and replays the cached inputs only
-through that block range.  This reconstructs the replacement server's KV cache
-without restarting the other stages.  Petals' decentralized greedy
-rebalancing is a separate server-side protocol that adjusts block assignments;
-it is not the client algorithm that repairs an interrupted route.  Stage-local
-replay reduces work relative to full recomputation, but it still executes the
-failed layers once for every prior position.  It also requires another peer to
-already store the same block range, which may be infeasible when every device
-is needed to hold one part of the model.
+Recomputation rebuilds lost KV state by executing model layers again.  Petals
+keeps, on the client, the inputs sent to each remote block range; when a
+server disconnects, the client selects a replacement that already holds the
+missing blocks, forms a new chain, and replays the cached inputs through that
+block range only~\cite{borzunov2023petals,borzunov2023distributed}.  This
+spares the other stages, but the failed layers still execute once per prior
+position, and a peer must already store the same block range, which is
+infeasible when every device is needed to hold one part of the model.
+Petals' server-side block rebalancing is a separate protocol and not the
+algorithm that repairs an interrupted route.  Our Recompute baseline
+(Section~\ref{sec:eval:setup}) is the corresponding lower bound on retained
+state: it replays every stage from position zero.
 
 \subsection{Replication}
 
-DejaVu continuously streams each pipeline worker's KV cache to a replica and
-tracks replicated progress at token granularity~\cite{strati2024dejavu}.  When
-a worker fails, the replacement restores the latest acknowledged replica and
-recomputes only the unreplicated tail before decoding resumes.  This bounds
-recomputation by replication lag rather than the entire generated prefix.
-However, protecting all stages requires storage proportional to the sum of
-their KV caches, in addition to the communication used to keep those replicas
-current.
-
-KevlarFlow and LUMEN apply KV replication or checkpointing to replicated
-serving clusters, but assume different storage tiers.  KevlarFlow copies
-PagedAttention KV blocks in the background to another warm pipeline instance;
-a peer that already holds the same stage weights can then resume the interrupted
-request~\cite{qian2026kevlarflow}.  Its recovery path uses multiple warm
-pipelines and available GPU memory for replicas.  LUMEN instead assumes workers
-that each hold a complete model, places request checkpoints on load-aware
-holders, and redistributes interrupted requests to those holders after a
-failure~\cite{cao2026lumen}.  Host memory stores its checkpoints, while
-draft-model assistance and hotswapping restore serving capacity during model
-reload.  Both systems reduce prefix recomputation by retaining KV state, but
-neither addresses the joint placement of active layer partitions and backup
-weights across devices that cannot each hold the full model.
+DejaVu streams each pipeline worker's KV cache to a replica and tracks
+replicated progress per token; after a failure the replacement restores the
+latest acknowledged replica and recomputes only the unreplicated
+tail~\cite{strati2024dejavu}.  Protecting all stages therefore stores the sum
+of their KV caches.  KevlarFlow copies PagedAttention KV blocks in the
+background to another warm pipeline instance that already holds the same
+stage weights~\cite{qian2026kevlarflow}, and LUMEN places request checkpoints
+in host memory on load-aware holders that each hold a complete
+model~\cite{cao2026lumen}.  Both retain KV state to avoid prefix
+recomputation, but neither places active layer partitions and backup weights
+jointly across devices that cannot each hold the full model.
 
 \subsection{Reconfiguration}
 
-Our \emph{Reconfigure} baseline measures recovery without precomputed KV
-protection or a preassigned backup.  It removes the failed device, solves the
-placement problem again on the surviving fleet, loads the required weights,
-rebuilds the pipeline, and replays the request from position zero.  The result
-captures the cost of reactive re-placement, cold weight loading, and full
-state regeneration.  Like Recompute, Reconfigure is a controlled baseline
-rather than an implementation of a named prior system.
-
-SpotServe avoids much of this cold-restart path under a different failure
-model~\cite{miao2024spotserve}.  When a cloud provider gives advance preemption
-notice and a sufficient grace period, SpotServe replans data, tensor, and
-pipeline parallelism.  It uses bipartite matching to maximize reuse of model
-parameters and KV context, commits progress at token granularity, and migrates
-context just before preemption.  If an instance terminates earlier than
-expected, its KV context may be lost; absent reusable model context, recovery
-falls back to loading weights.  SpotServe therefore shows how planned cloud
-preemption can preserve state, but it does not supply the assumptions needed
-for an unannounced edge crash, out-of-memory termination, or network partition.
-Parallax serves LLMs over a decentralized pool of heterogeneous GPUs and
-handles GPU departure by de-allocating its layers and re-stitching requests
-across replicas, with global rebalancing when load
-diverges~\cite{tong2025parallax}.  This is re-placement after the fact, as in
-our Reconfigure baseline, although the presence of replicas spares it a cold
-restart; neither approach protects the KV state of the interrupted request.
+SpotServe replans data, tensor, and pipeline parallelism when a cloud
+provider announces preemption, using bipartite matching to reuse parameters
+and KV context and migrating that context before the instance is
+lost~\cite{miao2024spotserve}; without advance notice its KV context may be
+lost and recovery falls back to loading weights.  Parallax serves LLMs over a
+decentralized pool of heterogeneous GPUs and handles GPU departure by
+de-allocating its layers and re-stitching requests across
+replicas~\cite{tong2025parallax}.  Both re-place after the fact, and the
+grace period or replicas that spare them a cold restart are unavailable to an
+unannounced edge crash.  Our Reconfigure baseline
+(Section~\ref{sec:eval:setup}) measures that unassisted path.
 
 \subsection{Parity}
 
 GhostServe replaces full KV replicas with erasure-coded checkpoints inside a
-tensor-parallel server~\cite{jayakody2026ghostserve}.  It groups KV shards into
-chunks, generates XOR, RDP, or Reed--Solomon parity with fused GPU kernels, and
-stores the encoded checkpoints in host memory.  At recovery time, a cost model
-chooses how much of the prefix to recompute and how much later state to decode
-from parity.  Its protection domain is the GPU shards of one tensor-parallel
-node, and its design assumes a large host-memory tier.  Cross-node pipeline
-stages and constrained edge interconnects remain outside its evaluated scope.
-
-\sys{} also uses parity, but changes both the protection domain and the
-placement constraint.  It encodes KV columns across protected non-head
-pipeline stages, so one parity column occupies the size of the largest
-protected column rather than the sum of all protected columns.  A second
-parity column over the Galois field GF($2^8$) extends recovery to two simultaneous protected-stage
-failures.  More importantly, the active placement $\psi$ and backup mapping
-$R$ are selected together: memory reserved for backup weights is charged to
-the next placement decision.  The parity path can therefore resume only when
-the lost KV bytes and an executable destination are both available.  Table~
-\ref{tab:related-comparison} summarizes this distinction and separates the
-systems used as prior work from the controlled baselines used in our
-evaluation.
+tensor-parallel server: it generates XOR, RDP, or Reed--Solomon parity with
+fused GPU kernels, stores it in host memory, and at recovery time chooses how
+much prefix to recompute and how much to decode from
+parity~\cite{jayakody2026ghostserve}.  Its protection domain is the GPU
+shards of one node, and it assumes a large host-memory tier.  \sys{} encodes
+KV columns across the protected non-head stages of a pipeline, so one parity
+column occupies the size of the largest protected column rather than the
+sum; a second column over the Galois field GF($2^8$) covers two simultaneous
+failures; and the active placement $\psi$ and backup mapping $R$ are
+selected together, with backup-weight reservations charged to the next
+placement decision.  Table~\ref{tab:related-comparison} summarizes these
+distinctions.
 
 \begin{table*}[t]
   \centering
   \scriptsize
-  \setlength{\tabcolsep}{3pt}
+  \setlength{\tabcolsep}{4pt}
   \caption{Placement systems, recovery baselines, and \sys{}; $p_f$ denotes
   the token position at failure.}
   \label{tab:related-comparison}
-  \begin{tabular}{p{0.105\textwidth} p{0.20\textwidth}
-                  p{0.25\textwidth} p{0.19\textwidth}
-                  p{0.17\textwidth}}
+  \begin{tabular}{p{0.10\textwidth} p{0.30\textwidth} p{0.30\textwidth} p{0.20\textwidth}}
     \toprule
     System & State retained before failure & Failure-time action &
-    Storage/recomputation & Placement--recovery relation \\
+    Placement--recovery relation \\
     \midrule
-    EdgeShard~\cite{zhang2024edgeshard} & Active weights and KV only &
-    Runtime recovery is not provided & No protection state; interrupted
-    request cannot resume & Active placement only \\
-    Jupiter~\cite{ye2025jupiter} & Active weights, KV, and prefill state &
-    Runtime recovery is not provided & No protection state; interrupted
-    request cannot resume & Performance-oriented partitioning \\
-    Recompute & No recovery KV state & Rebuild the pipeline and replay all
-    stages from position zero & Minimal retained state; all stages execute to
-    $p_f$ again & Placement and recovery are separate \\
-    Petals~\cite{borzunov2023distributed} & Per-stage input history and a peer
-    with duplicate blocks & Select a replacement chain and replay inputs
-    through the failed stage & Duplicate weights and input history; failed
-    stage executes to $p_f$ again & Block assignment is rebalanced separately \\
-    DejaVu~\cite{strati2024dejavu} & Per-token KV replicas & Restore the latest
-    replica and recompute its unreplicated tail & Replica storage follows the
-    sum of protected KV; tail replay only & Replication is separate from active
-    placement \\
-    Reconfigure & No recovery KV state or preassigned backup & Re-solve
-    placement, cold-load weights, rebuild the pipeline, and fully replay &
-    Minimal retained state; cold-load and full-replay delay & Reactive
-    re-placement after failure \\
-    \sys{} & $P$ or $(P,Q)$ KV parity and preloaded backup weights & Decode lost
-    KV, activate its backup, and rewire the pipeline & One or two largest-column
-    parity blobs; no prefix replay on the parity path & $\psi$ and $R$ share
-    the device-memory constraint \\
+    EdgeShard~\cite{zhang2024edgeshard}, Jupiter~\cite{ye2025jupiter} &
+    Active weights and KV only & None; the interrupted request cannot resume &
+    Active placement only \\
+    Recompute & None & Rebuild the pipeline and replay all stages from
+    position zero to $p_f$ & Separate \\
+    Petals~\cite{borzunov2023distributed} & Per-stage input history; a peer
+    with duplicate blocks & Select a replacement chain and replay the failed
+    stage to $p_f$ & Block assignment rebalanced separately \\
+    DejaVu~\cite{strati2024dejavu} & Per-token KV replicas (sum of protected
+    KV) & Restore the latest replica and recompute its unreplicated tail &
+    Separate \\
+    Reconfigure & None & Re-solve placement, cold-load weights, rebuild the
+    pipeline, and replay from zero & Reactive re-placement \\
+    \sys{} & $P$ or $(P,Q)$ parity (one or two largest-column blobs) and
+    preloaded backup weights & Decode lost KV, activate its backup, and rewire
+    the pipeline; no prefix replay & $\psi$ and $R$ share the device-memory
+    constraint \\
     \bottomrule
   \end{tabular}
 \end{table*}

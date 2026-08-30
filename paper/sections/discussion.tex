@@ -2,21 +2,6 @@
 
 \subsection{Discussion}\label{sec:disc:discussion}
 
-\textbf{What the three axes show together.}  The evaluation answers the
-four contributions of Section~\ref{sec:intro} in order.  Framing recovery by
-Recovery Latency, Recovery-State Footprint, and Recovery Feasibility
-separates three questions that the baselines answer differently: replay
-families retain nothing and pay per generated token; replication pays once,
-in state; reactive reconfiguration pays in seconds.  Cross-stage parity adds
-0.87\,ms of recovery time per position, so a failure at token 32 costs the
-same 0.32\,s as a failure at token 4, while retaining one column of 16\,kB per
-token instead of the 36\,kB that replication keeps
-(Table~\ref{tab:recovery-summary}).  Recovery-aware placement turns the memory
-reserved for that recovery into a placement constraint; under per-device caps
-of 300--600\,MB it admits deployments that a cost-first placement cannot back
-up (Section~\ref{sec:eval:feasibility}).  Protection costs 5--7\% of
-failure-free throughput on this fleet (Section~\ref{sec:eval:cost}).
-
 \textbf{Parity against replication.}  The two zero-recomputation paths
 recover in the same time, and DejaVu-style replication has the lower
 intercept (239 versus 284\,ms) because it installs one stored column instead
@@ -67,30 +52,27 @@ none of the live deployments in this paper demonstrates coupling.  The
 feasibility result is a statement about the memory-constrained regime: once
 the free memory per device approaches the size of a stage and its backup, the
 reservation in Eq.~\ref{eq:mem} decides which placements are admissible, and
-Algorithm~\ref{alg:alt} finds placements that a sequential procedure
+the alternating search of Section~\ref{sec:design:dp} finds placements that a sequential procedure
 discards.  Where the threshold lies depends on which devices may host
 backups; widening that set to nodes outside the pipeline moved it from
 600\,MB to 200\,MB on our fleet.
 
 \textbf{Limitations.}  The measurements come from one fleet of five CUDA
 workers and two CPU-only nodes and from one model, OPT-350M; larger models
-and other device classes remain to be measured, although the stage-sliced
-weight loader already supports them.  The protection domain covers fail-stop
-failures of non-head workers: the head stage and the coordinator are
-unprotected, a failure of the last stage falls back to replay because no
+and other device classes remain to be measured.  The protection domain covers
+fail-stop failures of non-head workers: the head stage and the coordinator
+are unprotected, a last-stage failure falls back to replay because no
 downstream survivor can confirm the final slot, and a failure during prefill
 has no prefix to reconstruct.  Latency was measured with synchronous
-forwarding, where the failed interval propagates in the RPC trailer;
-asynchronous forwarding adds a heartbeat-bounded detection delay that is
-common to all families and that we did not quantify, and a worker that hangs
-rather than crashes can still be misattributed.  The fidelity probe covers one
-tier pair and one two-layer stage.  The storage advantage depends on placement
-geometry: on this head-heavy placement double parity saves only 11\% over
-replication, and a third parity column would cost more state than
-replication while tolerating fewer failures, so $k\geq3$ is not implemented.
-Each recovery-latency point is one trial; the protection-cost figures are
-means over three rounds.  The network traffic that protection generates is
-not an evaluation axis in this paper.
+forwarding; asynchronous forwarding adds a heartbeat-bounded detection delay
+common to all families that we did not quantify, and a worker that hangs
+rather than crashes can still be misattributed.  The fidelity probe covers
+one tier pair and one two-layer stage.  The storage advantage depends on
+placement geometry: on this head-heavy placement double parity saves only
+11\% over replication, and a third parity column would cost more state than
+replication while tolerating fewer failures.  Each recovery-latency point is
+one trial; the protection-cost figures are means over three rounds.  Network
+traffic is not an evaluation axis in this paper.
 
 \textbf{Future work.}  Measuring double parity under a backup mapping spread
 over distinct hosts, and Reconfigure with a fixed victim, would complete the
