@@ -402,7 +402,13 @@ class Scheduler:
                     _install(with_devices(list(perm)))
                     try:
                         result = self.solve_alternating(**alt_kwargs)  # type: ignore[arg-type]
-                    except NoFeasibleSolutionError:
+                    except (NoFeasibleSolutionError, NoRecoveryError):
+                        # A subset whose stages leave no peer with room for
+                        # a backup is infeasible under Eq. (mem) just like a
+                        # DP with no placement -- skip it, don't abort the
+                        # search. First hit on the OPT-6.7B boot (2026-08-30):
+                        # the 2-Nano subsets have 6.5 GB stages nobody can
+                        # back up, while 3+-device subsets are fine.
                         continue
                     result_state = (result.sum_stage_time, result.max_stage_time)
                     if math.isinf(result_state[0]) or math.isinf(result_state[1]):

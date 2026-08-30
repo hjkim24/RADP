@@ -424,3 +424,42 @@ def test_can_pass_explicit_initial_placement(
         initial_placement=seed, max_iterations=5,
     )
     assert alt.max_stage_time > 0
+
+
+def test_subset_search_skips_subsets_with_no_viable_backup() -> None:
+    """A subset whose stages leave no peer with room for a backup must be
+    skipped, not abort the whole search.
+
+    Regression for the first OPT-6.7B boot (2026-08-30): the first 2-device
+    subset (two 8 GB Nanos, 16 layers = 6.5 GB each) raised NoRecoveryError
+    from determine_recovery_table, and solve_alternating_best_order only
+    caught NoFeasibleSolutionError, so the coordinator came up with no
+    placement even though 3+-device subsets were feasible.
+    """
+    unit = 100_000_000
+    ids = [DeviceId("a"), DeviceId("b"), DeviceId("c")]
+    # 3 units per device; 4 one-unit layers. Two devices: 2 active + 2 backup
+    # = 4 units > 3 -> no viable backup. Three devices (2/1/1): fits.
+    devices = [
+        DeviceProfile(id=d, total_memory_bytes=3 * unit, compute_throughput=1.0)
+        for d in ids
+    ]
+    layers = [
+        LayerProfile(
+            layer_idx=LayerIdx(i),
+            memory_bytes=unit,
+            compute_time={d: 0.01 for d in ids},
+        )
+        for i in range(1, 5)
+    ]
+    network = NetworkProfile(
+        bandwidth={(x, y): 1e9 for x in ids for y in ids if x != y},
+        latency={(x, y): 0.0005 for x in ids for y in ids if x != y},
+    )
+    spec = ClusterSpec(
+        devices=devices, layers=layers, network=network,
+        slo=SLO(ttft_seconds=10.0, tbt_seconds=10.0),
+    )
+    result = Scheduler(spec).solve_alternating_best_order()
+    assert {s.device for s in result.placement} == set(ids)
+    assert set(result.recovery) == set(ids)
