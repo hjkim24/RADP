@@ -81,10 +81,24 @@ def main() -> None:
     reader = _open_weight_reader(loc, "cpu")
     try:
         keys = reader.keys()
+        # Some checkpoints (opt-350m safetensors, opt-6.7b bin) publish bare
+        # keys without the leading "model." -- the same detection
+        # load_head_modules() performs, so the bundle matches what it will
+        # later read back. Keys are written as found; the loader re-detects.
+        prefixes = list(hms.key_prefixes.values())
+        probe = hms.key_prefixes["embed_tokens"]
+        if (
+            probe.startswith("model.")
+            and not any(k.startswith(probe) for k in keys)
+            and any(k.startswith(probe[len("model."):]) for k in keys)
+        ):
+            prefixes = [
+                p[len("model."):] if p.startswith("model.") else p for p in prefixes
+            ]
         wanted = {
             k: reader.get_tensor(k).contiguous()
             for k in keys
-            if any(k.startswith(p) for p in hms.key_prefixes.values())
+            if any(k.startswith(p) for p in prefixes)
         }
     finally:
         reader.close()

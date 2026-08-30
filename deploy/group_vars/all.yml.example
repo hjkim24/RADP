@@ -32,6 +32,10 @@ jetson_cusparselt_version: "0.6.3"
 model_id: "facebook/opt-125m"
 model_dtype: "float16"           # float32 / float16 / bfloat16
 model_torch_device: "cuda"        # cpu / cuda
+# Optional: path ON THE COORDINATOR to a head-only safetensors bundle built by
+# scripts/extract_head_bundle.py. Required for 7B-class models when the
+# coordinator's disk cannot hold the full checkpoint. Leave unset otherwise.
+# coord_head_bundle: /home/isp/opt-6.7b-head.safetensors
 
 # Reported in worker heartbeats so the coordinator can group/identify
 # heterogeneous hardware (used by Phase D2+ for DeviceProfile inference).

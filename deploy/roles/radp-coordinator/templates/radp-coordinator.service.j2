@@ -11,6 +11,12 @@ WorkingDirectory={{ radp_install_dir }}
 Environment=RADP_CONFIG=/etc/radp/cluster.yaml
 Environment=RADP_WEB_PORT={{ coord_web_port | default(0) }}
 Environment=HF_HOME=/home/{{ ansible_user }}/.cache/huggingface
+{% if coord_head_bundle is defined and coord_head_bundle %}
+# Head-only safetensors bundle (scripts/extract_head_bundle.py): embedding,
+# final norm, lm_head. Lets the coordinator serve a 7B-class model without
+# pulling the full checkpoint onto its small disk.
+Environment=RADP_HEAD_BUNDLE={{ coord_head_bundle }}
+{% endif %}
 {% if hf_token is defined %}
 # Gated HF model access. systemd reads this env at process start; the
 # token never lands in a persistent file on the coord. Keep
