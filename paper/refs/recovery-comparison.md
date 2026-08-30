@@ -40,13 +40,13 @@
 - edge 이기종 하드웨어(CPU/GPU/NPU) inference-time scaling 정량화 + **safety-first** 오케스트레이션.
 - **복구:** **100ms 내 fault detection** → healthy device로 **workload redistribution** → **graceful degradation**(50% capacity 점진 복귀). **safety monitor가 optimization engine보다 override 우선권**. formal degradation guarantee(τ_degraded ≤ τ_optimal·D/D_healthy), 실측 100% fault recovery·zero thermal throttling.
 - **스코프 주의:** 다중 네트워크 노드가 아니라 **한 머신 내부** CPU/GPU/NPU 재분배 → 다른 4편과 층위가 다름.
-- bib: 미등록 (arXiv:2602.06057).
+- bib: `kumar2026qeil` (2026-08-30 등록; 원고 미인용 — 단일 머신 층위라 제외).
 
 ### Parallax (arXiv 2025, preprint) — dynamic-membership reactive rebalancing
 - 이기종·저대역 볼런티어 GPU 풀에 model replica를 placement하고 request-time에 pipeline chain을 선택.
 - **복구:** DHT의 **live per-layer latency/RTT**로 GPU join/leave에 적응 — **localized adjustment** 또는 **coefficient-of-variation 기반 global rebalancing**; GPU leave 시 layer **de-allocation**, replica 간 **stage stitching**으로 요청을 다른 replica 경로로 재봉합.
 - **성격:** 사전 backup을 심는 게 아니라 **사후 reactive rebalancing/re-stitching**. HexGen을 이긴 최신 비교 대상.
-- bib: 미등록 (arXiv:2509.26182).
+- bib: `tong2025parallax` (2026-08-30 등록; Related §Reconfiguration에서 인용).
 
 ### FTPipeHD (IEEE TMC 2024) — training-side weight replication + re-partition
 - 이기종 edge에서 **pipeline-parallel training**을 지속.

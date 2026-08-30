@@ -14,7 +14,7 @@ applications depend on a remote service, but the model weights and growing KV
 cache can exceed the memory of a single edge device.  Splitting consecutive
 decoder layers across several devices is therefore a practical way to pool
 the compute and memory already available at the site~\cite{macario2025mdi,
-zhang2024edgeshard,ye2025jupiter}.  Such a deployment is inherently
+zhang2024edgeshard,ye2025jupiter,picano2025matching,zheng2026dybap}.  Such a deployment is inherently
 heterogeneous: its pipeline may span GPUs, CPUs, and embedded accelerators
 with different execution rates and memory capacities.
 

@@ -21,6 +21,17 @@ and decoding algorithms reduce normal-operation latency, but do not restore KV
 state or select a backup after a worker failure.  Thus, EdgeShard and Jupiter
 answer where a model should run under heterogeneous performance; they do not
 test whether the resulting placement remains executable after a stage fails.
+Heterogeneity-aware placement is also established for datacenter GPU
+clusters: Helix, HexGen, HexGen-2, Hetis, and LLM-PQ solve placement,
+parallelism, or quantization as a coupled optimization over GPUs of different
+classes~\cite{mei2025helix,jiang2024hexgen,jiang2025hexgen2,mo2025hetis,
+zhao2024llmpq}.  These systems assume datacenter memory and provide no path
+that restores an in-flight request's state; HexGen reacts to a departed GPU by
+re-running its placement search.  Fault tolerance for heterogeneous edge
+pipelines has been addressed for training, where FTPipeHD replicates weights
+and re-partitions the pipeline after a failure~\cite{chen2024ftpipehd}; its
+recovery unit is model weights and its budget is a training batch, whereas
+decoding must restore per-request KV state within a token interval.
 
 JARVIS considers failures in a tactical edge network whose wired and wireless
 nodes form a token-ring execution path~\cite{sirera2024jarvis}.  It proposes
@@ -103,6 +114,12 @@ expected, its KV context may be lost; absent reusable model context, recovery
 falls back to loading weights.  SpotServe therefore shows how planned cloud
 preemption can preserve state, but it does not supply the assumptions needed
 for an unannounced edge crash, out-of-memory termination, or network partition.
+Parallax serves LLMs over a decentralized pool of heterogeneous GPUs and
+handles GPU departure by de-allocating its layers and re-stitching requests
+across replicas, with global rebalancing when load
+diverges~\cite{tong2025parallax}.  This is re-placement after the fact, as in
+our Reconfigure baseline, although the presence of replicas spares it a cold
+restart; neither approach protects the KV state of the interrupted request.
 
 \subsection{Parity}
 
