@@ -778,6 +778,56 @@ uncapped 350M 성능 결과는 coupling 근거로 쓰지 않는다.
 
 ---
 
+## B2-7B-SERVE — OPT-6.7B를 6-stage CUDA fleet에 첫 서빙 (실 fleet, 2026-08-30)
+
+**목적.** 08-12 스펙(lazy model loading for 7B)의 Task 6·7. OPT-350M(stage 576 MB vs headroom 5 GB)은 ψ–R coupling
+레짐 밖이라(§D2.9) 7B급에서 (a) coupling을 live로, (b) storage gap을 실측으로, (c) recovery latency 격차 확대를 보려는 준비.
+모델은 스펙의 Llama-2-7B 대신 **`facebook/opt-6.7b`**(12.4 GiB, bin 2-shard, MHA 32 heads → KV 512 kB/token) — `ec30e32`가
+bin도 mmap lazy 로드하게 고쳐 "bin 불가" 사유가 사라졌고, 350M과 같은 family라 tokenizer·profiler·기존 결과와 변수가 최소.
+
+**fleet 준비 (Task 6).**
+- 디스크: on-1/on-6 HF 캐시 purge(opt-350m/125m만 유지), ao-1 `users/taehyuk` 15 G·pip, ax-1 캐시·Downloads 정리 → 전 워커 ≥15 G,
+  ax-1 3.1 G (PHASES 08-30 항목).
+- 체크포인트 배포: fleet의 HF 직접 다운로드는 대당 ~1 MB/s, Mac→lab 0.2 MB/s라 불가. **ao-2 한 대만 HF에서 받고(≈10분)** tar 12.4 GB를
+  `python -m http.server`로 LAN 배포(`curl | tar`, 5대 병렬 ~25분). HF cache 레이아웃(blobs+snapshots 심링크) 그대로 복제.
+- head bundle: `scripts/extract_head_bundle.py facebook/opt-6.7b` → **409 MB, 4 tensors**(embed_tokens 50272×4096, embed_positions
+  2050×4096, final_layer_norm w/b). 버그: OPT-6.7B bin은 키가 `decoder.*`(bare, `model.` 없음)라 스크립트가 0개 매칭 → `load_head_modules`와
+  같은 bare-key 감지 추가(`7c8287c`). ao-2에서 빌드해 ax-1로 LAN 전송, `RADP_HEAD_BUNDLE`을 coordinator unit 템플릿에 추가.
+- on-5 복귀(382739b → HEAD), on-3/on-4는 inventory에서 제외(사유: `wait_for_workers`가 전 worker heartbeat 요구, CPU 프로파일 15분+,
+  production pipeline scope에서 backup 후보 아님). 최종 fleet **6 CUDA 워커**(on-1/2/5/6 Nano 8 GB, ao-1/ao-2 AGX 32 GB) + ax-1.
+- gate(on-5 Nano, CUDA): `load_head_modules` RSS **+452 MB**(스펙 기준 <1 GB 통과), block-1 로드 **9.0 s**(cold mmap), forward
+  **8.2 ms**(seq 64). ao-2(AGX): +432 MB / 15.3 s / 8.6 ms.
+
+**coordinator 부팅 (Task 7).** `profiling RPC timeout 600→1800 s`(`c877781`, 층당 9–15 s 로드 × 32).
+1차 부팅: 프로파일 4.4분 완료 후 **DP solve가 첫 2-device subset에서 즉사** — `solve_alternating_best_order`가 subset 루프에서
+`NoFeasibleSolutionError`만 잡고 `NoRecoveryError`(Nano 2대·16층=6.5 GB stage, backup 불가)는 안 잡아 탐색 전체 중단.
+350M에선 모든 subset이 backup을 가져 한 번도 안 터진 경로. 수정 `3905a00`(NoRecoveryError도 skip) + 회귀 테스트(`b1082ae`).
+2차 부팅: wait 0 s → 프로파일 **258 s** → network 2.4 s → solve **122 s**(1950 후보 중 **1454 feasible / 496 infeasible** —
+7B에서 backup 예약이 배치를 제약한 첫 live 관측) → 배포 ≈6분. 총 phase 383 s + 배포.
+
+**결과 배치 (throughput mode, max_stage 72.1 ms, converged 3 iter).**
+```
+on-6[1..6] → on-2[7..10] → on-1[11..14] → on-5[15..18] → ao-2[19..25] → ao-1[26..32]      (head = on-6 Nano!)
+R: on-6→on-5, on-2→on-1, on-1→on-5, on-5→on-1, ao-2→ao-1, ao-1→on-6
+```
+backup이 on-5(6+4층)·on-1(4+4층)에 몰림 — 350M double-parity 때의 집중 패턴 재현. Nano 가용 메모리(배포 후): on-5 **692 MB**,
+on-6 893 MB, on-1 1.15 GB, on-2 1.66 GB; AGX 21–23 GB. 워커 RSS 0.3–1.0 GB(가중치는 CUDA). coordinator RSS 773 MB(head 모듈 ~400 MB).
+
+**생성.** `POST /api/generate` "The quick brown fox" → " jumps over the lazy dog.\nI'm not sure if this is a joke or not, but I'm going to"
+(24 tokens, 28.5 s, 첫 요청 warm-up 포함). 2차 36 tokens 19.6 s: **TTFT 1.67 s, TBT median 0.515 s, p95 0.734 s**(min 0.39, max 0.84).
+토큰 반복 없음 → chain wiring 정상. TBT 0.5 s는 32층 × 8 ms ≈ 0.26 s + 6 hop + tail head(lm_head on ao-1)로 설명 가능하나
+분해는 미측정.
+
+**정직한 한계.** (1) 단일 요청, 단일 프롬프트 — 처리량/TBT 정식 측정 아님. (2) head가 Nano에 간 이유(backup 예약 vs cost)를 분리 안 함.
+(3) on-3/on-4 제외라 fleet-scope feasibility(D2.9 2행)의 7B판은 offline sweep에 메모리 값만 넣어야 함. (4) 프로파일 258 s는
+cold mmap 지배 — 재부팅 시 placement cache(fingerprint 3787dca35346)로 solve는 건너뛰지만 프로파일은 매번.
+
+**다음.** B1 계열 재측정(latency 5계열 · storage 실측 · protection cost N=3 · double parity)을 7B로; D2.9 offline sweep을 7B snapshot으로.
+출처: coordinator journal 2026-08-30 05:03–05:15 UTC, `/api/cluster`(placement/recovery/phase_ms), gate 스크립트 출력.
+코드: `7c8287c`(bundle bare keys + unit env), `c877781`(rpc timeout), `3905a00`/`b1082ae`(subset skip + test).
+
+---
+
 ## 11. 핵심 발견 정리 (페이퍼)
 
 1. **DP는 정상 운영에서 이김 — compute 이기종성이 유의미할 때.** OPT-125M 동질 Nano fleet (§3.3)에선 4 placement가 TBT ±3% 안에서 tie. OPT-350M 3-tier fleet (§4)에선 ours가 greedy 대비 **TBT -6.5%**, **처리량 +8.3%**, 조건당 n=300 샘플.

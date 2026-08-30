@@ -2448,3 +2448,11 @@ ax-1 `.cache/pip,mozilla`·`.vscode-server`·`.warp`·`Downloads`(RML2016)·tran
 truncate(sudo, ~0.8 G), ax-1 타인 디렉토리 `jinwoo` 3.4 G·`yerin` 1.5 G, on-2 캐시 12 G(여유 22 G라 유지). 7B(OPT-6.7B 12.4 GiB
 또는 Llama-2-7B 12.55 GiB) 워커당 ~15 G·코디네이터 head bundle ~0.6 G 요구를 전 노드가 충족. 다음: 08-12 플랜 Task 6(on-5 재배포,
 head bundle 배치) → Task 7(첫 서빙). 후보 1순위 OPT-6.7B(bin mmap lazy 로드 `ec30e32`로 가능, 동일 family), 2순위 Llama-2-7B.
+
+## Phase B2-7B-SERVE — OPT-6.7B 첫 서빙 (2026-08-30 저녁)
+
+08-12 스펙 Task 6·7 실행(모델은 Llama-2-7B → OPT-6.7B로 변경, bin mmap 가능해짐). fleet 준비(캐시 purge·LAN 배포·409 MB head
+bundle·on-5 복귀·on-3/4 제외), gate 통과(Nano RSS +452 MB, block 로드 9 s, forward 8.2 ms), 두 가지 코드 수정 — bundle 스크립트의
+bare-key 감지(`7c8287c`), **subset 탐색이 NoRecoveryError로 중단되던 버그**(`3905a00`+테스트) — 와 프로파일 타임아웃 1800 s(`c877781`).
+결과: 6-stage 배치(head=on-6 Nano, AGX 두 대가 tail), 1950 후보 중 496 infeasible(첫 live coupling 관측), TTFT 1.67 s / TBT median
+0.515 s, 일관된 생성. 상세 `experiments/REPORT.md §B2-7B-SERVE`. 다음: B1 계열 7B 재측정.
