@@ -1,296 +1,348 @@
 \section{Evaluation}\label{sec:eval}
 
-% ~2 pages. Four subsections answering four research questions.
-% RQ1: Does $\psi$+$R$ joint optimization outperform decoupled
-%      baselines in normal operation when heterogeneity is meaningful?
-% RQ2: Does $\psi$+$R$ survive a mid-stream worker failure on edge?
-% RQ3: Does latency-optimal placement (alpha=0) dominate throughput-
-%      optimal placement (alpha=1) across the runtime knobs (topology,
-%      chain mode, chain length, C)?
-% RQ4: What does async chain forwarding cost in failure attribution?
+We evaluate \sys{} on a heterogeneous Jetson testbed around the three axes
+introduced in Section~\ref{sec:intro}: \emph{Recovery Latency},
+\emph{Recovery-State Footprint}, and \emph{Recovery Feasibility}, together
+with \emph{KV-State Fidelity} and the failure-free cost of protection.  The
+questions are: (RQ1) how the recovery latency of each family scales with the
+failure position $P$; (RQ2) how much recovery state single and double parity
+retain relative to replication, and how the gap grows with model size and
+context length; (RQ3) what recovery guarantee and state fidelity \sys{}
+provides for one and two stage failures; (RQ4) whether joint placement and
+backup assignment widens the memory range in which recovery stays feasible;
+and (RQ5) what parity protection costs during failure-free decoding.  Every
+result is labelled as a \emph{live} fleet measurement, a \emph{controlled
+offline} analysis on measured profiles, or a \emph{derived projection} from
+model geometry.
 
-\subsection{Setup}\label{sec:eval:setup}
+\subsection{Experimental Setup}\label{sec:eval:setup}
 
-\textbf{Fleet.} Six Jetson workers (five Orin Nano 8\,GB, one AGX
-Orin MAXN + \texttt{jetson\_clocks}) plus one AGX Xavier acting as
-coordinator (CPU mode, Python 3.9) on the same LAN --- the entire
-deployment is Jetson-only, no x86 host required. Live
-\texttt{ProfileLayers} on OPT-350M (seq$=$64, fp16, no KV):
-Nano CPU $\sim$84.7\,ms, AGX CPU $\sim$17.6\,ms (legacy),
-Nano CUDA $\sim$1.11\,ms, AGX MAXN $\sim$0.82\,ms. AGX MAXN is only $1.36\times$ faster
-than Nano CUDA at this scale because OPT-350M's $\sim$750\,M
-FLOPS/block leaves both CUDA devices launch-bound; 3B+ models
-would expose more (beyond Nano memory). Including the Nano CPU
-boards extends the within-fleet gap to $\sim$76$\times$.
+\textbf{Testbed.}  The coordinator runs on a Jetson AGX Xavier.  Workers are
+two Jetson AGX Orin 32\,GB (\texttt{ao-1}, \texttt{ao-2}) and three Jetson
+Orin Nano 8\,GB (\texttt{on-1}, \texttt{on-2}, \texttt{on-6}), all executing
+stages on CUDA over a shared LAN; two further Orin Nano boards run CPU-only
+workers that serve only as candidate backup hosts in the placement study.
+The model is OPT-350M in fp16 (24 decoder layers, 16 heads $\times$ 64
+dimensions), so each layer appends 4\,096 bytes of KV state per token.  The
+recovery experiments use the placement produced by \sys{}'s scheduler:
+\texttt{ao-2} holds the head stage (layers 1--15) and the four protected
+non-head stages hold nine layers in total, the largest of them four.  A
+request is a short prompt decoded greedily for 36 tokens, and the failure
+position $P\in\{4,8,16,24,32\}$ is the number of tokens generated before the
+failure.
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.95\linewidth]{fig_tiers.pdf}
-  \caption{Per-layer forward time (OPT-350M seq$=$64, log scale)
-  from live ProfileLayers data. The CUDA-vs-CPU gulf is $\sim$76$\times$;
-  the within-CUDA AGX-vs-Nano gap is only $1.36\times$ at this
-  model size --- launch overhead dominates compute. AGX CPU
-  ($17.6$\,ms) is the legacy paper measurement; no AGX board in
-  the current fleet runs in CPU mode.}
-  \label{fig:tiers}
-\end{figure}
+\textbf{Recovery families.}  We compare five recovery paths under one
+coordinator and one injection mechanism.  \emph{Recompute} rebuilds the
+pipeline and replays the request from position~0 through every stage.
+\emph{Petals} keeps the inputs sent to each stage and replays only the failed
+layer range on the backup~\cite{borzunov2023petals}.  \emph{DejaVu} streams
+every protected stage's KV to the coordinator and installs the stored copy on
+the backup~\cite{strati2024dejavu}.  \emph{Reconfigure} keeps no backup
+($R=\emptyset$): after the failure the coordinator solves placement again on
+the surviving workers, cold-loads the weights, rebuilds the pipeline, and
+replays the request.  \sys{} is evaluated with one parity column ($k=1$) and,
+for two simultaneous failures, with two ($k=2$).  Recompute and Reconfigure
+are controlled baselines rather than reproductions of a named system
+(Section~\ref{sec:related}).
 
-\textbf{Models.} OPT-350M (24 decoder layers, hidden 1024, fp16) is
-our primary model: small enough to fit a Nano even at the layer
-floor, large enough to expose the heterogeneity gap. To probe
-model-size generalisation we run a 3$\times$-larger Llama-3.2-1B
-(16 layers, hidden 2048, fp16) on the same fleet via the sharded-
-safetensors loader (\S\ref{sec:design:runtime}). OPT-1.3B's
-monolithic \texttt{.bin} format and Llama-3.2-3B's 6\,GB working
-set both exceed Nano memory and are orthogonal to our contribution
-(\S\ref{sec:disc}).
+\textbf{Failure injection.}  A worker-side fault raises a crash on the victim
+while it computes position $P$, after the victim's input for that position
+has reached the coordinator, so every trial fails at exactly the intended
+token.  Pipeline forwarding is synchronous during these sweeps so that the
+failed layer interval propagates through the RPC trailer; asynchronous
+forwarding adds a heartbeat-bounded detection delay that is common to all
+families and is not part of the recovery work compared here.  The primary
+victim is \texttt{on-1} (layers 16--17) with \texttt{on-6} as its assigned
+backup; a second sweep fails \texttt{on-6} to test victim sensitivity.
+Reconfigure has no assigned backup, so its victim is chosen from the live
+placement in each trial and is marked dead explicitly; its detection delay is
+therefore also excluded.
 
-\textbf{Workload.} Greedy decoding (temperature$=$0);
-\texttt{max\_tokens} varies by experiment (30 for the concurrent
-throughput sweep, 60 for recovery trials). Concurrency points use
-\texttt{measure\_\allowbreak{}concurrent.py}; recovery trials use
-\texttt{run\_phase3\_\allowbreak{}recovery.py}. Every reported cell
-is backed by a JSON artifact under \texttt{experiments/results/},
-catalogued in the repository's \texttt{REPORT.md} for
-reproducibility.
+\textbf{Metrics and validity.}  \emph{Recovery Latency} is the client-observed
+interval from the last token received before the failure to the first valid
+token after recovery, i.e., the token-between-time at the failure position.
+The same definition applies to every family, including the replay catch-up of
+Reconfigure.  \emph{Recovery-State Footprint} is the number of bytes the
+coordinator retains per KV token for a request.  \emph{KV-State Fidelity} is
+bit identity between the recovered KV bytes and the bytes the failed stage
+held.  \emph{Recovery Feasibility} is whether a placement and a recovery
+mapping exist together under a per-device memory limit.  A trial is valid
+only if the fault fired at $P$, the decoded sequence equals the failure-free
+reference, and the intended branch executed (checked through a coordinator
+log marker for the parity and replication paths, which otherwise fall back to
+replay).  All trials reported below passed these gates; sequence match is a
+validity gate, not an output-correctness metric.
 
-\subsection{$\psi$+$R$ joint optimization beats decoupled baselines in normal mode}\label{sec:eval:a3b}
-
-On a 6-worker fleet (1 AGX Orin MAXN, 3 Jetson Orin Nano CUDA,
-2 Nano CPU) we compare \sys{}'s joint $(\psi, R)$ DP against three
-placement-only baselines that share an identical recovery substrate
-($R{=}\emptyset$, abort on first failure): \emph{greedy} (layers
-handed out fastest-device-first), \emph{uniform} (equal layer count
-per stage), and \emph{Jupiter-DP} (Eq.~1 in~\cite{ye2025jupiter},
-$\alpha{=}1$ throughput-optimal max-min). \sys{} runs in
-$\alpha{=}0$ latency mode for a clean comparison against
-Jupiter-DP's $\alpha{=}1$. Each baseline is measured over $N{=}3$
-independent fresh-deploy trials of 30 streams $\times$ 30 tokens
-($n{=}2700$ TBT samples per baseline). Workers are restarted between
-trials for a clean-memory state; the coefficient of variation
-across trials is $<3\%$ for every baseline.
-
-All three placement-only baselines spread layers across all six
-devices (uniform: 4 each; Jupiter-DP: 1--7 incl. the CPU workers;
-greedy: similar fan-out). \sys{} collapses the placement onto two
-devices --- \texttt{on-1[1..1]} $\to$ \texttt{ao-1[2..24]}, AGX
-hosting 23 of 24 layers --- because backup-memory feasibility
-(Eq.~\ref{eq:mem}) admits exactly that subset when \texttt{on-1}
-is the only peer with headroom for a 23-layer backup. The result
-(Fig.~\ref{fig:baselines}): $3.5\times$ throughput over greedy
-($17.2{\pm}0.5$ vs $5.0{\pm}0.04$\,tok/s), $3.5\times$ lower TBT p50
-($54.2{\pm}1.6$ vs $189.9{\pm}1.6$\,ms), $2.3\times$ lower TBT p95
-($115.6{\pm}2.9$ vs $261.2{\pm}2.7$\,ms). Two effects compose: outer
-subset enumeration auto-prunes the two Nano CPU workers --- which
-the placement-only baselines keep in the chain at
-$\sim$85\,ms/layer --- and the bulk-on-AGX shape itself is
-reachable only because checking $R$ inside the DP
-(Eq.~\ref{eq:mem}) admits it. The within-CUDA-tier algorithmic gain
-alone is smaller, comparable to the 17--45\% $L \succ T$ difference
-on the all-CUDA 4-stage chain in \S\ref{sec:eval:matrix}.
+\subsection{Recovery Latency and Prefix-Length Scaling}\label{sec:eval:latency}
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{fig_baselines.pdf}
-  \caption{Normal-mode metrics on the 6-worker fleet, $N{=}3$ fresh
-  deploys $\times$ 30 streams $\times$ 30 tokens each. Error bars
-  are $\pm 1$ std across the 3 trials. RADP (blue) wins by
-  $2.3$--$3.5\times$ across all three metrics.}
-  \label{fig:baselines}
+  \includegraphics[width=\linewidth]{paper/fig_recovery_latency.pdf}
+  \caption{Recovery latency versus failure position $P$ (live, OPT-350M,
+  five-stage pipeline, victim \texttt{on-1}).  Markers are single trials; lines
+  are least-squares fits.  Reconfigure is shown as individual trials with its
+  median and min--max band; its victim differs per $P$, so no slope is
+  fitted.  The dotted line is one failure-free decode step.}
+  \label{fig:recovery-latency}
 \end{figure}
 
-\subsection{Failure recovery survives where baselines abort}\label{sec:eval:recovery}
-
-\textbf{Star topology.} Five trials kill a non-coordinator worker
-mid-stream after 17--20 tokens have been issued (the harness is
-\texttt{run\_phase3\_\allowbreak{}recovery.py} with the
-\texttt{--kill\allowbreak-after\allowbreak-token N} flag).
-\sys{} delivers all 60 expected tokens coherently in 5/5 trials;
-all three placement-only baselines abort the stream at the kill
-boundary, losing the 17--20 in-flight tokens already returned to
-the client. Recovery wall-clock is tight: mean 617\,ms, p95
-670\,ms, a $\sim$100\,ms spread driven by the lazy weight transfer
-to the promoted backup. The mirror-cache cost is negligible per
-step (one one-way RPC per non-head stage, mean 1.2\,ms) and the
-arithmetic checks out exactly: an 8-token Generate produces 16
-mirror pushes ($8$ steps $\times$ 2 non-first stages of a 3-stage
-chain).
-
-\textbf{Chain topology.} The 4-stage chain
-\texttt{ao-1[1..9]} $\to$ \texttt{on-6[10..14]} $\to$
-\texttt{on-1[15..19]} $\to$ \texttt{on-2[20..24]} isolates a
-\emph{mid-chain} failure (on-6), which exercises the
-trailer-based attribution path; head/tail kills would resolve via
-heartbeat alone. With sync chain forwarding, all 60 tokens land
-coherently; the coordinator journal shows the upstream worker
-catching the downstream RpcError, stamping the failed range
-\texttt{(10,14)} onto the gRPC trailer, and the coordinator looking
-that range up in the \emph{original} placement to identify on-6 as
-the truly-dead worker --- this is essential because heartbeat has
-already substituted ao-1 as the backup by then. With async chain
-forwarding, trailer metadata is unavailable (the response chain
-unwound long before failure), so attribution falls back to the
-chain head while heartbeat catches up; the $\psi$+$R$ feasibility
-guarantee preserves correctness (all 60 tokens delivered), but
-recovery pays one extra hop when heartbeat loses the race.
-
-\subsection{Latency placement dominates throughput placement at C $\geq$ 4 across two model sizes}\label{sec:eval:matrix}
-
-Table~\ref{tab:matrix} is the headline result: aggregate throughput
-(tok/s, higher is better) and TBT p50 (ms, lower is better) across
-a 24-cell OPT-350M matrix (two chain lengths $\times$ four
-architecture variants $\times$ three concurrency levels) and a
-nine-cell Llama-3.2-1B sub-matrix on the same 4-stage fleet. Four
-deltas drive the discussion.
-
-\textbf{(i) L $\succ$ T at every one of the 24 OPT-350M cells.}
-Pairwise comparison within sync (T+sync vs L+sync) and within async
-(T+async vs L+async) shows L wins on aggregate throughput at every
-chain length and every concurrency level we measured. The biggest
-gap is at the 4-stage chain $C{=}4$ async cell, where L+async
-(23.9\,tok/s) is 2.4$\times$ T+async (9.8\,tok/s) and TBT p50 is
-2.8$\times$ lower (145\,ms vs 406\,ms): T-placement's even split
-gives every stage one or two layers, so the chain saturates on
-network hops with the per-stage compute idle, while L-placement
-concentrates compute on the AGX worker until pipeline parallelism
-actually has work to overlap.
-
-\textbf{(ii) async $\succ$ sync everywhere at $C\geq 4$, except
-T-placement on the 4-stage chain.} On every L-placement row at
-$C\geq 4$, async beats sync (e.g. 3-stage $C{=}4$ L: 24.25 $\to$
-33.71\,tok/s, $+39\%$; 4-stage $C{=}4$ L: 18.66 $\to$ 23.91,
-$+28\%$). The single regime where async \emph{loses} is T-placement
-on the 4-stage chain at $C{=}4$ (10.71 $\to$ 9.79\,tok/s, $-9\%$):
-chain-hop overhead per stage becomes a larger fraction of total
-cost when each stage has only one or two layers to compute,
-swamping async's overlap budget. This nuance bounds the claim:
-async chain forwarding helps when the per-stage compute is large
-enough to hide a one-hop ACK, which is exactly the regime
-L-placement creates.
-
-\textbf{(iii) async gain is chain-length-independent.} At $C{=}16$,
-T-placement sync$\to$async is $+47\%$ on the 3-stage chain
-(23.49 $\to$ 34.49\,tok/s) and $+46\%$ on the 4-stage chain
-(24.47 $\to$ 35.69\,tok/s). The cost of synchronous chain
-forwarding scales with concurrency, not with chain length: $C$
-streams each occupy one gRPC handler thread per stage until the
-nested response unwinds, so adding a stage adds $C$ more occupied
-slots, but async chain breaks the dependency entirely.
-
-\textbf{(iv) Model-size generalisation, with a C{=}1 caveat.} On
-the 3$\times$-larger Llama-3.2-1B model (4-stage chain, three
-captured cells $\times$ three C levels $=$ nine points), async
-$\succ$ sync persists in the T-placement row ($C{=}16$:
-21.84 $\to$ 30.56\,tok/s, $+40\%$) and L $\succeq$ T persists at
-$C\geq 4$ (L+async@C{=}4 is the best Llama cell, $+12\%$ over
-T+async; at $C{=}16$ they tie within 0.6\%). The L+sync cell is
-absent because one Nano went unreachable mid-sweep; the three
-captured cells still bound the claim. The new observation is at
-$C{=}1$: T+async beats L+async on aggregate throughput
-(3.74 vs 3.05\,tok/s, $-18\%$) for the first time in any cell.
-TBT p50 still favors L (174 vs 261\,ms, $-33\%$), so the
-operator-facing interpretation is unchanged --- L wins
-responsiveness --- but the strict throughput dominance does not
-generalise to single-stream big-model regimes. The intuition:
-when stage compute dwarfs chain-hop cost (bigger model, single
-in-flight stream), L's fast-device-heavy placement makes that
-single stage the throughput-limiting critical path while T's
-even division keeps every device busy; multi-stream amortises the
-hop and L's pipeline-saturation advantage returns.
-
-\textbf{Operating point span.} The best $C{=}16$ cell on this
-fleet is OPT-350M 4-stage L+async at 41.65\,tok/s; the worst is
-OPT-350M 3-stage T+sync at 23.49\,tok/s. The $+77\%$ throughput
-swing is covered entirely by two runtime knobs
-(\texttt{optimization\_mode} and \texttt{chain\_mode}) that the
-operator can flip without re-deploying.
-
-\textbf{Caveat: stage count is not a free knob.} 3-stage L+async at
-$C{=}4$ delivers 33.71\,tok/s while the same cell on 4-stage drops
-to 23.91 ($-29\%$). The 4-stage chain forces one Nano to host a
-single layer (the layer floor), paying a full network hop to do
-$\sim$1.5\,ms of compute. Recall that \sys{}'s DP assumes every
-device in the fleet participates (\S\ref{sec:design:dp}), so the
-stage count is fixed by the fleet size $|D|$ at boot, not chosen
-by the DP. The two chain-length topologies in this matrix were
-produced by curating the fleet inventory --- removing two workers
-to go from 4-stage to 3-stage --- so the same DP, run twice over
-two different fleets, produced the rows above. The takeaway is
-that operators steer the system into the right regime by
-curating the fleet first, and the DP optimises placement and
-recovery on top of that choice.
-
-\subsection{Subset selection and hop overhead do not reverse L $\succ$ T}\label{sec:eval:cost-model}
-
-We test the natural cost-model hypothesis for the matrix's
-L $\succ$ T gap --- T loses because the DP forces every worker
-in and because wire-only $T_{\mathrm{comm}}$ understates per-hop
-overhead --- by toggling both fixes on a 6-worker fleet
-(1 AGX MAXN, 3 Nano CUDA, 2 Nano CPU), OPT-350M~async. Subset
-enumeration (Eq.~\ref{eq:dp}) drops both CPU workers; L picks a
-2-device subset (AGX$+$Nano) and T picks the 4-stage all-CUDA
-subset, and the L/T throughput ratio \emph{widens} to
-$1.21\times$/$1.57\times$/$1.15\times$ at $C\!=\!1/4/16$. Adding
-$\gamma_{\mathrm{hop}}\!=\!8$\,ms leaves T at 4-stage 4-CUDA ---
-a uniform $\gamma_{\mathrm{hop}}$ does not reorder the max-min
-argmax --- and yields $5.17/7.5/32.8$\,tok/s, $5\%$ worse at
-$C\!=\!16$ than (a)-only T. The residual gap is a multi-stream
-system-level effect (thread-pool contention, Nano KV bandwidth,
-gRPC handler occupancy) no wire-cost term reaches; the
-Eq.~\ref{eq:rank} multiplier $\mu(\psi)$ and additive
-$\gamma_{\mathrm{stage}}|\psi|$ expose these factors, with
-$\gamma_{\mathrm{stage}}\!>\!0$ required to break $\mu$'s
-homogeneous-fleet tie. Live calibration of
-$(C_\star, P, \gamma_{\mathrm{stage}})$ remains future work.
-An offline sweep across the full
-$(C_\star, \gamma_{\mathrm{stage}})$ grid on the live cluster's
-profile snapshot reveals a sharper finding about the production
-4-stage T placement itself: the cost-only DP picks a 2-stage
-\texttt{on-1[1..23]$\to$ao-1[24..24]} answer for every v2
-setting we tested, yet the live coordinator deploys 4 stages.
-The forcing factor is Eq.~\ref{eq:mem} --- the 2-stage answer
-puts a 23-layer backup burden on a single Nano peer that
-cannot also absorb the other devices' backups --- making this
-the cleanest empirical instance of the $\psi$+$R$ coupling
-claim from \S\ref{sec:intro}: the 4-stage T topology is the
-max-min argmax \emph{under} the memory-feasibility constraint,
-not without it.
-
-\begin{table*}[t]
+\begin{table}[t]
   \centering
-  \footnotesize
-  \caption{Aggregate throughput (tok/s) and TBT p50 (ms, in
-  brackets) across the 24-cell OPT-350M matrix and the
-  Llama-3.2-1B 4-stage sub-matrix. Each row is one (chain length,
-  placement, chain-mode) combination; columns are concurrency
-  levels. Bold marks the L $\succ$ T winner within each
-  (sync/async, $C$) group; underline marks the async $\succ$ sync
-  winner within each (placement, $C$) group. The L+sync row for
-  Llama-3.2-1B is missing because one worker went unreachable
-  mid-sweep.}
-  \label{tab:matrix}
-  \begin{tabular}{l l l ccc}
+  \scriptsize
+  \setlength{\tabcolsep}{4pt}
+  \caption{Recovery families on the same fleet, placement, and injection
+  (live).  Latency fit $=$ intercept $+$ slope$\cdot P$ over $P\in\{4,\dots,32\}$;
+  state is retained per KV token; fidelity is the guarantee of the primary
+  recovery path.}
+  \label{tab:recovery-summary}
+  \begin{tabular}{l r r r r l}
     \toprule
-    & & & $C{=}1$ & $C{=}4$ & $C{=}16$ \\
+    Family & Intercept & Slope & $P{=}32$ & State & KV fidelity \\
+           & (ms) & (ms/pos) & (s) & (B/tok) & \\
     \midrule
-    \multicolumn{6}{l}{\emph{OPT-350M, 3-stage chain}} \\
-    & T & sync  & 6.11 [129] & 17.05 [215] & 23.49 [586] \\
-    & T & async & 7.61 [126] & 20.19 [191] & \underline{34.49} [430] \\
-    & L & sync  & \textbf{7.65} [82] & \textbf{24.25} [155] & \textbf{34.18} [403] \\
-    & L & async & \textbf{9.71} [78] & \textbf{\underline{33.71}} [107] & \textbf{\underline{40.27}} [386] \\
-    \midrule
-    \multicolumn{6}{l}{\emph{OPT-350M, 4-stage chain}} \\
-    & T & sync  & 6.58 [144] & 10.71 [381] & 24.47 [614] \\
-    & T & async & 6.36 [153] &  9.79 [406] & \underline{35.69} [426] \\
-    & L & sync  & \textbf{9.07} [98] & \textbf{18.66} [205] & \textbf{32.77} [509] \\
-    & L & async & \textbf{9.31} [99] & \textbf{\underline{23.91}} [145] & \textbf{\underline{41.65}} [368] \\
-    \midrule
-    \multicolumn{6}{l}{\emph{Llama-3.2-1B, 4-stage chain}} \\
-    & T & sync  & 2.94 [259] & 16.24 [189] & 21.84 [663] \\
-    & T & async & \textbf{3.74} [261] & 18.07 [181] & \underline{30.56} [486] \\
-    & L & sync  & --- & --- & --- \\
-    & L & async & 3.05 [\textbf{174}] & \textbf{20.28} [147] & \textbf{30.73} [515] \\
+    Recompute   & 309 & 164.3 & 5.62 & 0 & recomputed \\
+    Petals      & 249 & 16.2  & 0.77 & 0 & recomputed \\
+    DejaVu      & 239 & 2.67  & 0.33 & 36\,864 & bit-exact \\
+    Reconfigure & \multicolumn{2}{c}{median 24.25 (18.62--39.35)} & 24.25 & 0 & recomputed \\
+    \sys{} $k{=}1$ & 284 & 0.87 & 0.32 & 16\,384 & bit-exact \\
+    \sys{} $k{=}2$ & $\dagger$ & 2.78 & $\dagger$ & 32\,768 & bit-exact \\
     \bottomrule
   \end{tabular}
-\end{table*}
+  \\[2pt]
+  \raggedright\scriptsize $\dagger$ Two-failure trials; the 30.3\,s intercept
+  is a backup-placement artifact of this fleet (Section~\ref{sec:eval:footprint})
+  and is not a property of the algorithm.
+\end{table}
 
+Fig.~\ref{fig:recovery-latency} and Table~\ref{tab:recovery-summary} answer
+RQ1.  The two recomputation families scale with the prefix.  Recompute adds
+164\,ms per generated token, one full pipeline pass per position, and reaches
+5.6\,s at $P=32$.  Petals confines replay to the two failed layers on the
+backup and adds 16\,ms per position, ten times less, but its latency still
+grows from 0.32\,s to 0.77\,s across the sweep.  \sys{} recovers the failed
+stage's KV from the parity column and the surviving stages, so its latency is
+0.30\,s at $P=4$ and 0.32\,s at $P=32$: a slope of 0.87\,ms per position,
+which is $19\times$ flatter than Petals and $188\times$ flatter than
+Recompute.  At $P=32$ the parity path is $2.4\times$ faster than Petals and
+$17.8\times$ faster than Recompute, and the gap widens with every additional
+token.  DejaVu, which installs a stored replica instead of decoding parity,
+has the same flat shape (2.67\,ms per position) and a slightly lower
+intercept because it fetches one column rather than the surviving three.  The
+two zero-recomputation families are tied in latency, at roughly twice one
+decode step; relative to DejaVu, \sys{} offers the same latency with
+$2.25\times$ less retained state (Section~\ref{sec:eval:footprint}).
+
+Reconfigure recovers in 24.25\,s at the median (18.62--39.35\,s over the five
+positions).  Replay catch-up accounts for 1.6\,s at $P=4$ and 6.4\,s at
+$P=32$; the remainder is re-solving placement on the survivors, cold-loading
+weights on the newly assigned workers, and rebuilding the pipeline, which
+dominates regardless of $P$.  Because the surviving fleet differs per trial,
+we report the level and range rather than a slope.  Storing no recovery state
+thus costs two orders of magnitude in recovery latency relative to any family
+with a pre-assigned backup.
+
+\textbf{Victim sensitivity.}  Failing \texttt{on-6} (layers 18--19) instead of
+\texttt{on-1} gives the same ordering: Recompute 163\,ms, Petals 17.5\,ms,
+and \sys{} 1.43\,ms per position.  Relative to the median decode
+step, the parity recovery step stays between $1.6\times$ and $1.9\times$ for
+every $P$ and both victims, whereas Petals grows from $1.9\times$ to
+$5.0\times$ and Recompute from $6\times$ to $34\times$.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{paper/fig_recovery_pareto.pdf}
+  \caption{Recovery latency at $P=32$ (live) against retained recovery state
+  per KV token (placement geometry).  Reconfigure is placed at its median.
+  Only \sys{} occupies the low-latency, low-state corner.}
+  \label{fig:recovery-pareto}
+\end{figure}
+
+Fig.~\ref{fig:recovery-pareto} combines both axes.  Recompute, Petals, and
+Reconfigure retain nothing and pay in latency; DejaVu matches \sys{} in
+latency but retains the sum of all protected columns; \sys{} alone sits in the
+low-latency, low-state corner.
+
+\subsection{Recovery-State Footprint and Failure Tolerance}\label{sec:eval:footprint}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{paper/fig_storage_tolerance.pdf}
+  \caption{Retained state per KV token versus the number of simultaneous
+  non-head failures tolerated, $k$ (placement geometry of the measured
+  fleet).  $k$-parity stores $k$ columns of the largest protected stage;
+  replication stores every stage.  The two implemented points are marked.}
+  \label{fig:storage-tolerance}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{paper/fig_storage_scaling.pdf}
+  \caption{Retained state saved by single parity relative to replication as
+  context grows (derived projection for a balanced five-stage pipeline).  The
+  measured OPT-350M point is our head-heavy placement, which lies below its
+  balanced line.}
+  \label{fig:storage-scaling}
+\end{figure}
+
+On the measured placement, the four protected stages hold 36\,864 bytes of KV
+per token in total and the largest holds 16\,384.  DejaVu retains the sum; a
+single parity column retains one padded largest column, 16\,384 bytes, or
+$2.25\times$ less; two columns retain 32\,768 bytes, 11\% less than
+replication.  Fig.~\ref{fig:storage-tolerance} generalizes this: $k$ parity
+columns cost $k\cdot\ell_{\max}$ while replication costs $\sum_s\ell_s$, so
+parity is smaller only while $k<\sum_s\ell_s/\ell_{\max}$, which is 2.25 on
+this placement.  A third column would retain more state than replication
+while tolerating fewer failures, which is why the implementation stops at
+$k=2$; the crossover moves outward on pipelines with more or better balanced
+non-head stages.
+
+The per-token difference is small in absolute terms, but backup state
+accumulates over the context and grows with the model.  At a 2\,048-token
+context the measured placement retains 72\,MB under replication and 32\,MB
+under single parity (Fig.~\ref{fig:storage-scaling}).  Projecting the same
+geometry to a balanced five-stage pipeline, OPT-6.7B at 2\,048 tokens retains
+819\,MB versus 205\,MB, and OPT-13B at 4\,096 tokens retains 2.5\,GB versus
+640\,MB.  These projections are arithmetic on layer shape and token footprint,
+not measurements; on an 8\,GB edge device they separate a protection that fits
+from one that does not.
+
+\textbf{Two simultaneous failures.}  With $k=2$, we fail two protected stages
+at once (\texttt{on-1} and \texttt{on-6}) at each of the five positions.  All
+five trials executed the double-parity branch and produced the failure-free
+reference sequence, so both lost KV columns were reconstructed from $P$ and
+$Q$ without recomputing the prefix (RQ3).  The fitted slope, 2.78\,ms per
+position, is in the same flat band as single parity and DejaVu.  The measured
+intercept of 30.3\,s, however, is an artifact of this fleet: the automatically
+built recovery mapping assigns every non-head backup to the same Orin Nano,
+so a two-stage failure makes that board load a second stage cold before it
+can serve.  The intercept is a placement effect that a backup mapping spread over
+different hosts would avoid, a configuration we have not measured; the same
+fleet recovers a single failure in 0.28\,s.  We
+therefore use the double-parity result only for its slope and its guarantee,
+and do not compare its absolute latency with the other families.
+
+\subsection{KV-State Fidelity}\label{sec:eval:fidelity}
+
+\begin{table}[t]
+  \centering
+  \scriptsize
+  \caption{Cross-tier replay of one protected stage (layers 16--17, eight
+  positions, fp16; live probe on \texttt{on-1} CUDA versus an Orin Nano CPU
+  worker), and its effect on greedy decoding.}
+  \label{tab:fidelity}
+  \begin{tabular}{l r}
+    \toprule
+    KV elements differing between tiers & 26.9\% \\
+    Maximum absolute difference & $2^{-8}$ \\
+    Greedy tokens identical, full model, 256 tokens & 256 / 256 \\
+    Top-1 decisions compared (teacher-forced, six prompts) & 3\,156 \\
+    Top-1 flips & 0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The parity and replication paths install the bytes that were stored, so a
+completed parity recovery is bit-exact by construction; the unit tests assert
+layer-wise identity of the recovered K and V tensors, and the live trials
+confirm the branch executed.  Replay-based recovery regenerates KV through a
+model forward pass, and on heterogeneous hardware that pass need not
+reproduce the original bytes.  Table~\ref{tab:fidelity} quantifies this with a
+controlled probe: the same fp16 input forwarded through the same stage on a
+CUDA and a CPU worker differs in 26.9\% of KV elements, with a maximum
+absolute difference of $2^{-8}$, consistent with kernel-dependent reduction
+order and accumulation precision rather than a defect.  The drift did not
+change any output: 256 greedy tokens generated by the full model on each tier
+were identical, and 3\,156 teacher-forced top-1 decisions across six prompts
+showed no flip, including several exact ties.  We therefore present fidelity
+as a determinism property of the recovered state.  Parity and replication
+guarantee it whenever their primary path completes; replay fallbacks, Petals,
+Recompute, and Reconfigure do not, even though their outputs matched in every
+trial we ran.  The probe covers one tier pair and one stage; same-tier drift
+and deeper stages remain to be measured.
+
+\subsection{Recovery Feasibility}\label{sec:eval:feasibility}
+
+\begin{table}[t]
+  \centering
+  \scriptsize
+  \setlength{\tabcolsep}{4pt}
+  \caption{Recovery Feasibility under a per-device free-memory cap $c$
+  (controlled offline analysis on the measured OPT-350M fleet profile; model
+  weights 601\,MB, 25\,MB per layer).  Cost-first solves placement without
+  backups and then assigns them; joint runs Algorithm~\ref{alg:alt}.  Both
+  enumerate the same ordered subsets of the five CUDA workers.}
+  \label{tab:feasibility}
+  \begin{tabular}{l l l l}
+    \toprule
+    Backup hosts & Both feasible & Only joint feasible & Neither \\
+    \midrule
+    Pipeline devices & $c\geq650$\,MB & $300\leq c\leq600$\,MB & $c\leq250$\,MB \\
+    Whole fleet (+2 CPU nodes) & $c\geq250$\,MB & $c=200$\,MB & --- \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+RQ4 asks whether solving placement and backup assignment together admits
+deployments that a sequential procedure loses.  With the uncapped fleet
+(5.4--25\,GB free per device) both procedures succeed, so the live
+deployments above cannot show coupling; we therefore keep the measured layer
+profiles, compute times, and link profiles of the fleet and cap each device's
+free memory at $c$, sweeping $c$ from 6\,GB down to 200\,MB.  The
+\emph{cost-first} procedure runs the placement DP with $R=\emptyset$ and then
+hands the result to the production backup solver; the \emph{joint} procedure
+runs Algorithm~\ref{alg:alt}.  Backup hosts are either the pipeline devices
+(the coordinator's default) or the whole fleet, which adds two CPU-only Orin
+Nano boards that never earn a stage but hold 5--6\,GB.
+
+Table~\ref{tab:feasibility} gives the result.  Restricted to pipeline
+devices, cost-first placement stops admitting a backup at $c=600$\,MB, while
+joint placement remains feasible down to $c=300$\,MB; below 250\,MB no
+placement of the 601\,MB model has room for backups on any procedure.  The
+mechanism is visible in the placements.  At $c=600$\,MB the cost-only DP
+prefers two stages, \texttt{on-1}[1--23]$\to$\texttt{on-6}[24], because
+fewer hops minimize the bottleneck stage; the 23-layer stage weighs 576\,MB,
+and no peer can reserve that beside its own stage.  The joint solver charges
+the reservation to the next placement and returns four stages,
+\texttt{on-1}[1--21]$\to$\texttt{on-6}[22]$\to$\texttt{ao-2}[23]$\to$
+\texttt{ao-1}[24], whose largest stage has a host.  At $c=300$\,MB it spreads
+the model over all five workers with at most six layers each so that every
+stage's backup fits beside the backup host's own stage.  Widening the backup
+scope to the whole fleet moves both thresholds down, since the CPU nodes
+absorb reservations, but the same gap reappears at $c=200$\,MB, where
+cost-first placement has no backup for the four-layer AGX stage and joint
+placement reorders the pipeline to find one.  These are feasibility results
+under a memory constraint, not serving-latency results; they show that the
+backup reservation in Eq.~\ref{eq:mem} changes which placements are
+admissible once memory is tight, which is the regime that memory-constrained
+IoT deployments occupy.
+
+\subsection{Cost of Protection}\label{sec:eval:cost}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{paper/fig_protection_cost.pdf}
+  \caption{Failure-free cost of protection relative to the same placement with
+  protection off (live, OPT-350M, asynchronous forwarding; mean and sample
+  standard deviation over three rounds with interleaved order, 30 requests of
+  20 tokens per mode and round).  Protection off: 5.24\,tok/s, TBT p50
+  183\,ms.}
+  \label{fig:protection-cost}
+\end{figure}
+
+Protection is paid for during every failure-free decode step, because each
+protected stage ships its new KV column to the coordinator.  We measure this
+on the same placement with protection off, single parity, double parity, and
+replication, three rounds each in interleaved order so that thermal state and
+ordering do not favour one mode; within a round the placement is identical,
+and all 2\,400 token intervals come from requests that completed 20 tokens
+with identical greedy output across modes.  Fig.~\ref{fig:protection-cost}
+reports the result (RQ5).  Single parity reduces throughput by
+$5.1\pm2.4$\% and raises the median token interval by $5.8\pm2.6$\%; double
+parity costs $6.3\pm0.3$\% and $7.3\pm0.5$\%; replication costs
+$6.3\pm1.2$\% and $7.2\pm0.7$\%.  Double parity and replication are
+indistinguishable (4.906 versus 4.906\,tok/s), which is expected: both ship
+the same KV columns, and the second GF($2^8$) column is folded at the
+coordinator, away from the workers' forward path.  The cost of tolerating a second failure
+with parity is therefore the additional retained column, not additional
+decode-time overhead.  Network traffic itself is not an evaluation axis in
+this paper.
