@@ -2,7 +2,7 @@
 
 Only KV-CARE sits in the low-latency AND low-storage corner. Latency from the
 measured JSONs (mean of valid P=32 trials); storage from the placement
-geometry in b1_ft_overhead.json (KB per KV token: DejaVu = sum of non-head
+geometry in b1_ft_overhead.json (kB per KV token: DejaVu = sum of non-head
 stages, KV-CARE = largest non-head stage). Reconfigure's victim differs per P,
 so its x is the median over all positions, not the P=32 sample.
 """
@@ -61,7 +61,7 @@ ax.set_xticklabels(["0.2", "0.5", "1", "2", "5", "10", "20", "50"])
 ax.set_ylim(-1.5, 42)
 ax.set_yticks([0, 10, 20, 30, 40])
 ax.set_xlabel("recovery latency at $P=32$ (s)")
-ax.set_ylabel("retained recovery state\n(KB per KV token)")
+ax.set_ylabel("retained recovery state\n(kB per KV token)")
 clean(ax, grid_axis="both")
 fig.subplots_adjust(left=0.17, right=0.98, top=0.97, bottom=0.19)
 save(fig, "fig_recovery_pareto")

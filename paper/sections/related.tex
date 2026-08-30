@@ -136,7 +136,7 @@ stages and constrained edge interconnects remain outside its evaluated scope.
 placement constraint.  It encodes KV columns across protected non-head
 pipeline stages, so one parity column occupies the size of the largest
 protected column rather than the sum of all protected columns.  A second
-GF($2^8$) parity column extends recovery to two simultaneous protected-stage
+parity column over the Galois field GF($2^8$) extends recovery to two simultaneous protected-stage
 failures.  More importantly, the active placement $\psi$ and backup mapping
 $R$ are selected together: memory reserved for backup weights is charged to
 the next placement decision.  The parity path can therefore resume only when

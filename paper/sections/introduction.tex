@@ -10,7 +10,7 @@ networks~\cite{hussain2025airgap}; remote and maritime sites operate over
 limited or time-varying links~\cite{yuan2023elect,yang2024erocn}; and mobile
 robots are sensitive to delay, packet loss, and disconnection in their control
 loop~\cite{omena2023twotier}.  Keeping inference on site avoids making these
-applications depend on a remote service, but the model weights and growing KV
+applications depend on a remote service, but the model weights and growing key-value (KV)
 cache can exceed the memory of a single edge device.  Splitting consecutive
 decoder layers across several devices is therefore a practical way to pool
 the compute and memory already available at the site~\cite{macario2025mdi,
@@ -19,7 +19,7 @@ heterogeneous: its pipeline may span GPUs, CPUs, and embedded accelerators
 with different execution rates and memory capacities.
 
 Distribution removes a single-device capacity bottleneck, but makes each
-request depend on every stage of the pipeline.  IoT nodes are exposed to
+request depend on every stage of the pipeline.  Internet of Things (IoT) nodes are exposed to
 resource exhaustion, process crashes, hardware faults, and intermittent
 connectivity~\cite{kaur2023intelligent,xu2020dynamic}; we also encountered
 unexpected process exits and out-of-memory failures while operating our

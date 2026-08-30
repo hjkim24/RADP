@@ -22,7 +22,7 @@ two Jetson AGX Orin 32\,GB (\texttt{ao-1}, \texttt{ao-2}) and three Jetson
 Orin Nano 8\,GB (\texttt{on-1}, \texttt{on-2}, \texttt{on-6}), all executing
 stages on CUDA over a shared LAN; two further Orin Nano boards run CPU-only
 workers that serve only as candidate backup hosts in the placement study.
-The model is OPT-350M in fp16 (24 decoder layers, 16 heads $\times$ 64
+The model is OPT-350M in 16-bit floating point (fp16) (24 decoder layers, 16 heads $\times$ 64
 dimensions), so each layer appends 4\,096 bytes of KV state per token.  The
 recovery experiments use the placement produced by \sys{}'s scheduler:
 \texttt{ao-2} holds the head stage (layers 1--15) and the four protected

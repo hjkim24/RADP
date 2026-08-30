@@ -77,8 +77,8 @@ An update is applied at most once for each $(r,q,s)$ tuple.  The coordinator
 marks $P[r,q]$ complete only after it has received a column from every stage in
 $\mathcal{S}$, preventing a partial XOR value from being used for recovery.
 
-For $k=2$, \sys{} stores a second column over $\mathrm{GF}(2^8)$.  Each stage
-has a distinct nonzero coefficient $a_s=g^{\operatorname{rank}(s)}$, where
+For $k=2$, \sys{} stores a second column over the Galois field
+$\mathrm{GF}(2^8)$.  Each stage has a distinct nonzero coefficient $a_s=g^{\operatorname{rank}(s)}$, where
 $g$ is a primitive field element, and
 \begin{equation}\label{eq:double-parity}
   Q[r,q] = \bigoplus_{s\in\mathcal{S}}
@@ -112,7 +112,8 @@ For two failed stages $x$ and $y$, the surviving columns are first removed
 from $P$ and $Q$, yielding
 $\widetilde{P}=D_x\oplus D_y$ and
 $\widetilde{Q}=a_x\otimes D_x\oplus a_y\otimes D_y$.  The coordinator solves
-the resulting two-equation system byte by byte:
+the resulting two-equation system byte by byte, the standard two-erasure
+decoding of a Reed--Solomon code~\cite{plank1997tutorial}:
 \begin{align}
   \widehat{D}_x &=(\widetilde{Q}\oplus
     a_y\otimes\widetilde{P})\oslash(a_x\oplus a_y),
@@ -164,7 +165,7 @@ Let $L$ be the number of decoder layers and $D$ the available workers.  A
 candidate placement partitions the layers into contiguous stages assigned to
 an ordered subset of $D$.  For a stage containing layers $i$ through $j$ on
 worker $d$, let $c(i,j,d)$ include its profiled execution time and the cost of
-receiving its input from the preceding stage.  The placement DP maintains the
+receiving its input from the preceding stage.  The placement dynamic program (DP) maintains the
 sum of stage costs, $z_{\Sigma}$, and the slowest stage cost, $z_{\max}$.  The
 configured optimization mode ranks a candidate by
 \begin{equation}\label{eq:rank}
@@ -248,7 +249,8 @@ Parity updates and input mirrors are keyed by request and position, making
 duplicate delivery idempotent and preventing state from different decode
 steps from being combined.
 
-The coordinator detects worker loss through the request RPC path or heartbeat.
+The coordinator detects worker loss through the request remote procedure call
+(RPC) path or heartbeat.
 The failure report carries the original failed layer interval, which is
 resolved against the active placement rather than a partially rewired chain.
 The coordinator then freezes progress for the affected request, applies the

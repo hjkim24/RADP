@@ -37,9 +37,9 @@ ax.plot(ks[2:], ks[2:] * MAX_STAGE / KB, linestyle="", marker="^", color=INK,
         mfc="white", markersize=5, zorder=4)
 ax.plot(ks[:2], ks[:2] * MAX_STAGE / KB, linestyle="", marker="^", color=EMPH,
         mfc=EMPH, markersize=6, zorder=5)
-label(ax, f"{NAME['parity']} ($k$=1): 16 KB", xy=(1, MAX_STAGE / KB), dx=6, dy=-1,
+label(ax, f"{NAME['parity']} ($k$=1): 16 kB", xy=(1, MAX_STAGE / KB), dx=6, dy=-1,
       color=EMPH, bold=True)
-label(ax, f"{NAME['parity']} ($k$=2): 32 KB", xy=(2, 2 * MAX_STAGE / KB), dx=6, dy=-3,
+label(ax, f"{NAME['parity']} ($k$=2): 32 kB", xy=(2, 2 * MAX_STAGE / KB), dx=6, dy=-3,
       color=EMPH, bold=True)
 label(ax, "$k \\geq 3$: more state than DejaVu,\nless tolerance (not implemented)",
       xy=(4.35, 26), dx=0, dy=0, ha="right", va="top", color=INK, size=6.5)
@@ -49,7 +49,7 @@ ax.axvline(CROSS, color=INK, linestyle=":", linewidth=0.6, zorder=1)
 label(ax, f"$k = \\Sigma/\\max = {CROSS:.2f}$", xy=(CROSS, 2), dx=3, dy=0, color=INK, size=6.5)
 
 ax.set_xlabel("simultaneous non-head stage failures tolerated, $k$")
-ax.set_ylabel("retained recovery state\n(KB per KV token)")
+ax.set_ylabel("retained recovery state\n(kB per KV token)")
 ax.set_xticks([1, 2, 3, 4])
 ax.set_xlim(0.7, 4.4)
 ax.set_ylim(0, 70)

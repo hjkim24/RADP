@@ -1,10 +1,10 @@
 \begin{abstract}
 Internet of Things deployments that cannot depend on a remote service run
-large language models on site by splitting decoder layers across
-heterogeneous edge devices and executing them as a pipeline.  A stage failure
-then loses the request's KV cache, and the in-flight request cannot
+large language models (LLMs) on site by splitting decoder layers across
+heterogeneous edge devices as a pipeline.  A stage failure
+then loses the request's key-value (KV) cache, and the in-flight request cannot
 continue.  Existing recovery paths recompute the lost state at a
-cost that grows with the generated prefix, replicate the KV cache of every
+cost that grows with the prefix, replicate the KV cache of every
 protected stage, or reconfigure the pipeline in tens of seconds; none suits
 devices whose memory is nearly full.  This paper presents KV-CARE (KV Cache
 Availability and Recovery at the Edge).  Cross-stage parity folds the
@@ -15,12 +15,11 @@ sum.  Recovery-aware placement charges backup-weight reservations to each
 device's memory while placing layers, so the recovered state always has a
 device to run on.  On a five-stage Jetson pipeline running OPT-350M, KV-CARE
 adds 0.87\,ms of recovery latency per generated token (164\,ms for
-recomputation, 16\,ms for stage-local replay), recovering in about 0.3\,s at
-any failure position; it matches replication's latency with 2.25$\times$ less
+recomputation, 16\,ms for stage-local replay), recovering in 0.3\,s at any
+failure position; it matches replication's latency with 2.25$\times$ less
 retained state and restores two simultaneous failures from the same stored
 bytes; joint placement stays feasible under per-device memory limits of
 300--600\,MB that defeat placement followed by backup assignment; and
 protection costs 5--7\% of failure-free throughput.  For hardware that must
-keep inference on site, a stage failure becomes a delay of about two decode
-steps.
+keep inference on site, a stage failure becomes a delay of two decode steps.
 \end{abstract}
