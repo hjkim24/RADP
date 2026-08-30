@@ -55,8 +55,8 @@ families and is not part of the recovery work compared here.  The primary
 victim is \texttt{on-1} (layers 16--17) with \texttt{on-6} as its assigned
 backup; a second sweep fails \texttt{on-6} to test victim sensitivity.
 Reconfigure has no assigned backup, so its victim is chosen from the live
-placement in each trial and is marked dead explicitly; its detection delay is
-therefore also excluded.
+placement in each trial and is marked dead explicitly, which also excludes
+its detection delay.
 
 \textbf{Metrics and validity.}  \emph{Recovery Latency} is the client-observed
 interval from the last token received before the failure to the first valid
@@ -179,9 +179,9 @@ low-latency, low-state corner.
 \end{figure}
 
 On the measured placement, the four protected stages hold 36\,864 bytes of KV
-per token in total and the largest holds 16\,384.  DejaVu retains the sum; a
-single parity column retains one padded largest column, 16\,384 bytes, or
-$2.25\times$ less; two columns retain 32\,768 bytes, 11\% less than
+per token in total and the largest holds 16\,384.  DejaVu retains the sum.
+A single parity column retains one padded largest column, 16\,384 bytes, or
+$2.25\times$ less, and two columns retain 32\,768 bytes, 11\% less than
 replication.  Fig.~\ref{fig:storage-tolerance} generalizes this: $k$ parity
 columns cost $k\cdot\ell_{\max}$ while replication costs $\sum_s\ell_s$, so
 parity is smaller only while $k<\sum_s\ell_s/\ell_{\max}$, which is 2.25 on
@@ -212,8 +212,8 @@ so a two-stage failure makes that board load a second stage cold before it
 can serve.  The intercept is a placement effect that a backup mapping spread over
 different hosts would avoid, a configuration we have not measured; the same
 fleet recovers a single failure in 0.28\,s.  We
-therefore use the double-parity result only for its slope and its guarantee,
-and do not compare its absolute latency with the other families.
+use the double-parity result only for its slope and its guarantee, and do not
+compare its absolute latency with the other families.
 
 \subsection{KV-State Fidelity}\label{sec:eval:fidelity}
 
@@ -241,8 +241,8 @@ controlled probe: the same fp16 input forwarded through the same two-layer
 stage (layers 16--17, eight positions) on \texttt{on-1} (CUDA) and on a
 CPU-only Orin Nano worker differs in 26.9\% of KV elements, with a maximum
 absolute difference of $2^{-8}$, consistent with kernel-dependent reduction
-order and accumulation precision rather than a defect.  We therefore present
-fidelity as a determinism property of the recovered state: parity and
+order and accumulation precision rather than a defect.  We present fidelity as
+a determinism property of the recovered state: parity and
 replication guarantee it whenever their primary path completes, whereas
 replay fallbacks, Petals, Recompute, and Reconfigure regenerate a KV cache
 whose bytes depend on the backup's hardware tier.  The probe covers one tier
@@ -270,9 +270,9 @@ pair and one stage; same-tier drift and deeper stages remain to be measured.
 RQ4 asks whether solving placement and backup assignment together admits
 deployments that a sequential procedure loses.  With the uncapped fleet
 (5.4--25\,GB free per device) both procedures succeed, so the live
-deployments above cannot show coupling; we therefore keep the measured layer
-profiles, compute times, and link profiles of the fleet and cap each device's
-free memory at $c$, sweeping $c$ from 6\,GB down to 200\,MB.  The
+deployments above cannot show coupling.  We keep the measured layer profiles,
+compute times, and link profiles of the fleet and cap each device's free
+memory at $c$, sweeping $c$ from 6\,GB down to 200\,MB.  The
 \emph{cost-first} procedure runs the placement DP with $R=\emptyset$ and then
 hands the result to the production backup solver; the \emph{joint} procedure
 runs Algorithm~\ref{alg:alt}.  Both enumerate the same ordered subsets of the
@@ -328,7 +328,6 @@ parity costs $6.3\pm0.3$\% and $7.3\pm0.5$\%; replication costs
 $6.3\pm1.2$\% and $7.2\pm0.7$\%.  Double parity and replication are
 indistinguishable (4.906 versus 4.906\,tok/s), which is expected: both ship
 the same KV columns, and the second GF($2^8$) column is folded at the
-coordinator, away from the workers' forward path.  The cost of tolerating a second failure
-with parity is therefore the additional retained column, not additional
-decode-time overhead.  Network traffic itself is not an evaluation axis in
+coordinator, away from the workers' forward path.  Tolerating a second failure with parity
+costs one more retained column and no additional decode-time overhead.  Network traffic itself is not an evaluation axis in
 this paper.
