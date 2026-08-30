@@ -1,30 +1,26 @@
 \begin{abstract}
-Distributed LLM inference on heterogeneous edge clusters faces a
-trade-off between placement that maximizes throughput and redundancy
-that survives failure. \sys{} unifies layer placement~($\psi$) and
-recovery routing~($R$) in a single alternating dynamic program whose
-backup-memory reservation folds back into the placement constraint.
-
-We pair the optimizer with two runtime mechanisms: an
-\emph{asynchronous mirror cache} that ships per-stage activations to
-the coordinator out-of-band so a promoted backup can rebuild its KV
-state, and \emph{asynchronous chain forwarding} with a
-\texttt{ResultReady} reverse channel that breaks the synchronous
-nested-response unwind we found silently serializes nominally
-pipelined chains.
-
-Live measurement on a six-worker Jetson fleet (with an AGX Xavier
-coordinator, Jetson-only deployment) covers \emph{24}
-operating points on OPT-350M (two chain lengths $\times$ four
-architecture variants $\times$ three concurrency levels) plus a
-nine-cell 4-stage sub-matrix on a 3$\times$-larger Llama-3.2-1B. Latency-optimized placement dominates throughput-
-optimized placement at every point with concurrency $C \geq 4$ on
-both models; the only measured exception is single-stream
-($C{=}1$) Llama-3.2-1B, where throughput placement wins on aggregate
-tokens-per-second while latency placement still wins on
-token-between-time. Asynchronous chain forwarding adds a chain-
-length-independent 17--47\% throughput gain at $C{=}16$ without
-reversing the placement ordering. Under a worker SIGKILL mid-stream,
-\sys{} delivers 60/60 coherent tokens; placement-only baselines
-abort after the 17--20 already-buffered tokens.
+Internet of Things deployments that cannot depend on a remote service run
+large language models on site by splitting decoder layers across
+heterogeneous edge devices and executing them as a pipeline.  A stage failure
+then loses the request's KV cache, and the in-flight request cannot
+continue.  Existing recovery paths recompute the lost state at a
+cost that grows with the generated prefix, replicate the KV cache of every
+protected stage, or reconfigure the pipeline in tens of seconds; none suits
+devices whose memory is nearly full.  This paper presents KV-CARE (KV Cache
+Availability and Recovery at the Edge).  Cross-stage parity folds the
+protected stages' KV columns into one parity column (two for simultaneous
+failures) and reconstructs a failed stage's KV cache bit-exactly without
+recomputing the prefix, retaining one largest-stage column rather than their
+sum.  Recovery-aware placement charges backup-weight reservations to each
+device's memory while placing layers, so the recovered state always has a
+device to run on.  On a five-stage Jetson pipeline running OPT-350M, KV-CARE
+adds 0.87\,ms of recovery latency per generated token (164\,ms for
+recomputation, 16\,ms for stage-local replay), recovering in about 0.3\,s at
+any failure position; it matches replication's latency with 2.25$\times$ less
+retained state and restores two simultaneous failures from the same stored
+bytes; joint placement stays feasible under per-device memory limits of
+300--600\,MB that defeat placement followed by backup assignment; and
+protection costs 5--7\% of failure-free throughput.  For hardware that must
+keep inference on site, a stage failure becomes a delay of about two decode
+steps.
 \end{abstract}
