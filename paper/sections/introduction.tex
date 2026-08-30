@@ -64,13 +64,11 @@ retained redundancy is proportional to the largest protected KV column rather
 than their sum.  Direct state reconstruction also has a distinct property on
 heterogeneous hardware.  Replaying the same stage through different execution
 backends can change KV bytes because operation order, precision, and kernel
-implementations differ.  We observed such bit-level differences in a
-cross-tier replay experiment, although none of the 3,156 paired greedy
-decisions changed its top-1 token.  We therefore treat \emph{KV-State
-Fidelity} as a state-level property, not as evidence of an output-correctness
-failure.  When its validation gates pass, the parity path reconstructs the
-stored bytes exactly; this guarantee does not extend to replay fallbacks or to
-general output equivalence.  The second component, \emph{recovery-aware layer
+implementations differ, and we observed such bit-level differences in a
+cross-tier replay experiment.  We therefore treat \emph{KV-State Fidelity}
+as a property of the recovered state itself.  When its validation gates pass,
+the parity path reconstructs the stored bytes exactly; this guarantee does not
+extend to replay fallbacks.  The second component, \emph{recovery-aware layer
 placement}, ensures that the reconstructed state has somewhere to run.
 \sys{} searches active layer placement and backup assignment together and
 charges backup-weight reservations to each device's memory constraint.  This
@@ -79,8 +77,8 @@ backup after failure.
 
 This paper makes four contributions.  First, it formulates fault recovery for
 heterogeneous distributed LLM inference along the three operational axes of
-Recovery Latency, Recovery-State Footprint, and Recovery Feasibility, while
-separating KV-State Fidelity from output correctness.  Second, it introduces
+Recovery Latency, Recovery-State Footprint, and Recovery Feasibility, and
+defines KV-State Fidelity as a property of the recovered state.  Second, it introduces
 cross-stage KV parity that restores one failed stage without prefix
 recomputation and extends the construction with a second parity column for two
 simultaneous protected-stage failures.  Third, it develops a recovery-aware
