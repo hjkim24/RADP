@@ -136,8 +136,11 @@ def set_worker_replication(on: bool) -> None:
 
 
 def restart_coordinator_and_wait(
-    coord_host: str, coord_ssh: str, ssh_key: str, timeout: int = 320
+    coord_host: str, coord_ssh: str, ssh_key: str, timeout: int = 1200
 ) -> float:
+    # 1200 s: a 7B-class boot re-profiles block-wise (~260 s) and cold-loads
+    # 6 primary + 6 backup stages (~6 min). The old 320 s default was sized
+    # for OPT-350M and timed out on every OPT-6.7B restart (2026-08-31).
     """Restart the coordinator (daemon-reload picks up the drop-in) and block
     until it has re-scheduled and is serving. Returns wall seconds waited."""
     _ansible(
