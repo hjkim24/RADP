@@ -78,11 +78,8 @@ as a validity gate.
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{paper/fig_recovery_latency.pdf}
-  \caption{Recovery latency versus failure position $P$ (live, OPT-350M,
-  five-stage pipeline, victim \texttt{on-1}).  Markers are single trials; lines
-  are least-squares fits.  Reconfigure is shown as individual trials with its
-  median and min--max band; its victim differs per $P$, so no slope is
-  fitted.  The dotted line is one failure-free decode step.}
+  \caption{Recovery latency versus failure position $P$ for the five
+  recovery families (live, OPT-350M, five-stage pipeline).}
   \label{fig:recovery-latency}
 \end{figure}
 
@@ -91,9 +88,7 @@ as a validity gate.
   \scriptsize
   \setlength{\tabcolsep}{4pt}
   \caption{Recovery families on the same fleet, placement, and injection
-  (live).  Latency fit $=$ intercept $+$ slope$\cdot P$ over $P\in\{4,\dots,32\}$;
-  state is retained per KV token; fidelity is the guarantee of the primary
-  recovery path.}
+  (live).}
   \label{tab:recovery-summary}
   \begin{tabular}{l r r r r l}
     \toprule
@@ -115,7 +110,9 @@ as a validity gate.
 \end{table}
 
 Fig.~\ref{fig:recovery-latency} and Table~\ref{tab:recovery-summary} answer
-RQ1.  The two recomputation families scale with the prefix.  Recompute adds
+RQ1; each marker is one trial, each line the least-squares fit over
+$P\in\{4,\dots,32\}$, and the dotted line marks one failure-free decode step.
+The two recomputation families scale with the prefix.  Recompute adds
 164\,ms per generated token, one full pipeline pass per position, and reaches
 5.6\,s at $P=32$.  Petals confines replay to the two failed layers on the
 backup and adds 16\,ms per position, ten times less, but its latency still
@@ -151,9 +148,8 @@ $5.0\times$ and Recompute from $6\times$ to $34\times$.
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{paper/fig_recovery_pareto.pdf}
-  \caption{Recovery latency at $P=32$ (live) against retained recovery state
-  per KV token (placement geometry).  Reconfigure is placed at its median.
-  Only \sys{} occupies the low-latency, low-state corner.}
+  \caption{Recovery latency at $P=32$ versus retained recovery state per KV
+  token (live latency; state from placement geometry).}
   \label{fig:recovery-pareto}
 \end{figure}
 
@@ -167,20 +163,18 @@ low-latency, low-state corner.
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{paper/fig_storage_tolerance.pdf}
-  \caption{Retained state per KV token versus the number of simultaneous
-  non-head failures tolerated, $k$ (placement geometry of the measured
-  fleet).  $k$-parity stores $k$ columns of the largest protected stage;
-  replication stores every stage.  The two implemented points are marked.}
+  \caption{Retained recovery state per KV token versus tolerated
+  simultaneous non-head failures $k$ (placement geometry of the measured
+  fleet).}
   \label{fig:storage-tolerance}
 \end{figure}
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{paper/fig_storage_scaling.pdf}
-  \caption{Retained state saved by single parity relative to replication as
-  context grows (derived projection for a balanced five-stage pipeline).  The
-  measured OPT-350M point is our head-heavy placement, which lies below its
-  balanced line.}
+  \caption{Retained state saved by single parity relative to replication
+  versus context length (derived projection, balanced five-stage pipeline;
+  measured OPT-350M point marked).}
   \label{fig:storage-scaling}
 \end{figure}
 
@@ -226,9 +220,8 @@ and do not compare its absolute latency with the other families.
 \begin{table}[t]
   \centering
   \scriptsize
-  \caption{Cross-tier replay of one protected stage (layers 16--17, eight
-  positions, fp16; live probe on \texttt{on-1} CUDA versus an Orin Nano CPU
-  worker): the regenerated KV compared element-wise with the original.}
+  \caption{Cross-tier replay of one protected stage: regenerated KV compared
+  element-wise with the original (live probe).}
   \label{tab:fidelity}
   \begin{tabular}{l r}
     \toprule
@@ -244,8 +237,9 @@ layer-wise identity of the recovered K and V tensors, and the live trials
 confirm the branch executed.  Replay-based recovery regenerates KV through a
 model forward pass, and on heterogeneous hardware that pass need not
 reproduce the original bytes.  Table~\ref{tab:fidelity} quantifies this with a
-controlled probe: the same fp16 input forwarded through the same stage on a
-CUDA and a CPU worker differs in 26.9\% of KV elements, with a maximum
+controlled probe: the same fp16 input forwarded through the same two-layer
+stage (layers 16--17, eight positions) on \texttt{on-1} (CUDA) and on a
+CPU-only Orin Nano worker differs in 26.9\% of KV elements, with a maximum
 absolute difference of $2^{-8}$, consistent with kernel-dependent reduction
 order and accumulation precision rather than a defect.  We therefore present
 fidelity as a determinism property of the recovered state: parity and
@@ -261,10 +255,7 @@ pair and one stage; same-tier drift and deeper stages remain to be measured.
   \scriptsize
   \setlength{\tabcolsep}{4pt}
   \caption{Recovery Feasibility under a per-device free-memory cap $c$
-  (controlled offline analysis on the measured OPT-350M fleet profile; model
-  weights 601\,MB, 25\,MB per layer).  Cost-first solves placement without
-  backups and then assigns them; joint runs Algorithm~\ref{alg:alt}.  Both
-  enumerate the same ordered subsets of the five CUDA workers.}
+  (controlled offline analysis on the measured OPT-350M fleet profile).}
   \label{tab:feasibility}
   \begin{tabular}{l l l l}
     \toprule
@@ -284,14 +275,16 @@ profiles, compute times, and link profiles of the fleet and cap each device's
 free memory at $c$, sweeping $c$ from 6\,GB down to 200\,MB.  The
 \emph{cost-first} procedure runs the placement DP with $R=\emptyset$ and then
 hands the result to the production backup solver; the \emph{joint} procedure
-runs Algorithm~\ref{alg:alt}.  Backup hosts are either the pipeline devices
+runs Algorithm~\ref{alg:alt}.  Both enumerate the same ordered subsets of the
+five CUDA workers.  Backup hosts are either the pipeline devices
 (the coordinator's default) or the whole fleet, which adds two CPU-only Orin
 Nano boards that never earn a stage but hold 5--6\,GB.
 
 Table~\ref{tab:feasibility} gives the result.  Restricted to pipeline
 devices, cost-first placement stops admitting a backup at $c=600$\,MB, while
 joint placement remains feasible down to $c=300$\,MB; below 250\,MB no
-placement of the 601\,MB model has room for backups on any procedure.  The
+placement of the 601\,MB model (25\,MB per layer) has room for backups on any
+procedure.  The
 mechanism is visible in the placements.  At $c=600$\,MB the cost-only DP
 prefers two stages, \texttt{on-1}[1--23]$\to$\texttt{on-6}[24], because
 fewer hops minimize the bottleneck stage; the 23-layer stage weighs 576\,MB,
@@ -315,11 +308,8 @@ IoT deployments occupy.
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{paper/fig_protection_cost.pdf}
-  \caption{Failure-free cost of protection relative to the same placement with
-  protection off (live, OPT-350M, asynchronous forwarding; mean and sample
-  standard deviation over three rounds with interleaved order, 30 requests of
-  20 tokens per mode and round).  Protection off: 5.24\,tok/s, TBT p50
-  183\,ms.}
+  \caption{Failure-free cost of protection relative to protection off (live,
+  OPT-350M; mean and sample standard deviation over three rounds).}
   \label{fig:protection-cost}
 \end{figure}
 
@@ -330,7 +320,9 @@ replication, three rounds each in interleaved order so that thermal state and
 ordering do not favour one mode; within a round the placement is identical,
 and all 2\,400 token intervals come from requests that completed 20 tokens
 with identical greedy output across modes.  Fig.~\ref{fig:protection-cost}
-reports the result (RQ5).  Single parity reduces throughput by
+reports the result (RQ5).  With protection off the pipeline decodes
+5.24\,tok/s with a median token interval of 183\,ms.  Single parity reduces
+throughput by
 $5.1\pm2.4$\% and raises the median token interval by $5.8\pm2.6$\%; double
 parity costs $6.3\pm0.3$\% and $7.3\pm0.5$\%; replication costs
 $6.3\pm1.2$\% and $7.2\pm0.7$\%.  Double parity and replication are

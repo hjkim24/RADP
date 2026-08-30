@@ -27,7 +27,9 @@
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{multirow}
-\usepackage{subcaption}
+% NOTE: do not load caption/subcaption. They override IEEEtran's native caption
+% format ("Fig. 1." and small-caps "TABLE I" headers become "Fig. 1:" /
+% "TABLE I:"). No sub-figures are used, so nothing is lost by omitting them.
 \usepackage{listings}
 \usepackage{xcolor}               % for \todo color
 \usepackage{xspace}
