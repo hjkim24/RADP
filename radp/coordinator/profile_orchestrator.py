@@ -53,7 +53,11 @@ class ProfileOrchestrator:
         worker_addresses: dict[DeviceId, str],
         detector: FailureDetector,
         *,
-        rpc_timeout_seconds: float = 600.0,
+        # 7B-class checkpoints profile one block at a time, and the first
+        # touch of a cold 9 GB bin shard costs ~15 s per block on Jetson eMMC
+        # (measured on ao-2 with opt-6.7b, 2026-08-30): 32 layers is ~8 min
+        # on an AGX and longer on a Nano. 600 s cut that off mid-profile.
+        rpc_timeout_seconds: float = 1800.0,
     ) -> None:
         if not worker_addresses:
             raise ValueError("worker_addresses must be non-empty")
