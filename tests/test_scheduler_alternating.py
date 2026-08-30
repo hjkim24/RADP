@@ -438,11 +438,15 @@ def test_subset_search_skips_subsets_with_no_viable_backup() -> None:
     """
     unit = 100_000_000
     ids = [DeviceId("a"), DeviceId("b"), DeviceId("c")]
-    # 3 units per device; 4 one-unit layers. Two devices: 2 active + 2 backup
-    # = 4 units > 3 -> no viable backup. Three devices (2/1/1): fits.
+    # a, b: 4 units; c: 10 units. 5 one-unit layers. Any 2-device subset
+    # splits 3/2 and the 4-unit member cannot hold its own stage plus the
+    # peer's backup (>= 5 units) -> no viable backup. With all three, c has
+    # room for whichever backup the greedy assigns it, so the search must
+    # skip the 2-device subsets and return a 3-device placement.
     devices = [
-        DeviceProfile(id=d, total_memory_bytes=3 * unit, compute_throughput=1.0)
-        for d in ids
+        DeviceProfile(id=ids[0], total_memory_bytes=4 * unit, compute_throughput=1.0),
+        DeviceProfile(id=ids[1], total_memory_bytes=4 * unit, compute_throughput=1.0),
+        DeviceProfile(id=ids[2], total_memory_bytes=10 * unit, compute_throughput=1.0),
     ]
     layers = [
         LayerProfile(
@@ -450,7 +454,7 @@ def test_subset_search_skips_subsets_with_no_viable_backup() -> None:
             memory_bytes=unit,
             compute_time={d: 0.01 for d in ids},
         )
-        for i in range(1, 5)
+        for i in range(1, 6)
     ]
     network = NetworkProfile(
         bandwidth={(x, y): 1e9 for x in ids for y in ids if x != y},
