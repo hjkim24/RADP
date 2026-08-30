@@ -14,7 +14,7 @@ as flat) while letting all three separate. The normal-decode-step line gives the
 audience an absolute anchor so the log axis can't overstate the win.
 
 Display names (paper-facing, via _slide.NAME): Recompute (full_replay), Petals
-(surgical), DejaVu (replicate), Reconfigure (reactive_replacement), cross-stage parity
+(surgical), DejaVu (replicate), Reconfigure (reactive_replacement), KV-CARE
 (parity). The lowercase keys below (STYLE, the dy dict) are the INTERNAL
 recovery_mode identifiers that match the results-JSON ``t["mode"]`` strings and
 must NOT be renamed — only the rendered labels come from NAME.
@@ -45,13 +45,14 @@ if replicate_path.exists():
     trials += rep["trials"]
     fits.update(rep["fits"])
 
-# reactive JSON lands after the controller-run reactive sweep (Task 6). Guard
-# so this script still renders the 4-line figure until it exists.
-reactive_path = RESULTS / "b1_ft_fleet_reactive.json"
+# Reconfigure: the 2026-08-30 client-observed re-measurement (§B1-REACTIVE).
+# The older b1_ft_fleet_reactive.json (~53 s) used a different wall-time
+# definition and is a historical record only. The victim differs per P in this
+# sweep, so its fit is NOT drawn — only the points, labelled by median + range.
+reactive_path = RESULTS / "b1_ft_fleet_reactive_client_interval_20260830.json"
 if reactive_path.exists():
     rea = json.load(open(reactive_path))
     trials += rea["trials"]
-    fits.update(rea["fits"])
 
 STYLE = {
     "full_replay": (SUBJECT["full_replay"], "o", NAME["full_replay"]),
@@ -94,6 +95,16 @@ for mode, (color, marker, label) in STYLE.items():
     ax.plot([p for p, _ in pts], [y for _, y in pts], marker=marker,
             linestyle="none", color=color, zorder=4)
     f = fits.get(mode)
+    if mode == "reactive_replacement":
+        # victim differs per P (ao-2/on-6/on-6/on-1/on-1): no slope claim.
+        ys = [y for _, y in pts]
+        med = statistics.median(ys)
+        ax.axhline(med, color=color, linewidth=1.4, linestyle=":", zorder=2)
+        ax.annotate(f"{label}\nmedian {med:.2f} s\n({min(ys):.2f}\u2013{max(ys):.2f} s)",
+                    xy=(36, med), xytext=(8, 0), textcoords="offset points",
+                    va="center", ha="left", fontsize=12.5, color=color,
+                    fontweight="bold", linespacing=1.4, annotation_clip=False)
+        continue
     if not f or f["n_points"] < 2:
         continue
     ax.plot(xline, f["intercept"] + f["slope"] * xline, "--",
@@ -109,14 +120,7 @@ for mode, (color, marker, label) in STYLE.items():
     # 내고, parity(위)·DejaVu(아래)를 그 밑에서 크게 벌린다 — 2줄 라벨이 안 겹치게.
     # (키는 내부 recovery_mode 식별자 — 유지; 표시 이름은 STYLE 의 NAME[...] 에서.)
     dy = {"surgical": 20, "parity": 16, "replicate": -28}.get(mode, 0)
-    # reactive is flat at tens of seconds — a fitted per-position slope is pure
-    # measurement noise (a spurious sign), so label it with its LEVEL, not a
-    # slope. Its cold re-solve + reload + replay-from-0 cost does not depend on
-    # where the crash landed.
-    if mode == "reactive_replacement":
-        level_s = statistics.median(y for _, y in pts)
-        text = f"{label}\n~{level_s:.0f} s (flat)"
-    elif slope_ms < 10:
+    if slope_ms < 10:
         text = f"{label}\n{slope_ms:.2f} ms/pos"
     else:
         text = f"{label}\n{slope_ms:.0f} ms/pos"
@@ -129,12 +133,12 @@ ax.set_xlabel("failure position  P   (tokens generated before the crash)")
 ax.set_ylabel("recovery time (s, log)")
 ax.set_yscale("log")
 ax.set_xlim(0, 36)
-# Reconfigure lands at ~50–64 s — the axis must span from parity's ~0.2 s all the
-# way up to it, so the two-order-of-magnitude gap is the story the plot tells.
-ax.set_ylim(0.12, 130)
+# Reconfigure lands at 18.6–39.4 s — the axis must span from KV-CARE's ~0.3 s up
+# to it, so the two-order-of-magnitude gap is the story the plot tells.
+ax.set_ylim(0.12, 60)
 ax.set_xticks([0, 8, 16, 24, 32])
-ax.set_yticks([0.2, 0.5, 1, 2, 5, 10, 50, 100])
-ax.set_yticklabels(["0.2", "0.5", "1", "2", "5", "10", "50", "100"])
+ax.set_yticks([0.2, 0.5, 1, 2, 5, 10, 20, 50])
+ax.set_yticklabels(["0.2", "0.5", "1", "2", "5", "10", "20", "50"])
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 ax.grid(True, axis="y", alpha=0.3)

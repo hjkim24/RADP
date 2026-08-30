@@ -49,20 +49,8 @@ SUBJECT = {
     "reactive_replacement": "#595959",  # baseline anchor — muted grey, distinct
 }
 
-# Paper-facing display names. Baselines take their reference system's name where
-# one exists; our method is described by its mechanism, not a brand. The RAID
-# vocabulary is deliberately avoided in paper- and figure-facing text (2026-08-07)
-# — the lineage we cite is Reed–Solomon erasure coding. Internal recovery_mode
-# keys ("parity"/"replicate"/…) are UNCHANGED — this map is display-only, so
-# figures relabel without touching the code/results identifiers.
-NAME = {
-    "full_replay": "Recompute",             # naive strawman (cf. DéjàVu)
-    "surgical":    "Petals",                # input-replay (Petals, exact match)
-    "parity":      "Cross-stage parity",    # our method, single-parity (f=1)
-    "raid6":       "Double parity",         # our method, double-parity (f=2)
-    "replicate":   "DejaVu",                # KV replication baseline (ASCII — deck font lacks à/é)
-    "reactive_replacement": "Reconfigure",  # re-solve + cold restart (cf. SpotServe)
-}
+# Display names live in _names.py (shared with paper/_paper.py).
+from _names import NAME  # noqa: E402,F401
 
 # --- slide-content geometry (inches, from DESIGN_SYSTEM.md §2) -------------
 SLIDE_FULL = (7.4, 4.6)    # P2 그림 우선: 우측 대형 영역
