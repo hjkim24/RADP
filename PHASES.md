@@ -2432,3 +2432,11 @@ fleet 전체, joint=파이프라인만)이었고 solver 결함이 아니었다. 
 JSON을 남기도록 수정해 재실행한 결과 Notion 수치를 정확히 재현: pipeline scope coupling band 300–600 MB, fleet
 scope 200 MB. `experiments/REPORT.md §D2.9`, `paper/sections/evaluation.tex §Recovery Feasibility`(Table
 feasibility)에 반영. production `server.py`는 `backup_hosts` 미설정 = pipeline scope임을 명시.
+
+**논문 원고 legacy 섹션 전부 교체 (2026-08-30 오후, 커밋 a58b76e…228b48b).** `evaluation.tex`(FT-first, RQ1–5, Table
+recovery-summary/fidelity/feasibility, Fig 5장) → `discussion.tex`(Discussion 8단락 + Conclusion) → `abstract.tex`(255 words)
++ Index Terms 교체(dynamic programming 삭제, KV cache·erasure coding 추가). 규칙 확정: fidelity는 KV byte 차이만(output
+correctness·flip 0 언급 제거 — intro/eval/discussion 일괄), Reconfigure는 median+range, k=2 절편 비교 금지. 인용 21→30편
+(Matching Game·DyBAP, Helix·HexGen·HexGen-2·Hetis·LLM-PQ, FTPipeHD, Parallax), bib 41→46. 캡션을 IEEE 제목형으로 축약하고
+`subcaption` 제거(IEEEtran 기본 `Fig. 1.`/small-caps `TABLE I` 복원). Overleaf `c41959a`까지 동기화. 다음: Overleaf 전체 빌드
+검수(페이지 수·overfull·float 배치) → anti-ai-writing 패스.
