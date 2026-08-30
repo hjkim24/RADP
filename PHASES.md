@@ -2440,3 +2440,11 @@ correctness·flip 0 언급 제거 — intro/eval/discussion 일괄), Reconfigure
 (Matching Game·DyBAP, Helix·HexGen·HexGen-2·Hetis·LLM-PQ, FTPipeHD, Parallax), bib 41→46. 캡션을 IEEE 제목형으로 축약하고
 `subcaption` 제거(IEEEtran 기본 `Fig. 1.`/small-caps `TABLE I` 복원). Overleaf `c41959a`까지 동기화. 다음: Overleaf 전체 빌드
 검수(페이지 수·overfull·float 배치) → anti-ai-writing 패스.
+
+**Fleet 디스크 정리 — 7B급 모델 준비 (2026-08-30 저녁).** 8/12 스펙 §4의 디스크 전제를 실측·정리. 삭제: on-1·on-6 HF 캐시에서
+`opt-350m`/`opt-125m` 외 모델 전부 + pip/uv 캐시(on-1 9.2→23 G, on-6 11→43 G free); ao-1 `.cache/pip`·Miniforge 설치파일·
+`users/taehyuk`(specedge 실험 결과 15 G, 사용자가 ssh로 직접 삭제; root 0.48→18 G, 모델 캐시는 `/mnt/sdcard` 77 G 여유);
+ax-1 `.cache/pip,mozilla`·`.vscode-server`·`.warp`·`Downloads`(RML2016)·transformers wheel(0.11→3.1 G). 미처리: ao-1 로그
+truncate(sudo, ~0.8 G), ax-1 타인 디렉토리 `jinwoo` 3.4 G·`yerin` 1.5 G, on-2 캐시 12 G(여유 22 G라 유지). 7B(OPT-6.7B 12.4 GiB
+또는 Llama-2-7B 12.55 GiB) 워커당 ~15 G·코디네이터 head bundle ~0.6 G 요구를 전 노드가 충족. 다음: 08-12 플랜 Task 6(on-5 재배포,
+head bundle 배치) → Task 7(첫 서빙). 후보 1순위 OPT-6.7B(bin mmap lazy 로드 `ec30e32`로 가능, 동일 family), 2순위 Llama-2-7B.
