@@ -1,5 +1,9 @@
 # 랩미팅 0730 — Claude for PowerPoint 프롬프트
 
+> **2026-08-30 주의:** 아래 reactive 약 53초 수치는 당시 wall-time 정의의 역사 기록이다.
+> corrected client-observed Recovery Latency 재측정은 median 24.25초(18.62–39.35초)이며,
+> 최신 논문/그림에는 `experiments/REPORT.md §B1-REACTIVE` 값을 사용한다.
+
 `ppt/Progress Report_0730.pptx`(figure가 이미 심어진 복사본)를 열고 아래를 그대로 붙여넣는다.
 
 ---

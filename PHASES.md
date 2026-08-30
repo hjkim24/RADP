@@ -2257,18 +2257,20 @@ parity만 좌하단 코너. SDD 7태스크(계획 버그 2건 하네스가 포�
   hard-require) 320s hang. inventory에서 on-3/on-4 주석 → 안정적 5-워커 CUDA/AGX fleet로 축소
   (parity/replicate와 동일 토폴로지), `config` 재배포.
 
-**검증 결과** (fleet 5/5 valid, 매 트라이얼 victim 1개만 배제):
+**검증 결과** (2026-08-30 corrected client-observed metric으로 대체, fleet 5/5 valid,
+매 트라이얼 victim 1개만 배제):
 ```
-reactive TTR(P) = 56.9 s − 0.18 s · P   (사실상 flat ~53 s, 음의 기울기는 노이즈)
-P=4 64.1s  P=8 48.2s  P=16 50.5s  P=24 53.5s  P=32 52.8s
+Recovery Latency = last pre-failure token → first new valid token after replay catch-up
+P=4 18.624s  P=8 39.350s  P=16 35.463s  P=24 22.434s  P=32 24.250s
+median=24.250s, range=18.624–39.350s
 ```
-P=32에서 parity 대비 ~176×, full-replay 대비 ~10× 느림. 비용은 재배치 중 cold model reload +
-position 0 재생이 지배(crash 위치 무관). 그림 fig_recovery_ttr_slide(5선, reactive 최상단)/
-fig_recovery_2d(로그-X, reactive 우하단).
+기존 약 53초와 176×/10× 비율은 다른 wall-time 정의에서 나온 값이므로 폐기한다. 비용은 재배치 중
+cold model reload + position 0 재생이 지배한다. P별 victim이 달라 위치와 victim 비용이 교란되므로
+fit slope는 사용하지 않고 median/range만 보고한다. 기존 recovery figure는 새 값으로 재생성해야 한다.
 
 **의도된 한계**: 탐지를 heartbeat timeout 대신 명시적 mark_dead로 대행(실환경 탐지지연 ~5s를 뺀
-셈이나 52s 대비 무시 가능). 5-워커 측정(CPU 워커 제외) — reactive TTR은 cold reload 지배라 토폴로지
-robust. 출처 `b1_ft_fleet_reactive.json`.
+셈). 5-워커 측정(CPU 워커 제외), P별 victim 비고정. 출처
+`b1_ft_fleet_reactive_client_interval_20260830.json`.
 
 ## Phase B1-OVERHEAD — 상시 network shipping 계열별 실측 (mirror-as-surgical-rung 프레이밍) (2026-07-30)
 
@@ -2385,3 +2387,48 @@ weight load(단일 실패 parity는 같은 fleet에서 284 ms). 집중은 상수
 이기고 k=3부터는 저장이 replicate 초과(1.33×)+내성은 3개로 replicate("임의")보다 약함 = dominated.
 일반 RS는 non-head가 많고 균형 잡힌 큰 파이프라인(Σ/max 큰)에서만 값을 함 → future work. GF(2⁸)
 필드(`gf256.py`)는 재사용 가능, 확장 시 Cauchy 계수 + m×m GF 역산만 추가.
+
+---
+
+## Phase B1-METRIC-REFRESH — 정상 실행 protection overhead + Reconfigure metric 재측정 (2026-08-30)
+
+**목표**: Evaluation 초안에 남아 있던 두 미측정 항목을 같은 OPT-350M fleet에서 채운다.
+
+1. protection off / single parity / double parity / replication의 정상 실행 throughput·TBT 비교
+2. Reconfigure를 수정된 client-observed `Recovery Latency` 정의로 재측정
+
+**정상 실행 결과 (순서 교차 검증 완료)**: async chain, round 내부 동일 5-stage 배치, full-length primer
+1회 제외 후 모드별 20 tokens × 10 requests를 3 round 수행했다(모드별 30 requests/600 TBT).
+round 내 off 대비 mean±sample-std는 single parity throughput −5.11±2.38%, TBT p50 +5.79±2.55%;
+double parity −6.31±0.26%, +7.26±0.52%; replication −6.30±1.24%, +7.17±0.73%였다. double parity와
+replication의 평균 throughput은 4.906238/4.906353 tok/s로 사실상 동일했다. canonical summary
+`experiments/results/b1_steady_modes_n3_20260830.json`; 최초 `b1_steady_modes_20260830.json`은 round 1
+역사 기록이다. 실행 순서·raw mapping·복원 상태는 `experiments/REPORT.md §B1-RUNTIME-OVERHEAD` 참조.
+
+**Reconfigure 결과**: sync chain, 5-worker, `backup_placement=false`, `enable_subset_search=false`, R={}.
+P={4,8,16,24,32} 전부 `fired ∧ failed_request_aborted ∧ sequence_match ∧ reconfigured` 통과.
+Recovery Latency는 18.624/39.350/35.463/22.434/24.250초, median 24.250초, range 18.624–39.350초.
+기존 약 53초 값은 다른 wall-time 정의이므로 새 값으로 대체한다. P별 victim이 달라 slope는 사용하지
+않는다. 원시 결과 `experiments/results/b1_ft_fleet_reactive_client_interval_20260830.json`.
+
+**실험 후 복원**: 원래 7-worker, `backup_placement=true`, `enable_subset_search=true`, async chain 설정을
+복원하고 fresh 7-device DP solve 완료까지 대기. 최종 `ready=true`, 5-stage, recovery 5-entry,
+dead device 없음. worker `RADP_PARITY` unset, coordinator `RADP_RECOVERY_MODE=surgical`, fault 파일 제거.
+
+**논문 figure 재생성 (2026-08-30 오후).** (1) 덱용 `make_recovery_ttr_slide.py`/`make_recovery_2d.py`를
+corrected Reconfigure JSON으로 전환 — victim이 P마다 달라 fit 선은 그리지 않고 median 24.25 s(18.62–39.35 s)만
+표기, 표시 이름 `KV-CARE`(공용 `_names.py`). (2) 논문용 흑백 세트 `paper/figures/paper/` 신설(`_paper.py`:
+Times 8pt·3.5in 컬럼·마커 모양으로 계열 구분·빨강은 KV-CARE/실측점만·텍스트 겹침 자동 검사):
+`fig_recovery_latency`(5계열 live), `fig_recovery_pareto`(P=32 latency × per-token state),
+`fig_storage_tolerance`(k-parity vs replication, crossover 2.25), `fig_storage_scaling`(model×context projection +
+실측 40 MB), `fig_protection_cost`(N=3 throughput/TBT overhead). double-parity TTR·fidelity·feasibility sweep는
+그림 대신 본문/표로(사유 `paper/figures/paper/README.md`). legacy placement 그림(`fig_baselines`/`fig_matrix`/
+`fig_tiers`)은 Evaluation 채택 범위 밖이라 미갱신.
+
+**D2.9 feasibility sweep 재현 + setup 버그 수정 (2026-08-30 오후).** Notion 0827의 feasibility 수치(pipeline
+scope 600/300 MB, fleet scope 250/200 MB)에 저장 결과가 없어 `d29_coupling_threshold.py`를 재실행했더니 처음엔
+"coupling band 없음·250 MB에서 joint만 실패"가 나왔다. 원인은 스크립트의 backup-host scope 비대칭(decoupled=
+fleet 전체, joint=파이프라인만)이었고 solver 결함이 아니었다. `scope ∈ {pipeline, fleet}`를 두 절차에 동일 적용하고
+JSON을 남기도록 수정해 재실행한 결과 Notion 수치를 정확히 재현: pipeline scope coupling band 300–600 MB, fleet
+scope 200 MB. `experiments/REPORT.md §D2.9`, `paper/sections/evaluation.tex §Recovery Feasibility`(Table
+feasibility)에 반영. production `server.py`는 `backup_hosts` 미설정 = pipeline scope임을 명시.

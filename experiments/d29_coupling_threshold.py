@@ -19,10 +19,15 @@ Three outcomes are possible at a given cap, and the middle one is the claim:
   both infeasible        -> below this cap the model does not fit at all
 
 The pipeline search enumerates ordered subsets of the CUDA-capable devices
-(the ones the solver ever picks); every device in the fleet stays available as
-a backup host, which is what the live coordinator does.
+(the ones the solver ever picks). The backup-host SCOPE is swept explicitly and
+applied to BOTH procedures — the 2026-08-30 run showed that giving only one of
+them the wider scope manufactures a bogus "joint failed but decoupled worked":
+  pipeline : R may use only pipeline devices (ClusterSpec.backup_hosts=None —
+             the production coordinator's behaviour, see commit ade8356)
+  fleet    : every device in the fleet is a candidate backup host
 
 Offline and deterministic — reads the cluster snapshot, touches no worker.
+Writes experiments/results/d29_coupling_threshold_<date>.json.
 """
 
 from __future__ import annotations
@@ -117,10 +122,16 @@ def _pipeline_devices(spec: ClusterSpec) -> list[DeviceProfile]:
     return [d for d in spec.devices if str(d.id) in PIPELINE_POOL]
 
 
-def decoupled(spec: ClusterSpec):
+def _scoped(spec: ClusterSpec, perm, scope: str) -> ClusterSpec:
+    """Pipeline = `perm`; backup hosts = `perm` (pipeline) or the whole fleet."""
+    hosts = list(spec.devices) if scope == "fleet" else list(perm)
+    return replace(spec, devices=list(perm), backup_hosts=hosts)
+
+
+def decoupled(spec: ClusterSpec, scope: str):
     """Cost-only placement search (recovery={}), then assign backups to it."""
     pool = _pipeline_devices(spec)
-    best_rank, best_psi = math.inf, None
+    best_rank, best_psi, best_perm = math.inf, None, None
     for k in range(2, len(pool) + 1):
         for subset in combinations(pool, k):
             for perm in permutations(subset):
@@ -134,17 +145,17 @@ def decoupled(spec: ClusterSpec):
                     spec.blend_alpha,
                 )
                 if rank < best_rank - 1e-9:
-                    best_rank, best_psi = rank, res.placement
+                    best_rank, best_psi, best_perm = rank, res.placement, perm
     if best_psi is None:
         return None, None, "no placement"
     try:
-        r = determine_recovery_table(spec, best_psi)
+        r = determine_recovery_table(_scoped(spec, best_perm, scope), best_psi)
     except NoRecoveryError as e:
         return best_psi, None, f"NoRecoveryError: {e}"
     return best_psi, r, None
 
 
-def joint(spec: ClusterSpec):
+def joint(spec: ClusterSpec, scope: str):
     """Production path: alternating DP with the backup burden inside feasibility."""
     pool = _pipeline_devices(spec)
     best_rank, best = math.inf, None
@@ -152,7 +163,7 @@ def joint(spec: ClusterSpec):
         for subset in combinations(pool, k):
             for perm in permutations(subset):
                 try:
-                    res = Scheduler(replace(spec, devices=list(perm))).solve_alternating()
+                    res = Scheduler(_scoped(spec, perm, scope)).solve_alternating()
                 except (NoFeasibleSolutionError, NoRecoveryError):
                     continue
                 except Exception:  # noqa: BLE001
@@ -176,6 +187,7 @@ def fmt(psi) -> str:
 
 
 def main() -> None:
+    import datetime as _dt
     snap = fetch_snapshot()
     layer_b = snap["layer_profiles"][0]["memory_bytes"]
     L = len(snap["layer_profiles"])
@@ -187,40 +199,56 @@ def main() -> None:
 
     caps_mb = [6000, 4000, 2000, 1500, 1200, 1000, 900, 800, 700, 650, 600,
                550, 500, 450, 400, 350, 300, 250, 200]
-    print(f"\n{'cap':>7}  {'decoupled':>10}  {'joint':>10}   verdict")
-    print("-" * 100)
-    coupling_band = []
-    for cap_mb in caps_mb:
-        spec = build_spec(snap, cap_mb * MB)
-        psi_d, r_d, err_d = decoupled(spec)
-        psi_j, r_j, err_j = joint(spec)
-        d_ok, j_ok = err_d is None, err_j is None
-        if d_ok and j_ok:
-            verdict = "both feasible"
-        elif not d_ok and j_ok:
-            verdict = "*** COUPLING — decoupled loses a solution the joint solver finds"
-            coupling_band.append(cap_mb)
-        elif not d_ok and not j_ok:
-            verdict = "model does not fit"
+    rows = []
+    for scope in ("pipeline", "fleet"):
+        print(f"\n=== backup-host scope: {scope} ===")
+        print(f"{'cap':>7}  {'decoupled':>10}  {'joint':>10}   verdict")
+        print("-" * 100)
+        coupling_band = []
+        for cap_mb in caps_mb:
+            spec = build_spec(snap, cap_mb * MB)
+            psi_d, r_d, err_d = decoupled(spec, scope)
+            psi_j, r_j, err_j = joint(spec, scope)
+            d_ok, j_ok = err_d is None, err_j is None
+            if d_ok and j_ok:
+                verdict = "both feasible"
+            elif not d_ok and j_ok:
+                verdict = "COUPLING: decoupled loses a solution the joint solver finds"
+                coupling_band.append(cap_mb)
+            elif not d_ok and not j_ok:
+                verdict = "model does not fit"
+            else:
+                verdict = "joint failed but decoupled worked (unexpected)"
+            print(f"{cap_mb:>6}M  {'ok' if d_ok else 'FAIL':>10}  {'ok' if j_ok else 'FAIL':>10}   {verdict}")
+            if not d_ok:
+                print(f"          decoupled ψ: {fmt(psi_d)}")
+                print(f"          reason     : {err_d}")
+            if j_ok:
+                print(f"          joint ψ    : {fmt(psi_j)}   R={dict(r_j) if r_j else '-'}")
+            rows.append({
+                "scope": scope, "cap_mb": cap_mb,
+                "decoupled_ok": d_ok, "joint_ok": j_ok, "verdict": verdict,
+                "decoupled_psi": fmt(psi_d), "decoupled_R": dict(r_d) if r_d else None,
+                "decoupled_error": err_d,
+                "joint_psi": fmt(psi_j), "joint_R": dict(r_j) if r_j else None,
+                "joint_error": err_j,
+            })
+        if coupling_band:
+            print(f"COUPLING BAND ({scope}): free-memory cap {min(coupling_band)}–{max(coupling_band)} MB "
+                  f"per device (whole model {L*layer_b/MB:.0f} MB).")
         else:
-            verdict = "joint failed but decoupled worked (unexpected)"
-        print(f"{cap_mb:>6}M  {'ok' if d_ok else 'FAIL':>10}  {'ok' if j_ok else 'FAIL':>10}   {verdict}")
-        if not d_ok and j_ok:
-            print(f"          decoupled ψ: {fmt(psi_d)}")
-            print(f"          reason     : {err_d}")
-            print(f"          joint ψ    : {fmt(psi_j)}")
-            print(f"          joint R    : {dict(r_j) if r_j else '-'}")
+            print(f"NO COUPLING BAND ({scope}) across the swept caps.")
 
-    print()
-    if coupling_band:
-        print(f"COUPLING BAND: free-memory cap {min(coupling_band)}–{max(coupling_band)} MB "
-              f"per device (whole model {L*layer_b/MB:.0f} MB).")
-        print("Within this band the decoupled procedure produces a placement with no")
-        print("feasible recovery table while the joint solver still finds one — the")
-        print("regime the paper's coupled-feasibility claim describes.")
-    else:
-        print("NO COUPLING BAND FOUND across the swept caps. Either procedure works")
-        print("everywhere the model fits; the claim is not supported at this model size.")
+    out = Path(__file__).parent / "results" / (
+        f"d29_coupling_threshold_{_dt.date.today():%Y%m%d}.json")
+    out.write_text(json.dumps({
+        "experiment": "d29_coupling_threshold",
+        "model_id": snap["model_id"], "num_layers": L, "per_layer_bytes": layer_b,
+        "uncapped_free_bytes": {d["id"]: d.get("free_memory_bytes") for d in snap["device_profiles"]},
+        "pipeline_pool": sorted(PIPELINE_POOL),
+        "caps_mb": caps_mb, "rows": rows,
+    }, indent=1))
+    print(f"\nwrote {out}")
 
 
 if __name__ == "__main__":

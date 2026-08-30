@@ -23,7 +23,7 @@
 | Bamboo — Thorpe et al. | NSDI 2023 | **redundant computation**으로 선점 견딤. | **adjacent** (redundancy 기반) |
 | Parcae | NSDI 2024 | proactive 재구성(liveput). | adjacent (proactive) |
 
-- **서빙 쪽 결정적 인용: SpotServe — Miao et al., ASPLOS 2024 (Distinguished Artifact).** spot 인스턴스 서빙에서 인스턴스 마이그레이션을 bipartite matching + "stateful inference recovery"로 풀어 **naive cold 재배치를 일부러 회피** — 이유는 full re-solve+cold-restart가 P99를 망치기 때문. → **"reactive 재배치는 추론 서빙엔 부적합, 무겁게 엔지니어링해야 함"이라는 우리 주장을 직접 뒷받침.** (우리 reactive baseline이 ~53s로 느린 것의 문헌적 근거.)
+- **서빙 쪽 결정적 인용: SpotServe — Miao et al., ASPLOS 2024 (Distinguished Artifact).** spot 인스턴스 서빙에서 인스턴스 마이그레이션을 bipartite matching + "stateful inference recovery"로 풀어 **naive cold 재배치를 일부러 회피** — 이유는 full re-solve+cold-restart가 P99를 망치기 때문. → **"reactive 재배치는 추론 서빙엔 부적합, 무겁게 엔지니어링해야 함"이라는 우리 주장을 직접 뒷받침.** 우리 corrected client-observed reactive baseline은 median 24.25초(18.62–39.35초); 과거 약 53초는 다른 wall-time 정의라 폐기했다.
 - 엣지: KubeEdge/K3s 재스케줄은 표준 K8s 동작이라 LLM-specific 논문 없음(Borg/K8s 계보 = Burns et al., CACM 2016). generic 엣지-오케스트레이션 선례로만.
 - **정직한 gap: reactive 선례는 전부 학습 쪽.** 서빙은 SpotServe가 유일하고 그마저 naive를 피함 → "추론엔 안 쓰는 이유"로 프레이밍.
 

@@ -16,6 +16,7 @@
 | Async chain forwarding이 pipeline parallelism을 unblock하여 sync chain 대비 **+17-47% throughput** at C=16 | EXP-D3 Phase F.1 (3-stage) + F.2 (4-stage) | chain-length-independent 이득 |
 | Chain topology 위에서도 R (recovery) 가 동등하게 작동 — mirror cache 가 ψ-R orthogonality 보존 | EXP-D3 Phase 2/3 라이브 검증 | 12/12 coherent tokens after mid-chain SIGKILL |
 | 회복 latency는 bounded, 예측 가능, 에지 LLM SLO 안에 들어옴 | EXP-D2.1 + Phase EXP-A2 N=5 | mean 617 ms, p95 670 ms (star topology) |
+| 정상 실행 보호 비용은 bounded이며 double parity가 replication보다 더 비싸지 않음 | B1-RUNTIME-OVERHEAD, 순서 교차 N=3 | off 대비 single −5.11%, double −6.31%, replication −6.30% throughput |
 
 **페이퍼 헤드라인 클레임** — *"Recovery-Aware DP는 동일한 R-Ψ joint optimization으로 정상 운영과 장애 회복 둘 다에서 이김. 이 우위는 system architecture variants (star/chain topology, sync/async forwarding, 3-stage/4-stage chains) 와 무관하게 일관 — 결과적으로 4가지 변형 × 4 cells × 3-4 concurrency × 2 chain lengths = 28 measurement points 에서 RADP-Latency가 RADP-Throughput을 strictly dominate"* — 이 7-worker 이기종 에지 클러스터에서 N=3로 backing된 라이브 데이터로 뒷받침된다.
 
@@ -559,33 +560,37 @@ dead 마킹(heartbeat-timeout 탐지기가 할 일을 즉시·결정론적으로
 생존자 위에서 재-solve+redeploy. 게이트: `reconfigured`(새 placement가 victim을 실제 배제) ∧
 `fired` ∧ `sequence_match`.
 
-**결과** (5/5 valid, 매 트라이얼 정확히 victim 1개만 배제 = survivors 4):
+**2026-08-30 corrected-metric 재측정 결과** (5/5 valid, 매 트라이얼 정확히 victim 1개만 배제 = survivors 4):
 ```
-reactive_replacement: TTR(P) = 56.9 s − 0.18 s · P   (n=5)
-  P=4  64.1 s   P=8  48.2 s   P=16  50.5 s   P=24  53.5 s   P=32  52.8 s
+Recovery Latency = last pre-failure token → first new valid token after replay catch-up
+  P=4  18.624 s   P=8  39.350 s   P=16  35.463 s   P=24  22.434 s   P=32  24.250 s
+  median=24.250 s, mean=28.024 s, range=18.624–39.350 s   (n=5)
 ```
-→ **P에 대해 사실상 flat(~53 s median)** — 음의 기울기(−0.18 s/pos)는 측정 노이즈, 부호는 무의미함.
-당연한 결과임: replay가 항상 position 0부터라 crash 위치와 무관하고, 비용은 **재배치 중 cold model
-reload가 지배**(재-solve DP + 재배치받은 생존자의 레이어 가중치 로딩). full-replay가 P를 타고 오르는
-것(재-forward 길이 ∝ P)과 근본적으로 다름.
+기존 `b1_ft_fleet_reactive.json`의 약 53초 값은 장애 요청 시작부터 재배치·재실행 완료까지를 정상 요청
+전체 시간과 차감한 별도 wall-time 정의였으므로, 다른 복구 방식의 recovery-step latency와 직접 비교하면
+안 된다. 위 값은 수정된 client-observed `Recovery Latency`로 재측정한 결과이며 기존 수치를 대체한다.
+직선 적합은 `30.679 s − 0.158 s·P`지만 **P별 victim이 달라**(`ao-2`, `on-6`, `on-6`, `on-1`,
+`on-1`) cold reload와 survivor placement가 P에 교란되어 기울기는 해석하지 않는다. 논문에는 median과
+범위를 사용한다. replay catch-up 자체는 P=4의 1.57초에서 P=32의 6.37초로 늘지만, 전체 interval은
+재-solve·cold deploy의 18–39초 변동이 지배한다.
 
-**해석 — reactive가 왜 앵커인가.** P=32에서 reactive 52.8 s vs parity 0.30 s = **~176×**, vs
-full-replay 5.06 s = **~10×**. 저장은 0(backup 없음)이나 복구가 두 자릿수 초 — 2D Pareto에서
-`(TTR≈53 s, 저장 0)` 우하단에 홀로 앉음. proactive backup(parity/replicate)이 존재하는 이유를
-직접 보여줌: backup 없으면 장애 한 번에 cold reload+full replay 세금을 물어야 함.
+**해석 — reactive가 왜 앵커인가.** corrected metric에서도 median 24.25초로 복구가 두 자릿수 초다.
+저장은 0(backup 없음)이나 장애 한 번에 DP 재-solve, cold model deploy, position-0 replay를 모두 치러야
+한다. 따라서 proactive backup을 쓰는 parity/replicate와 비교할 때의 정성적 결론은 유지되지만, 기존
+53초와 그로부터 계산한 176×/10× 비율은 폐기하고 새 metric으로 다시 계산해야 한다.
 
 **정직한 한계.** (1) 탐지를 heartbeat timeout이 아니라 명시적 mark_dead로 대행 — 실환경의 탐지
-지연(~heartbeat 5 s)을 TTR에서 뺀 셈이나, 52 s 대비 무시할 수준이고 이렇게 해야 "재배치 비용"이
+지연(~heartbeat 5 s)을 TTR에서 뺀 셈이며 이렇게 해야 "재배치 비용"을 격리할 수 있다.
 깨끗이 측정됨. (2) victim은 재시작이 아니라 **배제**됨 — 이게 정확히 reactive re-placement의 정의
 (죽은 노드를 빼고 나머지로 재배치)이므로 victim의 자체 reload는 무관. (3) 코디네이터/gateway 코드
 무변경 — 기존 엔드포인트(`/api/inject_failure`·`/api/reconfigure`·`/api/clear_all_failures`)만
 드라이버에서 조합. (4) 5-워커 측정(CPU 워커 제외) — reactive TTR은 cold reload가 지배해 토폴로지에
-robust하므로 order-of-magnitude 스토리는 불변.
+robust하므로 두 자릿수 초라는 order-of-magnitude 스토리는 불변. (5) P별 victim이 달라 위치 기울기와
+victim 효과를 분리하지 못했으므로 slope 주장은 하지 않는다.
 
-그림: [`fig_recovery_ttr_slide`](../paper/figures/fig_recovery_ttr_slide.pdf) (5-선, 로그축 —
-reactive가 최상단 ~53 s),
-[`fig_recovery_2d`](../paper/figures/fig_recovery_2d.pdf) (Pareto, 로그-X — reactive 우하단).
-출처: [`b1_ft_fleet_reactive.json`](results/b1_ft_fleet_reactive.json). 설계/계획:
+기존 `fig_recovery_ttr_slide`/`fig_recovery_2d`의 reactive 값은 재생성 전까지 stale이다.
+출처: [`b1_ft_fleet_reactive_client_interval_20260830.json`](results/b1_ft_fleet_reactive_client_interval_20260830.json).
+설계/계획:
 `docs/superpowers/{specs,plans}/2026-07-22-reactive-replacement*`.
 
 ## B1-OVERHEAD — 상시 network shipping: mirror은 누가 왜 무는가 (2026-07-30)
@@ -617,6 +622,53 @@ parity/replicate가 나머지 셋 대비 스텝당 **5.5×** 더 많은 바이�
 **정직한 한계.** shipping 바이트는 배치·모델 크기로부터 **결정론적으로 계산**된 값(`replication_overhead`/`shipping_overhead`, 측정이 아님)이고, 대역폭만 실측 median TBT(parity 스윕에서 도출, 0.1633 s)로 나눈 것 — gRPC 링크의 실제 latency/처리량 영향을 별도로 측정하지는 않았다. 5.5×는 이 5-stage/OPT-350M 배치(layer 분포 [2,2,4,1]) 한정이며, 다른 placement에선 mirror:KV 비가 달라진다.
 
 출처: [`b1_ft_overhead.json`](results/b1_ft_overhead.json)(shipping), [`b1_ft_fleet_parity.json`](results/b1_ft_fleet_parity.json)(median TBT). 코드: `experiments/_harness.py::shipping_overhead`, `experiments/gen_overhead.py`.
+
+## B1-RUNTIME-OVERHEAD — protection mode별 정상 실행 비용 (실 fleet, 2026-08-30)
+
+**검증 목적.** 최초 순차 run에서 off 대비 single parity 약 3%, double parity/replication 약 6–7%의
+비용이 관찰됐다. 차이가 작아 보드 온도와 실행 순서가 결과를 만든 것은 아닌지 확인하기 위해 모드 순서를
+교차한 두 라운드를 추가했다. 최초 run을 round 1로 유지하고 총 N=3 round로 집계한다.
+
+**공통 프로토콜.** OPT-350M, async chain, 보호 모드별 full-length 20-token primer 1회를 버린 뒤
+20-token 요청 10회를 측정했다. 따라서 모드별 measured request는 30개, TBT 표본은 600개다. round 안에서는
+네 모드의 scheduler placement가 byte-for-byte 같았다. round 1과 round 2/3은 정확한 device order가 달랐지만
+모두 15-layer AGX head와 non-head stage-size multiset `{1,1,3,4}`를 사용했다. 모든 delta는 같은 round의
+protection-off에 대해 계산했으므로 round 간 device order 차이를 보호 비용으로 섞지 않았다. 표의 `±`는
+세 round 지표의 sample standard deviation이다.
+
+| 모드 | Throughput (tok/s) | off 대비 | TBT p50 (ms) | off 대비 | TBT p95 (ms) |
+|---|---:|---:|---:|---:|---:|
+| Protection off | 5.237 ± 0.064 | — | 183.17 ± 1.97 | — | 234.37 ± 5.22 |
+| Single parity | 4.968 ± 0.065 | −5.11 ± 2.38% | 193.75 ± 2.84 | +5.79 ± 2.55% | 236.10 ± 11.98 |
+| Double parity | 4.906 ± 0.047 | −6.31 ± 0.26% | 196.46 ± 1.63 | +7.26 ± 0.52% | 247.54 ± 15.60 |
+| Replication | 4.906 ± 0.046 | −6.30 ± 1.24% | 196.31 ± 2.67 | +7.17 ± 0.73% | 259.14 ± 13.21 |
+
+**판정.** 보호를 켰을 때의 정상 실행 비용은 반복 후에도 약 5–7% 범위로 유지됐다. single parity는
+double parity보다 평균 비용이 작지만 round 간 delta 분산이 커서 최초 run의 3%를 고정값으로 쓰지 않는다.
+반면 double parity와 replication은 평균 throughput이 각각 4.906238/4.906353 tok/s, TBT p50이
+196.46/196.31 ms로 사실상 동일하다. 두 방식이 같은 KV-column shipping 경로를 쓰고 coordinator의
+P+Q 계산과 replica 저장 차이가 end-to-end critical path에서 작다는 해석을 지지한다.
+
+### 실행 로그 — 다른 에이전트용 인계 기록
+
+- **Round 1 (최초 측정):** `replication → double → single → off`. placement
+  `ao-2[1..15] → on-1[16] → on-6[17..19] → ao-1[20..23] → on-2[24]`.
+  [`b1_steady_modes_20260830.json`](results/b1_steady_modes_20260830.json)은 이 round만 담은 역사 기록이며,
+  더 이상 페이퍼 최종 집계 파일이 아니다.
+- **Round 2 (13:33–13:40 KST):** `off → single → double → replication`. placement
+  `ao-1[1..15] → on-2[16] → ao-2[17..19] → on-1[20] → on-6[21..24]`.
+  네 모드 모두 10/10 request가 20 tokens를 완료했다.
+- **Round 3 (13:41–13:49 KST):** `double → off → replication → single`. round 2와 같은 placement.
+  네 모드 모두 10/10 request가 20 tokens를 완료했다.
+- **검증 게이트:** 각 round 내부 placement 동일, measured cell마다 TBT 200개, 총 2,400개 TBT,
+  모든 request 20 tokens, 12개 cell의 greedy decoded text 동일. primer JSON은 결과에서 제외했다.
+- **실험 후 복원 (13:50 KST):** 7 configured workers, 5-stage placement, recovery 5 entries,
+  `ready=true`, dead device 없음. worker `RADP_PARITY` drop-in 제거, coordinator
+  `RADP_RECOVERY_MODE=surgical`, `RADP_PARITY_K=1`로 복원했다.
+- **Canonical result:** [`b1_steady_modes_n3_20260830.json`](results/b1_steady_modes_n3_20260830.json).
+  `rounds[]`에 실행 순서·placement·raw file mapping·round별 metric이 있고, `aggregate`에 mean/sample-std,
+  `validity`와 `post_experiment_restore`에 검증 및 복원 상태가 있다. 다음 작업자는 figure와 Evaluation 표에
+  이 N=3 파일만 사용한다.
 
 ---
 
@@ -689,6 +741,43 @@ parity/replicate는 죽은 stage를 **다시 forward하지 않으므로**(raw ui
 
 ---
 
+## D2.9 — Recovery Feasibility: memory-cap sweep에서 ψ–R coupling이 실제로 나타나는 구간 (offline, 2026-08-30)
+
+**동기.** uncapped OPT-350M(장치당 free 5.4–25 GB)에서는 cost-only 배치 뒤에 backup을 붙여도 항상 성립하므로
+(§12.3, D2.9a) 라이브 배포는 coupling의 근거가 못 된다. 그래서 라이브 cluster snapshot(실측 layer profile·
+compute time·link profile)을 그대로 두고 **장치별 free memory만 cap c로 제한**한 결정론적 오프라인 sweep으로,
+"분리(cost-first: R=∅로 DP → production backup solver로 R 배정)"와 "joint(alternating DP)"가 각각 어디까지
+(ψ,R)을 찾는지 비교했다. 두 절차 모두 CUDA 워커 5대의 동일한 ordered subset을 열거한다.
+
+**⚠️ 측정 setup 버그 (수정 후 재실행).** 첫 실행(`d29_coupling_threshold.py` 원본)은 decoupled에는 7대 전체를
+backup host로, joint에는 `replace(spec, devices=perm)`로 파이프라인 장치만 backup host로 주는 **비대칭 scope**라
+250 MB에서 "joint만 실패"라는 가짜 결과를 냈다. joint에 `backup_hosts=전체`를 넘기면 decoupled와 같은 (ψ,R)을
+찾음을 확인 → solver 결함 아님. 스크립트에 `scope ∈ {pipeline, fleet}`를 도입해 두 절차에 동일 적용.
+참고: production `server.py`는 `backup_hosts`를 설정하지 않으므로 **실 coordinator = pipeline scope**(ade8356의
+"historical behaviour").
+
+**결과** (`d29_coupling_threshold_20260830.json`, model 601 MB, 25 MB/layer):
+
+| backup host scope | 둘 다 feasible | **joint만 feasible (coupling band)** | 둘 다 불가 |
+|---|---|---|---|
+| pipeline 장치만 (production 기본) | c ≥ 650 MB | **300 ≤ c ≤ 600 MB** | c ≤ 250 MB |
+| fleet 전체 (+CPU Nano 2대) | c ≥ 250 MB | **c = 200 MB** | (150 MB 미탐색) |
+
+**메커니즘.** c=600 MB: cost-only DP는 hop이 적은 2-stage `on-1[1..23] → on-6[24]`를 고르는데 23층 = 576 MB라
+어떤 peer도 자기 stage 옆에 예약 불가 → NoRecoveryError. joint는 예약을 다음 배치에 부과해 4-stage
+`on-1[1..21] → on-6[22] → ao-2[23] → ao-1[24]`로 답한다. c=300 MB: joint는 5대 전부에 ≤6층씩 펼쳐 모든 stage의
+backup이 host 자기 stage 옆에 들어가게 한다. fleet scope에서는 CPU 노드가 예약을 흡수해 두 문턱이 내려가지만
+c=200 MB에서 같은 격차가 재현(cost-first는 4층 AGX stage의 backup을 못 찾고 joint는 파이프라인 순서를 바꿔 찾음).
+
+**해석 범위.** memory 제약 하의 Recovery Feasibility 결과이지 serving latency 결과가 아니다. Eq.(mem)의 backup
+예약이 "메모리가 빠듯해지면 어떤 배치가 허용되는가"를 바꾼다는 것의 직접 증거이며, 논문 §Eval-E(RQ4)의 근거.
+uncapped 350M 성능 결과는 coupling 근거로 쓰지 않는다.
+
+출처: [`d29_coupling_threshold_20260830.json`](results/d29_coupling_threshold_20260830.json), 로그 동명 `.log`.
+코드: `experiments/d29_coupling_threshold.py` (scope 대칭화 2026-08-30), `d29_decoupled_feasibility.py`(uncapped 확인).
+
+---
+
 ## 11. 핵심 발견 정리 (페이퍼)
 
 1. **DP는 정상 운영에서 이김 — compute 이기종성이 유의미할 때.** OPT-125M 동질 Nano fleet (§3.3)에선 4 placement가 TBT ±3% 안에서 tie. OPT-350M 3-tier fleet (§4)에선 ours가 greedy 대비 **TBT -6.5%**, **처리량 +8.3%**, 조건당 n=300 샘플.
@@ -714,11 +803,13 @@ parity/replicate는 죽은 stage를 **다시 forward하지 않으므로**(raw ui
 
 16. **RAID-6 double-parity가 O(1) 저장으로 동시 2-실패를 재계산 0으로 복구 — 실 하드웨어에서 bit-correct (§B1-RAID6).** GF(2⁸) P+Q(`RADP_PARITY_K=2` 토글, k=1은 RAID-5 byte-for-byte)로 non-head 2개 동시장애를 2×2 GF 연립으로 복원. 라이브 5/5 `sequence_match=True`, `TTR(P)=30.29 s+2.78 ms·P`로 **slope≈0(zero-recompute, parity 0.87·replicate 2.67과 같은 평탄대)**. 절대 절편 30.3 s는 알고리즘이 아니라 **축퇴 복구테이블 인공물**(자동 R이 non-head 백업을 전부 on-2로 몰아 약한 Nano가 3-stage 호스팅+cold-load; 집중은 상수 offset만 더해 slope는 오염 안 됨) — 깨끗한 절대 TTR은 백업 분산 R 필요(future work). 저장은 이 head-heavy placement에서 raid6/replicate=0.89(얇음; max stage가 합을 지배하는 crossover), balanced-N에선 2/N vs (N-1)/N. 3-way: TTR shape 동일 평탄대, 저장 parity<raid6<replicate, 내성 1<2<임의. RAID-5의 2-실패 폴백은 XOR 미결정계의 수학적 필연. 라이브에서 dispatch-precedence 버그(head-adjacent victim 오귀속) 발견·수정(`7522c92`).
 
+17. **정상 실행 보호 비용은 순서 교차 N=3에서도 약 5–7%이며 double parity와 replication은 동률 (§B1-RUNTIME-OVERHEAD).** 모드별 30 requests/600 TBT에서 off 대비 single parity는 throughput **−5.11±2.38%**, TBT p50 **+5.79±2.55%**; double parity는 **−6.31±0.26%**, **+7.26±0.52%**; replication은 **−6.30±1.24%**, **+7.17±0.73%**였다. k=2와 replication의 평균 throughput은 4.906238/4.906353 tok/s로 구분되지 않았다.
+
 15. **재계산 기반 복구(surgical/full-replay/reactive)에 새로운 정합성 축이 생긴다 — CUDA↔CPU 재계산이 실측으로 갈라짐 (§B1-FIDELITY).** 같은 OPT-350M non-head stage(`[16,17]`)를 같은 입력으로 cuda(`on-1`)·cpu(`on-3`) 두 tier에서 재계산해 KV를 바이트 비교하니 `recompute_diverges=true` — 원소 26.9% 불일치, 최대 절대오차 2⁻⁸(fp16 몇 ULP, CUDA/CPU BLAS 커널 reduction 순서 차이로 해석). parity/replicate는 forward를 안 하므로 by-construction bit-exact, 재계산 셋(surgical/full-replay/reactive)은 tier-dependent — 속도 축과 별개로 **정합성 축**이 새로 생긴다는 뜻. 캐비엇: parity/replicate의 bit-exact 보장은 `parity_branch_ran`/`replicate_branch_ran=True`(자기 primary 경로를 실제로 탔을 때)에 한정 — 게이트가 걸려 surgical로 폴백하면 이 드리프트를 그대로 상속한다. 한계: stage 1곳·tier 쌍 1개(cuda↔cpu)만 측정, 동일 기종(cuda↔cuda) 조합은 미검증, 지금까지 모든 fleet 트라이얼의 토큰 출력(`sequence_match`)은 100% 일치.
 
 14. **상시 network shipping을 계열별로 분해하면 mirror가 surgical rung의 값임이 드러난다 (§B1-OVERHEAD).** 5계열 전부가 스텝당 input mirror 8192 B를 always-on으로 물고(`server.py:429-451`, recovery_mode 무관), parity/replicate만 KV 컬럼 36864 B를 더 얹어 스텝당 45056 B(대역폭 275909.4 B/s ≈ 269.4 KiB/s) — 나머지 셋(50165.3 B/s ≈ 49.0 KiB/s) 대비 **5.5×**. 코드 추적 결과 mirror 히스토리 전체를 읽는 건 surgical(dead-stage 히스토리 replay)뿐이고, parity/replicate는 현재 포지션 1개치만 상시로 빌리다가 게이트가 걸릴 때만 전체를 빌려 쓰며(§B1-PARITY의 `*_branch_ran` 게이팅), full-replay·reactive는 worker mirror를 한 바이트도 안 읽는다(각각 coord 자체 head-history replay·재-prefill). `parity/replicate → surgical → full-replay` 폴백 사다리가 이미 코드에 존재하고(`gateway.py:843-858`), mirror을 아예 없애는 `parity → full-replay` 2계열 대안은 8192 B/step 세금을 지우는 대신 폴백 비용을 P=32 기준 7.3배(surgical 0.767 s → full-replay 5.621 s) 키운다.
 
-13. **Reactive re-placement(backup 없음, R={})은 복구가 두 자릿수 초 — proactive backup의 존재 이유를 앵커링 (§B1-REACTIVE).** 같은 fleet에서 `reactive TTR(P)=56.9 s−0.18 s·P`, P에 대해 사실상 flat(~53 s median, 음의 기울기는 노이즈). 비용이 **재배치 중 cold model reload + position 0 재생**에 지배돼 crash 위치와 무관. P=32에서 parity 대비 **~176×**, full-replay 대비 **~10×** 느림. 저장 0이나 복구 catastrophic이라 2D Pareto 우하단(TTR≈53 s ∧ 저장 0)에 홀로 앉음 — full-replay/surgical/parity/replicate가 저장을 지불해 사는 복구 속도를 backup 없는 계열은 못 산다는 걸 직접 보임. 코디/gateway 무변경(기존 web_api 엔드포인트만 조합), victim은 라이브 placement에서 동적 선택 + `clear_all_failures`→`inject_failure`로 결정론적 단일 배제(compute-time crash가 프로세스를 안 죽여 heartbeat 유지되는 문제 우회), 5/5 valid.
+13. **Reactive re-placement(backup 없음, R={})은 corrected client-observed Recovery Latency에서도 복구가 두 자릿수 초 (§B1-REACTIVE).** 2026-08-30 재측정은 5/5 valid, median **24.25 s**(18.62–39.35 s). 기존 약 53초는 다른 wall-time 정의라 폐기한다. 비용은 DP 재-solve+cold deploy+position-0 replay가 지배한다. P별 victim이 달라 slope는 해석하지 않고 median/range만 사용한다. 저장 0 대신 복구가 두 자릿수 초라는 proactive-backup 앵커 결론은 유지된다.
 
 12. **Full KV replication은 parity와 TTR 동률, 저장에서만 짐 (§B1-REPLICATE).** 같은 fleet에서 `replicate TTR(P)=239.3+2.67 ms·P` — parity(284.1+0.87)와 기울기·절편 모두 사실상 동률(교차 P≈25). 둘 다 zero-recompute라 TTR이 같고, parity의 유일한 우위는 상시 저장(max vs Σ, 2.25×; O(1) vs O(N)). 그래서 비교는 1D TTR이 아니라 2D Pareto(TTR × 저장)이며 parity만 좌하단 코너. GhostServe의 erasure-coding vs replication 비교를 이종 엣지 레짐에 재현. 측정은 `replicate_branch_ran` 로그로 surgical 폴백 오표기 배제(5/5 진짜 replicate).
 
@@ -768,8 +859,8 @@ EXP-D2 (D1 fix 이후 첫 측정) 의 일부 placement 도 D2.2 의 profiler fix
 | DP cost-function 격차 | ours의 라이브 TBT 우위가 예측에 적게 카운트됨 | marginal-layer / transition-overhead 항 추가, 백로그 A6 |
 | Async chain failure attribution은 trailer 못 씀 | Heartbeat path (5s timeout) 만 fallback. 최대 5s in-flight 손실 가능 | trailer 를 별도 RPC 로 reverse-channel — 백로그 |
 | Single-GPU CUDA stream 직렬화 | 동시 요청이 worker 안에서 GPU stream 으로 직렬. Per-worker batching 미구현 | Batched inference (Static cache + KV concat) — 백로그 |
-| surgical 복구 KV의 비트 정합성 미측정 | "재계산 0 = 수치 재현성" 주장을 논증으로만 쓰고 있음 | 백로그 B4 (동일 티어 vs 이종 티어 바이트 비교) |
-| 다중 동시 장애 회복 미테스트 | R(j) 가 단일 backup — concurrent fault 시 R cascade 가능성 | 백로그 A2 (R을 list-of-backups로 확장) |
+| 재계산 복구의 정합성 범위가 stage 1곳·CUDA↔CPU 1쌍 | cross-tier KV drift는 실측했지만 동일 tier·더 깊은 stage 일반화 불가 | 동일 tier와 head/middle/tail stage로 B1-FIDELITY 확장 |
+| RAID-6 이외의 일반 concurrent fault 경로 미테스트 | non-head 2-failure는 5/5 bit-correct지만 R(j) 단일 backup의 cascade는 별도 문제 | 백로그 A2 (R을 list-of-backups로 확장) |
 | Nano 운영 안정성 (D3 Phase 2/3/F 측정 중) | on-1, on-2 의 SSH banner timeout / heartbeat silence 가 측정 노이즈 원인 | 디스크 정리 (오늘 on-1 -8.5G) + 장기적으로 SWAP 정책 검토 |
 
 ---
@@ -810,7 +901,17 @@ EXP-D2 (D1 fix 이후 첫 측정) 의 일부 placement 도 D2.2 의 profiler fix
 | `concurrent_phaseF_4stage_L_async.json`, `concurrent_phaseF_4stage_L_sync.json` | F.2 L placement, 4-stage |
 | `concurrent_phaseF_4stage_T_async.json`, `concurrent_phaseF_4stage_T_sync.json` | F.2 T placement, 4-stage |
 
-### A6 Legacy / 폐기
+### A6 Fault-tolerance baseline + 보호 비용 (§B1)
+| 파일 | 범위 |
+|---|---|
+| **`b1_steady_modes_n3_20260830.json`** | **protection off/single/double/replication 정상 실행 비용, 순서 교차 N=3 canonical summary** |
+| `b1_steady_modes_20260830.json` | 정상 실행 비용 round 1 역사 기록; 최종 집계에 직접 사용하지 않음 |
+| `b1_ft_fleet_reactive_client_interval_20260830.json` | corrected client-observed Reconfigure Recovery Latency |
+| `b1_ft_fleet_parity.json`, `b1_ft_fleet_replicate.json`, `b1_ft_raid6.json` | single parity / replication / double parity 복구 |
+| `b1_ft_fidelity.json` | cross-tier recomputation KV fidelity |
+| `d29_coupling_threshold_20260830.json` | Recovery Feasibility memory-cap sweep (offline, scope 대칭), §D2.9 |
+
+### A7 Legacy / 폐기
 | 파일 | 범위 |
 |---|---|
 | `opt350m_baseline_first.json`, `a3a_opt350m.json`, `a3a_opt350m_ab*.json` | EXP-D1 폐기 데이터 (§13) |
