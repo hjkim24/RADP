@@ -57,6 +57,7 @@ _DEFAULT_COORD_HOST = "ax-1"
 _DEFAULT_COORD_SSH = "isp@115.145.158.253"
 _DEFAULT_SSH_KEY = "~/.ssh/hjkim24-isp"
 _INVENTORY = str(Path(__file__).resolve().parent.parent / "deploy" / "inventory.ini")
+_ANSIBLE_RETRY_WINDOW = 900.0  # seconds to keep retrying unreachable-host failures
 _DROPIN = "/etc/systemd/system/radp-coordinator.service.d/recovery.conf"
 _PARITY_K_DROPIN = "/etc/systemd/system/radp-coordinator.service.d/parity_k.conf"
 _WORKER_DROPIN_DIR = "/etc/systemd/system/radp-worker.service.d"
@@ -70,13 +71,33 @@ _RAID6_LOG_MARKER = "RAID-6 reconstruct:"
 # Fleet orchestration helpers (ansible + ssh)
 # ---------------------------------------------------------------------------
 def _ansible(host: str, *args: str, timeout: int = 180) -> subprocess.CompletedProcess[str]:
-    cp = subprocess.run(
-        ["ansible", host, "-i", _INVENTORY, *args],
-        capture_output=True, text=True, timeout=timeout,
-    )
-    if cp.returncode != 0 or "FAILED" in cp.stdout or "UNREACHABLE" in cp.stdout:
-        raise RuntimeError(f"ansible {host} {args} failed:\n{cp.stdout}\n{cp.stderr}")
-    return cp
+    # The driver runs across a VPN that flaps for minutes at a time; a
+    # connection-level failure is retried (up to _ANSIBLE_RETRY_WINDOW) rather
+    # than killing a multi-hour sweep. Genuine module failures raise at once.
+    deadline = time.time() + _ANSIBLE_RETRY_WINDOW
+    while True:
+        try:
+            cp = subprocess.run(
+                ["ansible", host, "-i", _INVENTORY, *args],
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            cp = None
+        if cp is not None and cp.returncode == 0 and "FAILED" not in cp.stdout \
+                and "UNREACHABLE" not in cp.stdout:
+            return cp
+        blob = "" if cp is None else cp.stdout + cp.stderr
+        transient = cp is None or "UNREACHABLE" in blob or any(
+            s in blob for s in ("Operation timed out", "Connection timed out",
+                                "Connection refused", "No route to host",
+                                "Failed to connect to the host"))
+        if transient and time.time() < deadline:
+            log.warning("ansible %s unreachable; retrying in 20 s (%.0fs left in window)",
+                        host, deadline - time.time())
+            time.sleep(20)
+            continue
+        detail = "timed out" if cp is None else f"failed:\n{cp.stdout}\n{cp.stderr}"
+        raise RuntimeError(f"ansible {host} {args} {detail}")
 
 
 def set_recovery_mode(coord_host: str, mode: str) -> None:
@@ -823,28 +844,44 @@ def run(
             set_recovery_mode(coord_host, "parity" if mode == "raid6" else mode)
             set_parity_k(coord_host, 2 if mode == "raid6" else 1)
         for p in positions:
-            if mode == "reactive_replacement":
-                trials.append(run_reactive_replacement_trial(
-                    stub_factory, position=p, prompt=prompt,
-                    max_tokens=max_tokens, victim_host=victim_host,
-                    victim_stage=victim_stage, victim_device=victim_device,
-                    coord=coord, coord_host=coord_host,
-                    coord_ssh=coord_ssh, ssh_key=ssh_key,
-                ))
-            elif mode == "raid6":
-                trials.append(run_raid6_trial(
-                    stub_factory, position=p, prompt=prompt,
-                    max_tokens=max_tokens, reference=reference,
-                    coord=coord, coord_host=coord_host,
-                    coord_ssh=coord_ssh, ssh_key=ssh_key,
-                ))
-            else:
-                trials.append(run_trial(
+            def _dispatch() -> dict[str, Any]:
+                if mode == "reactive_replacement":
+                    return run_reactive_replacement_trial(
+                        stub_factory, position=p, prompt=prompt,
+                        max_tokens=max_tokens, victim_host=victim_host,
+                        victim_stage=victim_stage, victim_device=victim_device,
+                        coord=coord, coord_host=coord_host,
+                        coord_ssh=coord_ssh, ssh_key=ssh_key,
+                    )
+                if mode == "raid6":
+                    return run_raid6_trial(
+                        stub_factory, position=p, prompt=prompt,
+                        max_tokens=max_tokens, reference=reference,
+                        coord=coord, coord_host=coord_host,
+                        coord_ssh=coord_ssh, ssh_key=ssh_key,
+                    )
+                return run_trial(
                     stub_factory, mode=mode, position=p, prompt=prompt,
                     max_tokens=max_tokens, victim_host=victim_host,
                     victim_stage=victim_stage, reference=reference,
                     coord_host=coord_host, coord_ssh=coord_ssh, ssh_key=ssh_key,
-                ))
+                )
+
+            # A trial lost to a VPN flap gets one retry, then is recorded as
+            # an error row (fired=False keeps it out of the fits) so the sweep
+            # finishes and writes its JSON instead of dying mid-run.
+            for attempt in (1, 2):
+                try:
+                    trials.append(_dispatch())
+                    break
+                except (RuntimeError, TimeoutError, OSError, grpc.RpcError) as exc:
+                    log.warning("trial mode=%s P=%d attempt %d/2 failed: %s",
+                                mode, p, attempt, exc)
+                    if attempt == 2:
+                        trials.append({"mode": mode, "position": p,
+                                       "fired": False, "error": str(exc)})
+                    else:
+                        time.sleep(120)
 
     # Linear fits over VALID trials only. For "parity" / "replicate" / "raid6",
     # validity additionally requires the real (non-surgical-fallback) branch
