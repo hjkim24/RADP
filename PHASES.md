@@ -2462,6 +2462,8 @@ bare-key 감지(`7c8287c`), **subset 탐색이 NoRecoveryError로 중단되던 �
 ② 재배포 시 워커가 이전 plan의 stage를 안 비운 채 새 LoadStage 수신 → Jetson unified memory에서 on-6 OOM-kill.
 `load_primary`를 "새 plan의 시작"으로 정의해 stale stage·backup 등록·promoted·KV cache를 선정리(동일 키 재사용, `59ddda5`+테스트).
 ③ 드라이버 readiness probe의 ssh 30 s 타임아웃이 스윕 전체를 죽임 → WAIT로 처리(`41cd4c2`); 재시작 대기 320→1200 s(`01c9f95`).
-스윕 유효 측정치(중단 전): full_replay P=4 3.200 s(7.0×), P=8 4.679 s(10.0×) — 두 점 기울기 ≈370 ms/pos(350M 164의 2.3×),
-reference 36 tok 결정론 재확인. 09:10경 랩 네트워크 단절로 스윕 중단 — 복구 후 전체 재실행 예정. reactive 스윕 전
+스윕 유효 측정치: **full_replay 5/5 완주** — P=4/8/16/24/32 = 3.08/4.64/8.06/11.74/15.36 s, fit **1.17 s + 440.7 ms/pos**
+(350M 0.31 s + 164 ms/pos의 2.7×; P=4/8 중복 측정 3.200/4.679 s와 4% 이내 일치), reference 36 tok 결정론 재확인.
+로그 추출본 `b1_ft_fleet_7b_fullreplay_log_20260831.json`(정식 JSON은 완주 스윕에서). 랩 네트워크가 두 차례 끊기며
+surgical 진입 시점마다 스윕 중단 — 복구 후 3-mode 재실행 예정. reactive 스윕 전
 `reconfigure_over_survivors(timeout=320)`도 상향 필요.
