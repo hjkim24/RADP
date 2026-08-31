@@ -299,7 +299,7 @@ def _coord_web(coord_host: str) -> str:
     return f"http://{host}:{_COORD_WEB_PORT}"
 
 
-def reconfigure_over_survivors(coord_host: str, timeout: float = 320.0) -> dict:
+def reconfigure_over_survivors(coord_host: str, timeout: float = 900.0) -> dict:
     """POST /api/reconfigure — coordinator re-solves over survivors + redeploys.
     Returns the response dict (survivors/excluded/placement)."""
     req = urllib.request.Request(
@@ -309,12 +309,17 @@ def reconfigure_over_survivors(coord_host: str, timeout: float = 320.0) -> dict:
         return json.loads(r.read().decode())
 
 
+def fetch_cluster(coord_host: str, timeout: float = 30.0) -> dict:
+    """GET /api/cluster → the auto_schedule sidecar (placement, recovery, ...)."""
+    req = urllib.request.Request(_coord_web(coord_host) + "/api/cluster")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
 def fetch_placement(coord_host: str, timeout: float = 30.0) -> list[dict]:
     """GET /api/cluster → the currently-deployed placement stages
     ([{device,start,end}, ...])."""
-    req = urllib.request.Request(_coord_web(coord_host) + "/api/cluster")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode()).get("placement", [])
+    return fetch_cluster(coord_host, timeout).get("placement", [])
 
 
 def pick_interior_victim(placement: list[dict]) -> tuple[str, int, int]:
@@ -330,19 +335,47 @@ def pick_interior_victim(placement: list[dict]) -> tuple[str, int, int]:
     return str(mid["device"]), int(mid["start"]), int(mid["end"])
 
 
-def pick_two_interior_victims(placement: list[dict]) -> list[tuple[str, int, int]]:
+def pick_two_interior_victims(
+    placement: list[dict], recovery: dict[str, str] | None = None,
+) -> list[tuple[str, int, int]]:
     """Two interior non-head victims for a RAID-6 double-failure trial: exclude
     the head (start_layer == 1) and the LAST stage (no downstream non-head
-    survivor → parity gate would fall back). Returns the first two, ordered by
-    start layer. Raises ValueError if fewer than two interior stages exist."""
+    survivor → parity gate would fall back).
+
+    When the recovery table R is given, the pair must be RECOVERABLE — neither
+    victim's backup may itself be a victim (a dead backup makes the promote
+    impossible). Among recoverable pairs, prefer one whose backups land on
+    DISTINCT nodes (a shared backup node concentrates 2 promoted stages and
+    inflates the intercept — the 350M degenerate-R artifact); if only
+    shared-backup pairs exist, take the first and let the run proceed (that
+    degeneracy is a property of R, not of this driver). Pairs are scanned in
+    start-layer order for determinism. Raises ValueError if fewer than two
+    interior stages exist or no recoverable pair exists under R."""
     ordered = sorted(placement, key=lambda s: int(s["start"]))
     interior = [s for s in ordered[:-1] if int(s["start"]) > 1]
     if len(interior) < 2:
         raise ValueError(
             f"need >=2 interior non-head stages for RAID-6, got {len(interior)}"
         )
-    return [(s["device"], int(s["start"]), int(s["end"]))
-            for s in interior[:2]]
+    as_tuple = [(s["device"], int(s["start"]), int(s["end"])) for s in interior]
+    if not recovery:
+        return as_tuple[:2]
+    recoverable: list[list[tuple[str, int, int]]] = []
+    for i in range(len(as_tuple)):
+        for j in range(i + 1, len(as_tuple)):
+            v1, v2 = as_tuple[i], as_tuple[j]
+            b1, b2 = recovery.get(v1[0]), recovery.get(v2[0])
+            if b1 in (None, v1[0], v2[0]) or b2 in (None, v1[0], v2[0]):
+                continue  # a victim's backup is dead (or missing) → unrecoverable
+            recoverable.append([v1, v2])
+            if b1 != b2:
+                return [v1, v2]  # first distinct-backup pair wins
+    if recoverable:
+        log.warning("RAID-6 victims %s share a backup node — degenerate R, "
+                    "intercept will carry the concentration cost",
+                    [v[0] for v in recoverable[0]])
+        return recoverable[0]
+    raise ValueError(f"no recoverable 2-victim pair under R={recovery}")
 
 
 def clear_all_failures(coord_host: str, timeout: float = 30.0) -> None:
@@ -735,8 +768,9 @@ def run_raid6_trial(
     dead-set past 2 and trip the ">2 dead non-head stages" surgical fallback.
     """
     reset_wall = restart_coordinator_and_wait(coord_host, coord_ssh, ssh_key)
-    placement = fetch_placement(coord)
-    (v1_dev, v1s, v1e), (v2_dev, v2s, v2e) = pick_two_interior_victims(placement)
+    cluster = fetch_cluster(coord)
+    (v1_dev, v1s, v1e), (v2_dev, v2s, v2e) = pick_two_interior_victims(
+        cluster.get("placement", []), cluster.get("recovery"))
 
     clear_all_failures(coord)
     mark_device_dead(coord, v1_dev)
