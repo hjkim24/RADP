@@ -157,11 +157,19 @@ def restart_coordinator_and_wait(
     )
     deadline = time.time() + timeout
     while time.time() < deadline:
-        out = subprocess.run(
-            ["ssh", "-i", ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-             "-o", "StrictHostKeyChecking=no", coord_ssh, probe],
-            capture_output=True, text=True, timeout=30,
-        ).stdout
+        # The probe itself can time out or drop while the coordinator host is
+        # busy (block-wise 7B profiling saturates ax-1's eMMC/CPU). A slow
+        # probe is a WAIT, not a sweep-fatal error (crashed the 2026-08-31
+        # sweep between trials).
+        try:
+            out = subprocess.run(
+                ["ssh", "-i", ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                 "-o", "StrictHostKeyChecking=no", coord_ssh, probe],
+                capture_output=True, text=True, timeout=30,
+            ).stdout
+        except (subprocess.TimeoutExpired, OSError) as e:
+            log.warning("readiness probe hiccup (%s); retrying", type(e).__name__)
+            out = ""
         if "READY" in out:
             return time.perf_counter() - t0
         time.sleep(4)
