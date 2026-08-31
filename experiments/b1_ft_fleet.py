@@ -77,9 +77,13 @@ def _ansible(host: str, *args: str, timeout: int = 180) -> subprocess.CompletedP
     deadline = time.time() + _ANSIBLE_RETRY_WINDOW
     while True:
         try:
+            # stdin=DEVNULL: ansible aborts if it inherits a non-blocking fd
+            # ("Ansible requires blocking IO"), and a shared terminal fd can be
+            # flipped to non-blocking by unrelated processes mid-sweep.
             cp = subprocess.run(
                 ["ansible", host, "-i", _INVENTORY, *args],
                 capture_output=True, text=True, timeout=timeout,
+                stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired:
             cp = None
