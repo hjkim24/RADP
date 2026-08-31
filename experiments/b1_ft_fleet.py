@@ -155,25 +155,41 @@ def restart_coordinator_and_wait(
         'journalctl -u radp-coordinator --no-pager --since "$START" 2>/dev/null '
         '| grep -q "freed decoder.layers" && echo READY || echo WAIT'
     )
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        # The probe itself can time out or drop while the coordinator host is
-        # busy (block-wise 7B profiling saturates ax-1's eMMC/CPU). A slow
-        # probe is a WAIT, not a sweep-fatal error (crashed the 2026-08-31
-        # sweep between trials).
+    # `timeout` is a budget of REACHABLE waiting: an operator-side network
+    # flap makes ssh fail fast (exit 255, empty stdout) with no exception, and
+    # on 2026-08-31 twelve such minutes silently ate the whole wall-clock
+    # budget while the coordinator had long been ready. Probe attempts that
+    # produce neither READY nor WAIT are treated as unreachable and are not
+    # charged; a 3x wall-clock cap still bounds the loop.
+    budget = float(timeout)
+    wall_deadline = time.time() + 3 * timeout
+    last_unreach_log = 0.0
+    while time.time() < wall_deadline and budget > 0:
+        tick = time.time()
+        out = ""
         try:
             out = subprocess.run(
                 ["ssh", "-i", ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
                  "-o", "StrictHostKeyChecking=no", coord_ssh, probe],
                 capture_output=True, text=True, timeout=30,
             ).stdout
-        except (subprocess.TimeoutExpired, OSError) as e:
-            log.warning("readiness probe hiccup (%s); retrying", type(e).__name__)
-            out = ""
+        except (subprocess.TimeoutExpired, OSError):
+            pass
         if "READY" in out:
             return time.perf_counter() - t0
+        if "WAIT" in out:
+            budget -= (time.time() - tick) + 4
+        elif time.time() - last_unreach_log > 60:
+            log.warning(
+                "coordinator host unreachable from the controller; "
+                "not charging the readiness budget (%.0fs left)", budget,
+            )
+            last_unreach_log = time.time()
         time.sleep(4)
-    raise TimeoutError(f"coordinator not ready within {timeout}s after restart")
+    raise TimeoutError(
+        f"coordinator not ready (reachable-wait budget {timeout}s / "
+        f"wall cap {3 * timeout}s exhausted)"
+    )
 
 
 def arm_fault(victim_host: str, start: int, end: int, position: int) -> None:
