@@ -58,6 +58,16 @@ _DEFAULT_COORD_SSH = "isp@115.145.158.253"
 _DEFAULT_SSH_KEY = "~/.ssh/hjkim24-isp"
 _INVENTORY = str(Path(__file__).resolve().parent.parent / "deploy" / "inventory.ini")
 _ANSIBLE_RETRY_WINDOW = 900.0  # seconds to keep retrying unreachable-host failures
+
+
+def _fleet_model_id() -> str:
+    """Model the fleet is serving, read from deploy/group_vars/all.yml so the
+    result JSON records true provenance instead of a hardcoded string."""
+    gv = Path(_INVENTORY).parent / "group_vars" / "all.yml"
+    for line in gv.read_text().splitlines():
+        if line.strip().startswith("model_id:"):
+            return line.split(":", 1)[1].split("#")[0].strip().strip('"')
+    return "unknown"
 _DROPIN = "/etc/systemd/system/radp-coordinator.service.d/recovery.conf"
 _PARITY_K_DROPIN = "/etc/systemd/system/radp-coordinator.service.d/parity_k.conf"
 _WORKER_DROPIN_DIR = "/etc/systemd/system/radp-worker.service.d"
@@ -918,7 +928,7 @@ def run(
 
     summary = {
         "config": {
-            "coord": coord, "model": "facebook/opt-350m", "chain_mode": "sync",
+            "coord": coord, "model": _fleet_model_id(), "chain_mode": "sync",
             "victim_host": victim_host, "victim_stage": list(victim_stage),
             "positions": positions, "modes": modes, "max_tokens": max_tokens,
             "prompt": prompt,

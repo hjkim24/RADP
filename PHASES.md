@@ -2467,3 +2467,15 @@ bare-key 감지(`7c8287c`), **subset 탐색이 NoRecoveryError로 중단되던 �
 로그 추출본 `b1_ft_fleet_7b_fullreplay_log_20260831.json`(정식 JSON은 완주 스윕에서). 랩 네트워크가 두 차례 끊기며
 surgical 진입 시점마다 스윕 중단 — 복구 후 3-mode 재실행 예정. reactive 스윕 전
 `reconfigure_over_survivors(timeout=320)`도 상향 필요.
+
+## Phase B1-7B — 7B 3-mode 복구 스윕 완주, canonical JSON (2026-08-31 밤)
+
+라운드 6에서 15/15 트라이얼 완주, 첫 canonical `b1_ft_fleet_7b.json` (단일 실행, victim=on-2[7..10], P=4/8/16/24/32).
+fit: **full_replay 0.30 s + 453.9 ms/pos** (350M 148.8 ms/pos의 3.1×), **surgical 1.01 s + 21.4 ms/pos**,
+**parity 1.22 s + -6.2 ms/pos** — **7B에서도 parity는 P에 평평**(350M 핵심 주장 재현, 전 트라이얼 parity_branch=True·seq_match).
+완주를 가능케 한 드라이버 생존성 3건: ① `_ansible` unreachable 재시도 15분 창(`c45bdae`), ② 트라이얼 실패 시 120 s 후 1회
+재시도, 소진 시 error 행 기록 후 계속(fit은 fired에서 short-circuit; 같은 커밋), ③ ansible `stdin=DEVNULL` — 공유 터미널 fd가
+non-blocking으로 뒤집혀 "requires blocking IO"로 전 호출 거부되던 라운드 5 사인 차단(`cd41bb1`). 실전 검증: 코디네이터 부팅
+지연(ao-1/ao-2 재등록 지연) 1건과 ~50분 VPN 단절 1건을 각각 재시도로 흡수(surgical P=8, parity P=8). config.model 하드코딩
+(opt-350m)을 group_vars에서 읽도록 수정하고 이번 JSON provenance 정정. 다음: replicate/raid6/reactive 7B 스윕
+(reactive 전 `reconfigure_over_survivors` timeout 상향), 7B storage footprint·protection cost, 논문 반영.
