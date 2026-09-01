@@ -256,6 +256,29 @@ class RequestGateway:
         log.info("device revived; dead=%s", sorted(self._dead))
         return True
 
+    def rebind_plan(self, placement: Placement, recovery: dict) -> None:
+        """Adopt a re-solved placement + recovery table (reactive re-placement).
+
+        Deploying new stages to the workers is not enough: the workers evict
+        the old plan's stages on the new primary load, so routing per the old
+        plan dies with "no stage loaded". The old dead set is dropped
+        wholesale — the failed device is absent from the new placement, and a
+        survivor that landed in ``_dead`` via a stale heartbeat during the
+        crash stall must not shadow its fresh stage (the failure detector
+        re-adds anything genuinely dead).
+        """
+        with self._plan_lock:
+            self.placement = list(placement)
+            self.recovery = dict(recovery)
+            self._dead.clear()
+            self._execution_plan = build_execution_plan(
+                self.placement, self.recovery, self._dead
+            )
+        log.warning(
+            "gateway plan rebound to %d stages; dead set cleared",
+            len(self.placement),
+        )
+
     def current_plan(self) -> Placement:
         with self._plan_lock:
             return list(self._execution_plan)

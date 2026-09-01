@@ -765,6 +765,8 @@ class CoordinatorServer:
         )
         self._profile_and_solve(surv_lookup)
         self.deploy()
+        if self.gateway is not None:
+            self.gateway.rebind_plan(self.placement, self.recovery)
         return list(self.placement)
 
     def _write_scheduler_stats_sidecar(
