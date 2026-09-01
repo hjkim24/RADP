@@ -599,10 +599,19 @@ class CoordinatorServer:
             raise RuntimeError("auto_schedule() must be called after start()")
         return self._profile_and_solve(self._addr_lookup)
 
-    def _profile_and_solve(self, addr_lookup: dict[DeviceId, str]) -> AlternatingResult:
+    def _profile_and_solve(
+        self, addr_lookup: dict[DeviceId, str], *,
+        backup_placement: bool | None = None,
+    ) -> AlternatingResult:
         """Profile the given workers, run the Recovery-Aware DP over them, store
         the result on self.placement/self.recovery, and return it. Shared by
-        auto_schedule (full fleet) and reconfigure_over_survivors (survivors)."""
+        auto_schedule (full fleet) and reconfigure_over_survivors (survivors).
+
+        ``backup_placement`` overrides the config's setting for THIS solve —
+        the reactive re-placement solves R={} (its strategy keeps no backups,
+        and the survivors' free memory is measured with the old plan's stages
+        still resident, so demanding backup provisioning on top makes a
+        7B-scale re-solve spuriously infeasible)."""
         orch = ProfileOrchestrator(addr_lookup, self.detector)
 
         log.info(
@@ -669,7 +678,8 @@ class CoordinatorServer:
             ),
             activation_bytes=activation_bytes,
             eager_backup=self.config.eager_backup,
-            backup_placement=self.config.backup_placement,
+            backup_placement=(self.config.backup_placement
+                              if backup_placement is None else backup_placement),
             optimization_mode=self.config.optimization_mode,
             blend_alpha=self.config.blend_alpha,
             hop_overhead_seconds=self.config.hop_overhead_seconds,
@@ -763,7 +773,7 @@ class CoordinatorServer:
             "reactive re-placement: re-solving over %d survivors %s",
             len(surv_lookup), sorted(str(d) for d in surv_lookup),
         )
-        self._profile_and_solve(surv_lookup)
+        self._profile_and_solve(surv_lookup, backup_placement=False)
         self.deploy()
         if self.gateway is not None:
             self.gateway.rebind_plan(self.placement, self.recovery)
