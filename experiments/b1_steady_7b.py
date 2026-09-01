@@ -102,7 +102,8 @@ def main() -> None:
             set_recovery_mode(args.coord_host, rec_mode)
             set_parity_k(args.coord_host, k)
             restart_coordinator_and_wait(args.coord_host, args.coord_ssh, args.ssh_key)
-            placement = fetch_placement(args.coord_host)
+            # _coord_web wants the coordinator's address, not the ansible alias
+            placement = fetch_placement(args.coord)
             t0 = time.time()
             cell = run_cell(args.coord, args.prompt, args.requests, args.max_tokens)
             cell["placement"] = placement
