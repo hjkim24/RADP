@@ -772,9 +772,12 @@ def run_reactive_replacement_trial(
             "placement": None,
             "error": str(e),
         }
+        replay_n = len(replay["texts"]) if "replay" in locals() else -1
         log.warning(
-            "%-11s P=%-2d  FAILED (reconfigure/replay): %s",
-            "reactive", position, e,
+            "%-11s P=%-2d  FAILED (reconfigure/replay): %s "
+            "[failed_texts=%d replay_texts=%d failed_tail=%r]",
+            "reactive", position, e, len(failed["texts"]), replay_n,
+            "".join(failed["texts"])[-60:],
         )
     return row
 
