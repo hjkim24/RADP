@@ -35,8 +35,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import shutil
 import statistics
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -58,6 +60,9 @@ _DEFAULT_COORD_SSH = "isp@115.145.158.253"
 _DEFAULT_SSH_KEY = "~/.ssh/hjkim24-isp"
 _INVENTORY = str(Path(__file__).resolve().parent.parent / "deploy" / "inventory.ini")
 _ANSIBLE_RETRY_WINDOW = 900.0  # seconds to keep retrying unreachable-host failures
+# PATH-independent: a nohup'd remote launch (driver on ax-1) has no venv bin
+# on PATH; fall back to the interpreter's own environment.
+_ANSIBLE_BIN = shutil.which("ansible") or str(Path(sys.executable).parent / "ansible")
 
 
 def _fleet_model_id() -> str:
@@ -91,7 +96,7 @@ def _ansible(host: str, *args: str, timeout: int = 180) -> subprocess.CompletedP
             # ("Ansible requires blocking IO"), and a shared terminal fd can be
             # flipped to non-blocking by unrelated processes mid-sweep.
             cp = subprocess.run(
-                ["ansible", host, "-i", _INVENTORY, *args],
+                [_ANSIBLE_BIN, host, "-i", _INVENTORY, *args],
                 capture_output=True, text=True, timeout=timeout,
                 stdin=subprocess.DEVNULL,
             )
