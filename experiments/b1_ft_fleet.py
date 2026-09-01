@@ -69,9 +69,12 @@ def _fleet_model_id() -> str:
     """Model the fleet is serving, read from deploy/group_vars/all.yml so the
     result JSON records true provenance instead of a hardcoded string."""
     gv = Path(_INVENTORY).parent / "group_vars" / "all.yml"
-    for line in gv.read_text().splitlines():
-        if line.strip().startswith("model_id:"):
-            return line.split(":", 1)[1].split("#")[0].strip().strip('"')
+    try:
+        for line in gv.read_text().splitlines():
+            if line.strip().startswith("model_id:"):
+                return line.split(":", 1)[1].split("#")[0].strip().strip('"')
+    except OSError:  # group_vars is untracked; a lab-side checkout may lack it
+        pass
     return "unknown"
 _DROPIN = "/etc/systemd/system/radp-coordinator.service.d/recovery.conf"
 _PARITY_K_DROPIN = "/etc/systemd/system/radp-coordinator.service.d/parity_k.conf"
