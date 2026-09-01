@@ -418,6 +418,44 @@ def mark_device_dead(coord_host: str, device: str, timeout: float = 30.0) -> Non
             raise
 
 
+def fetch_gateway_dead(coord_host: str, timeout: float = 30.0) -> set[str]:
+    """GET /api/gateway → the gateway's current dead-device set."""
+    req = urllib.request.Request(_coord_web(coord_host) + "/api/gateway")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return set(json.loads(r.read().decode()).get("dead_devices", []))
+
+
+def stabilize_dead_set(
+    coord_host: str, victim_device: str | None, timeout: float = 90.0
+) -> None:
+    """Force the gateway dead set to exactly {victim} (or {}) and verify it
+    sticks.
+
+    The compute-time crash stalls the chain long enough at 7B scale for
+    UNRELATED workers' heartbeats to go stale, and the failure detector
+    re-adds them AFTER the driver's clear_all_failures — the reactive
+    re-solve then loses a healthy survivor (4-worker 7B placement is
+    infeasible) and the replay dies on the old plan ("on-6 is dead and its
+    backup 'on-5' is unavailable"). Re-clear until fresh heartbeats win the
+    race; a set that never stabilizes is logged and left to the trial's own
+    validity gates."""
+    want = {victim_device} if victim_device else set()
+    deadline = time.time() + timeout
+    while True:
+        clear_all_failures(coord_host)
+        if victim_device:
+            mark_device_dead(coord_host, victim_device)
+        time.sleep(3.0)
+        dead = fetch_gateway_dead(coord_host)
+        if dead == want:
+            return
+        if time.time() > deadline:
+            log.warning("gateway dead set %s never stabilized to %s", dead, want)
+            return
+        log.info("gateway dead set %s != %s (stale-heartbeat flap); re-clearing",
+                 sorted(dead), sorted(want))
+
+
 def _reconfigured_over_survivors(placement: list, victim_device: str) -> bool:
     """Measurement gate: the post-reconfigure placement must NOT contain the
     victim — proof the reactive re-solve genuinely happened over survivors."""
@@ -666,9 +704,12 @@ def run_reactive_replacement_trial(
         # re-solve, so /api/reconfigure excludes the node that actually crashed.
         # Clear first so ONLY the victim is excluded (the crash can flap an
         # unrelated worker's heartbeat) → survivors = all − {victim}.
-        clear_all_failures(coord)
-        mark_device_dead(coord, victim_device)
+        stabilize_dead_set(coord, victim_device)
         resp = reconfigure_over_survivors(coord)
+        # Replay-time guard: the re-solve+redeploy took minutes — clear any
+        # device the stale-heartbeat flap re-added since (the victim is off
+        # the new plan, so an empty dead set is the correct routing state).
+        stabilize_dead_set(coord, None)
         replay = _stream_text_chunks(stub_factory(), prompt, max_tokens)
 
         ttr, prefix_tokens = _client_recovery_interval(
