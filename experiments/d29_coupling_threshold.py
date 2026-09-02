@@ -197,7 +197,12 @@ def main() -> None:
         f"{d['id']}={(d.get('free_memory_bytes') or 0)/GB:.2f}G"
         for d in snap["device_profiles"]))
 
-    caps_mb = [6000, 4000, 2000, 1500, 1200, 1000, 900, 800, 700, 650, 600,
+    # 6000..2200 band added for the 7B-class model (whole model ~12.7 GB —
+    # per-device caps below ~2 GB cannot fit it even backup-free); the
+    # 2000..200 tail is the 350M-era grid, kept so the same script still
+    # reproduces the original sweep.
+    caps_mb = [6000, 5500, 5000, 4500, 4000, 3500, 3000, 2800, 2600, 2400,
+               2200, 2000, 1500, 1200, 1000, 900, 800, 700, 650, 600,
                550, 500, 450, 400, 350, 300, 250, 200]
     rows = []
     for scope in ("pipeline", "fleet"):
