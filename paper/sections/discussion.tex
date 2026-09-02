@@ -3,9 +3,10 @@
 \subsection{Discussion}\label{sec:disc:discussion}
 
 \textbf{Parity against replication.}  The two zero-recomputation paths
-recover in the same time, and DejaVu-style replication has the lower
-intercept (239 versus 284\,ms) because it installs one stored column instead
-of fetching three surviving ones.  The argument for parity is therefore
+recover in the same time: their intercepts are tied within noise at 7B
+(1.17 versus 1.22\,s), and on the 350M deployment DejaVu-style replication
+is lower (239 versus 284\,ms) because it installs one stored column instead
+of fetching the surviving ones.  The argument for parity is therefore
 retained state, and it holds when that state matters: long contexts, larger
 models, or a coordinator whose memory is itself constrained.  With short
 requests and a coordinator that has memory to spare, replication is the
@@ -14,27 +15,31 @@ same shipping channel.  Which of the two is appropriate follows from the
 per-token footprint and the context length, both of which the coordinator
 knows before deployment.
 
-\textbf{Reactive reconfiguration.}  Reconfigure's median of 24.25\,s is
-dominated by re-solving placement, cold-loading weights on the newly assigned
-workers, and rebuilding the pipeline; replaying the prefix accounts for
-1.6--6.4\,s of it.  Because the surviving fleet, and hence the victim,
-differs from trial to trial, we report level and range rather than a slope.
-This baseline is deliberately unassisted.  SpotServe reaches much lower
+\textbf{Reactive reconfiguration.}  Reconfigure's median of 439.4\,s at 7B
+and 24.25\,s at 350M is dominated by re-profiling the survivors, re-solving
+placement, cold-loading weights on the newly assigned workers, and rebuilding
+the pipeline; replaying the prefix accounts for 1.6--6.4\,s of the 350M
+figure.  Because the surviving fleet, and hence the victim, differs from
+trial to trial, we report level and range rather than a slope.  At 7B we
+report two positions: a deployment that keeps no backups gives the scheduler
+no reservation to anchor, so its boot placement varied between trials, and
+three of the five trials failed their validity gates before the failure was
+injected.  This baseline is deliberately unassisted.  SpotServe reaches much lower
 migration cost by planning around advance preemption notice and a grace
 period~\cite{miao2024spotserve}; an unannounced crash or out-of-memory kill on
 an edge worker offers neither, which is why \sys{} keeps its backup weights
 loaded and its recovery state current before the failure.
 
 \textbf{Two simultaneous failures.}  The double-parity result should be read
-for its guarantee and its slope: all five two-failure trials reconstructed
-both lost columns from $P$ and $Q$, and the fitted slope of 2.78\,ms per
-position places it in the same flat band as single parity.  Its 30.3\,s
-intercept reflects the recovery mapping that the scheduler built for this
-fleet, which assigns every non-head backup to one Orin Nano; a second
-promotion on that board is a cold weight load.  A mapping that spreads the
-backups over different hosts removes that cost: at 7B scale, where the
-scheduler's mapping lands the two backups on distinct nodes, the $k=2$
-intercept is 0.58\,s (Section~\ref{sec:eval:scale}).
+for its guarantee first: at both scales every two-failure trial reconstructed
+both lost columns from $P$ and $Q$.  Its absolute cost is a property of the
+recovery mapping, not of the reconstruction.  With the two backups on
+distinct nodes, as the scheduler placed them at 7B, recovery completes in
+0.53--1.24\,s; with every non-head backup on one Orin Nano, as on the 350M
+placement, the second promotion is a cold weight load and the intercept
+rises to 30.3\,s while the slope stays flat.  A scheduler that spreads
+backups therefore buys double-failure tolerance at roughly the cost of
+single-failure recovery.
 
 \textbf{Fidelity of the recovered KV.}  Parity and replication install the
 bytes that were stored, so the recovered KV equals what the failed stage held.
@@ -46,20 +51,24 @@ this as a property of the recovered state.  A parity recovery that completes
 its contract is deterministic with respect to the pre-failure state; a replay
 recovery is only as reproducible as the pair of devices involved.
 
-\textbf{When placement and recovery couple.}  With 5--25\,GB free per device,
-both the cost-first and the joint procedure find a backup for OPT-350M, so
-none of the live deployments in this paper demonstrates coupling.  The
-feasibility result is a statement about the memory-constrained regime: once
-the free memory per device approaches the size of a stage and its backup, the
-reservation in Eq.~\ref{eq:mem} decides which placements are admissible, and
-the alternating search of Section~\ref{sec:design:dp} finds placements that a sequential procedure
-discards.  Where the threshold lies depends on which devices may host
-backups; widening that set to nodes outside the pipeline moved it from
-600\,MB to 200\,MB on our fleet.
+\textbf{When placement and recovery couple.}  Coupling is a property of the
+memory-constrained regime: once the free memory per device approaches the
+size of a stage and its backup, the reservation in Eq.~\ref{eq:mem} decides
+which placements are admissible, and the alternating search of
+Section~\ref{sec:design:dp} finds placements that a sequential procedure
+discards.  The 350M deployment reaches that regime only under synthetic
+memory caps, whereas the 7B deployment lives in it: the live solve rejected a
+quarter of its candidate placements for want of backup room, and the
+cost-first procedure has no feasible placement at any cap at which the model
+fits.  Where the threshold lies depends on which devices may host backups;
+allowing backups on devices outside the pipeline dissolved the gap on both
+fleets.
 
-\textbf{Limitations.}  The measurements come from one fleet of five CUDA
-workers and two CPU-only nodes and from one model, OPT-350M; larger models
-and other device classes remain to be measured.  The protection domain covers
+\textbf{Limitations.}  The measurements come from one fleet of Jetson boards
+and from two models of one family, OPT-6.7B and OPT-350M; other model
+families and device classes remain to be measured.  At 7B, Reconfigure was
+measured at two positions, DejaVu's fit uses three of five trials, and the
+two-failure sweep covers four positions.  The protection domain covers
 fail-stop failures of non-head workers: the head stage and the coordinator
 are unprotected, a last-stage failure falls back to replay because no
 downstream survivor can confirm the final slot, and a failure during prefill
@@ -67,18 +76,19 @@ has no prefix to reconstruct.  Latency was measured with synchronous
 forwarding; asynchronous forwarding adds a heartbeat-bounded detection delay
 common to all families that we did not quantify, and a worker that hangs
 rather than crashes can still be misattributed.  The fidelity probe covers
-one tier pair and one two-layer stage.  The storage advantage depends on
-placement geometry: on this head-heavy placement double parity saves only
-11\% over replication, and a third parity column would cost more state than
+one tier pair and one two-layer stage on the 350M deployment.  The storage
+advantage depends on placement geometry: double parity saves 46\% over
+replication on the 7B placement but only 11\% on the head-heavy 350M
+placement, where a third parity column would cost more state than
 replication while tolerating fewer failures.  Each recovery-latency point is
 one trial; the protection-cost figures are means over three rounds.  Network
 traffic is not an evaluation axis in this paper.
 
-\textbf{Future work.}  Measuring double parity under a backup mapping spread
-over distinct hosts, and Reconfigure with a fixed victim, would complete the
-latency comparison.  Larger models, fleets with genuinely different SKUs, and
-a head/middle/tail victim sweep would test the generality of the flat-in-$P$
-result.  Protecting the coordinator, by replicating parity state or by pairing
+\textbf{Future work.}  Reconfigure with a fixed victim and a full position
+sweep at 7B would complete the latency comparison.  Other model families,
+fleets with genuinely different SKUs, and a head/middle/tail victim sweep
+would test the generality of the flat-in-$P$ result beyond the two scales
+measured here.  Protecting the coordinator, by replicating parity state or by pairing
 coordinators, and covering the head stage are the next steps for the
 protection domain.  A general $k$-parity construction with Cauchy coefficients
 becomes worthwhile only on pipelines whose non-head stages are many and
@@ -94,15 +104,16 @@ heterogeneous, memory-constrained devices, and a stage failure in such a
 pipeline loses the request's KV state.  Existing recovery paths make an
 operator choose between recomputation whose cost grows with the prefix,
 replication whose state grows with the sum of the stages, and reconfiguration
-that takes tens of seconds.  \sys{} recovers the lost KV from one or two
+that takes minutes.  \sys{} recovers the lost KV from one or two
 cross-stage parity columns without recomputing the prefix, and it selects the
 layer placement together with the backup assignment so that the recovered
-state has a device to run on.  On a five-stage Jetson pipeline, single parity
-recovers in 0.30--0.32\,s regardless of the failure position, retains
-$2.25\times$ less state than replication, and costs 5--7\% of failure-free
-throughput; double parity restores two simultaneous stage failures from the
-same stored bytes; and joint placement remains feasible at per-device memory
-caps of 300--600\,MB where a cost-first placement cannot be backed up.  For
-edge deployments that cannot depend on a remote service, this turns a stage
-failure from a request loss or a multi-second stall into a delay of about two
-decode steps.
+state has a device to run on.  On a six-stage Jetson pipeline serving OPT-6.7B, single parity
+recovers in 1.0--1.5\,s regardless of the failure position while
+recomputation grows to 14\,s, retains $3.7\times$ less state than
+replication, and costs no measurable failure-free throughput; double parity
+restores two simultaneous stage failures from the same stored bytes in about
+a second; and joint placement remains feasible at every per-device memory cap
+at which the model fits, where a cost-first placement cannot be backed up.
+For edge deployments that cannot depend on a remote service, this turns a
+stage failure from a request loss or a minutes-long reconfiguration into a
+delay of two to three decode steps.

@@ -22,7 +22,7 @@ from matplotlib.lines import Line2D
 sys.path.insert(0, str(Path(__file__).parent))
 from _paper import COL_TALL, EMPH, GRAY, INK, LIGHT, NAME, RESULTS, STYLE, clean, label, save  # noqa: E402
 
-MODEL = os.environ.get("RADP_FIG_MODEL", "350m")   # 350m (default) | 7b
+MODEL = os.environ.get("RADP_FIG_MODEL", "7b")     # 7b (default, main paper) | 350m (microscopy)
 if MODEL == "7b":
     # OPT-6.7B: canonical 3-family sweep + part-2 (DejaVu, k=2) + Reconfigure
     # (log-extracted n=2 run and the pinned-placement top-up run, when present)
@@ -37,7 +37,7 @@ if MODEL == "7b":
     fits.pop("reactive_replacement", None)     # median + band, never a fit
     ORDER = ["reactive_replacement", "full_replay", "surgical", "replicate", "raid6", "parity"]
     YLIM, YTICKS = (0.3, 900), [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-    SUFFIX = "_7b"
+    SUFFIX = "_350m"
 else:
     par = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
     rep = json.load(open(RESULTS / "b1_ft_fleet_replicate.json"))

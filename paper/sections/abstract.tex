@@ -3,23 +3,23 @@ Internet of Things deployments that cannot depend on a remote service run
 large language models (LLMs) on site by splitting decoder layers across
 heterogeneous edge devices as a pipeline.  A stage failure
 then loses the request's key-value (KV) cache, and the in-flight request cannot
-continue.  Existing recovery paths recompute the lost state at a
-cost that grows with the prefix, replicate the KV cache of every
-protected stage, or reconfigure the pipeline in tens of seconds; none suits
-devices whose memory is nearly full.  This paper presents KV-CARE (KV Cache
+continue.  Existing recovery paths recompute the lost state at a cost that grows
+with the prefix, replicate every protected stage's KV cache, or reconfigure
+the pipeline in minutes; none suits devices whose memory is nearly full.  This paper presents KV-CARE (KV Cache
 Availability and Recovery at the Edge).  Cross-stage parity folds the
 protected stages' KV columns into one parity column (two for simultaneous
 failures) and reconstructs a failed stage's KV cache bit-exactly without
 recomputing the prefix, retaining one largest-stage column rather than their
 sum.  Recovery-aware placement charges backup-weight reservations to each
 device's memory while placing layers, so the recovered state always has a
-device to run on.  On a five-stage Jetson pipeline running OPT-350M, KV-CARE
-adds 0.87\,ms of recovery latency per generated token (164\,ms for
-recomputation, 16\,ms for stage-local replay), recovering in 0.3\,s at any
-failure position; it matches replication's latency with 2.25$\times$ less
-retained state and restores two simultaneous failures from the same stored
-bytes; joint placement stays feasible under per-device memory limits of
-300--600\,MB that defeat placement followed by backup assignment; and
-protection costs 5--7\% of failure-free throughput.  For hardware that must
-keep inference on site, a stage failure becomes a delay of two decode steps.
+device to run on.  On a six-stage Jetson pipeline serving OPT-6.7B, KV-CARE's
+recovery latency is independent of the failure position ($-6$\,ms per
+generated token against 454\,ms for recomputation), completing in two to
+three decode steps at every position; it matches replication's latency with 3.7$\times$ less
+retained state and restores two simultaneous failures in about one second;
+joint placement stays feasible at every per-device memory limit at which the
+model fits, where placement followed by backup assignment fails; and
+single-parity protection costs less than the run-to-run variation of
+failure-free throughput.  On site, a stage failure becomes a delay of a few
+decode steps.
 \end{abstract}

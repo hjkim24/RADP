@@ -2520,3 +2520,15 @@ ms/pos**(canonical 453.9 — 2% 차, victim 무관), surgical 0.70 s + 48.1(cano
 재현. 첫 시도는 cache 엔트리가 덮여 on-5가 [23..27]로 이동해 fault inert → placement 고정으로 해결; P=8의 ansible 빈-출력 실패는
 드라이버 내 gRPC epoll fd 손상(fork) → `GRPC_POLL_STRATEGY=poll` + 빈-출력 재시도(`c6d2c65`). fleet은 auto+backup으로 복원.
 보강 2/3 완료 — 이제 역전 리라이트(7B 메인, 350M 현미경) 착수.
+
+## Phase PAPER-7B-MAIN — 역전 리라이트: OPT-6.7B 메인, OPT-350M 현미경 (2026-09-02)
+
+보강 2건(Reconfigure 7B n=2 확정, 두 번째 victim 7B 15/15) 후 사용자 결정대로 논문 메인 모델을 7B로 역전. `evaluation.tex` 전면
+재작성: §Setup(6-stage OPT-6.7B 테스트베드 + "Small-model microscopy" 단락 — fidelity 프로브·5점 Reconfigure·축퇴-R 해부는 350M),
+§Latency(tab:recovery-summary 7B: 298+453.9 / 1012+21.4 / 1173−15.0ᵃ / 439.4 median(2점)ᵇ / 1216−6.2 / 584+30.8ᶜ; victim 민감도
+on-5 462/48/−4.0 + 350M 두 victim 한 문장), §Footprint(416/112/224 kB/tok, 3.71×, k=2 분산-R 0.53–1.24 s vs 350M 축퇴-R 30.3 s),
+§Fidelity(350M 프로브 유지, "CPU 보드에 stage가 들어가는 유일한 배포"로 근거 명시), §Feasibility(tab:feasibility 2블록 — 7B: pipeline
+joint-only 6.5 GB–actual/neither ≤6.0, fleet both ≥4.8; 350M 합성 cap 밴드), §Cost(7B: single +0.6±10.7%/double −3.9/repl −7.6; 350M
+5–7% 한 문장), 신설 §Across Scales(tab:scales 7행). fig_storage_scaling 삭제(실측 2스케일이 대체), 나머지 4 figure는 7B 판이 메인
+이름(`RADP_FIG_MODEL` 기본값 7b, 350M은 `_350m`), storage-tolerance 7B 판 신설. discussion/abstract/conclusion 정합(abstract 249단어).
+Overleaf 동기화·페이지 수 재확인은 사용자 지시 대기.

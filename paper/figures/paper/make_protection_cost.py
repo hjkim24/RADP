@@ -19,13 +19,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from _paper import COL, EMPH, GRAY, INK, LIGHT, NAME, RESULTS, clean, save  # noqa: E402
 
-MODEL = os.environ.get("RADP_FIG_MODEL", "350m")   # 350m (default) | 7b
+MODEL = os.environ.get("RADP_FIG_MODEL", "7b")     # 7b (default, main paper) | 350m (microscopy)
 if MODEL == "7b":
     agg = json.load(open(RESULTS / "b1_steady_7b_n3.json"))["aggregate"]
-    YLIM, SUFFIX = (-4, 15), "_7b"
+    YLIM, SUFFIX = (-4, 15), ""
 else:
     agg = json.load(open(RESULTS / "b1_steady_modes_n3_20260830.json"))["aggregate"]
-    YLIM, SUFFIX = (0, 12), ""
+    YLIM, SUFFIX = (0, 12), "_350m"
 MODES = [("single_parity", f"{NAME['parity']}\n($k$=1)"),
          ("double_parity", f"{NAME['parity']}\n($k$=2)"),
          ("replication",   f"{NAME['replicate']}\n(replication)")]

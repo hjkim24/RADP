@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).parent))
 from _paper import COL, EMPH, GRAY, INK, NAME, RESULTS, STYLE, clean, label, save  # noqa: E402
 
-MODEL = os.environ.get("RADP_FIG_MODEL", "350m")   # 350m (default) | 7b
+MODEL = os.environ.get("RADP_FIG_MODEL", "7b")     # 7b (default, main paper) | 350m (microscopy)
 if MODEL == "7b":
     par = json.load(open(RESULTS / "b1_ft_fleet_7b.json"))
     rep = json.load(open(RESULTS / "b1_ft_fleet_7b_part2.json"))
@@ -30,14 +30,14 @@ if MODEL == "7b":
     _st = json.load(open(RESULTS / "b1_storage_7b.json"))["state_bytes_per_tok"]
     ovh = {"replicate_bytes": _st["replicate (DejaVu)"], "parity_bytes": _st["parity k=1 (KV-CARE)"]}
     XLIM, XTICKS, YLIM, YTICKS = (0.3, 900), [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500], (-15, 450), [0, 100, 200, 300, 400]
-    SUFFIX = "_7b"
+    SUFFIX = ""
 else:
     par = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
     rep = json.load(open(RESULTS / "b1_ft_fleet_replicate.json"))
     rea = json.load(open(RESULTS / "b1_ft_fleet_reactive_client_interval_20260830.json"))
     ovh = json.load(open(RESULTS / "b1_ft_overhead.json"))
     XLIM, XTICKS, YLIM, YTICKS = (0.2, 60), [0.2, 0.5, 1, 2, 5, 10, 20, 50], (-1.5, 42), [0, 10, 20, 30, 40]
-    SUFFIX = ""
+    SUFFIX = "_350m"
 KB = 1024
 
 
