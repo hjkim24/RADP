@@ -364,8 +364,9 @@ plus a fourth Orin Nano), with a failure-free median token interval of
 measurement protocol at this scale.  Recomputation becomes steeper with the
 model: Recompute's slope grows 2.8$\times$ (164.3 to 453.9\,ms per position),
 while \sys{}'s slope remains statistically zero, so every \sys{} recovery
-completes within one to two failure-free decode steps regardless of failure
-depth, and DejaVu's recovery often disappears into step jitter outright.
+costs the equivalent of two to three failure-free decode steps
+(0.86--1.55\,s) regardless of failure depth, and DejaVu's recovery often
+disappears into step jitter outright.
 The zero-recompute storage gap also widens with depth: replication retains
 426\,kB per token against \sys{}'s 115 (ratio 3.7 versus 2.25 at 350M).
 
