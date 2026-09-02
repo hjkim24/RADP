@@ -2512,3 +2512,11 @@ fault 전파 경로 차이로 추정, 미해결. **결정: Reconfigure 7B는 유
 계열이고 350M(n=5)이 상세 분석을 담당. fleet을 auto+backup_placement=true로 복원 후 **두 번째 victim 스윕**(on-5[15..18],
 full_replay/surgical/parity, `b1_ft_fleet_7b_mid`) 기동. 7B figure 3장(`_7b` 접미, `RADP_FIG_MODEL=7b`)과 kB 관례 통일(416/112/224)은
 `e7863fa`·`be2bad0`.
+
+**두 번째 victim 7B 스윕 완주 (2026-09-02 낮, `b1_ft_fleet_7b_mid.json`).** canonical placement+R(3787dca)을 manual 모드로 고정해
+victim만 on-2[7..10] → on-5[15..18]로 바꾼 15/15 유효 측정(드라이버는 ax-1, fork-safe gRPC 폴링). fit: full_replay 1.29 s + **462.4
+ms/pos**(canonical 453.9 — 2% 차, victim 무관), surgical 0.70 s + 48.1(canonical 21.4 — 절편/기울기 trade-off, 둘 다 재계산의 1/10
+이하), **parity 1.38 s − 4.0 ms/pos**(canonical −6.2 — 두 victim 모두 통계적 0). 350M의 두-victim 불변성(0.87 vs 1.43)이 7B에서도
+재현. 첫 시도는 cache 엔트리가 덮여 on-5가 [23..27]로 이동해 fault inert → placement 고정으로 해결; P=8의 ansible 빈-출력 실패는
+드라이버 내 gRPC epoll fd 손상(fork) → `GRPC_POLL_STRATEGY=poll` + 빈-출력 재시도(`c6d2c65`). fleet은 auto+backup으로 복원.
+보강 2/3 완료 — 이제 역전 리라이트(7B 메인, 350M 현미경) 착수.
