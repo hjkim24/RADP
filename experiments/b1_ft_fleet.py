@@ -109,7 +109,9 @@ def _ansible(host: str, *args: str, timeout: int = 180) -> subprocess.CompletedP
                 and "UNREACHABLE" not in cp.stdout:
             return cp
         blob = "" if cp is None else cp.stdout + cp.stderr
-        transient = cp is None or "UNREACHABLE" in blob or any(
+        # rc != 0 with NO output at all is a broken child (fd/fork trouble in
+        # the driver process), not a module failure — retry it too.
+        transient = cp is None or not blob.strip() or "UNREACHABLE" in blob or any(
             s in blob for s in ("Operation timed out", "Connection timed out",
                                 "Connection refused", "No route to host",
                                 "Failed to connect to the host"))
