@@ -493,7 +493,19 @@ def _linfit(xs: list[float], ys: list[float]) -> dict[str, float]:
         return {"intercept": float("nan"), "slope": float("nan")}
     slope = (n * sxy - sx * sy) / denom
     intercept = (sy - slope * sx) / n
-    return {"intercept": intercept, "slope": slope}
+    # Standard errors (residual variance with n-2 dof) so a fit over repeated
+    # trials carries its uncertainty; nan when there is no residual dof.
+    if n > 2:
+        rss = sum((y - intercept - slope * x) ** 2 for x, y in zip(xs, ys))
+        s2 = rss / (n - 2)
+        xbar = sx / n
+        sxx_c = sum((x - xbar) ** 2 for x in xs)
+        slope_se = (s2 / sxx_c) ** 0.5 if sxx_c > 0 else float("nan")
+        intercept_se = (s2 * (1.0 / n + xbar * xbar / sxx_c)) ** 0.5 if sxx_c > 0 else float("nan")
+    else:
+        slope_se = intercept_se = float("nan")
+    return {"intercept": intercept, "slope": slope,
+            "intercept_se": intercept_se, "slope_se": slope_se}
 
 
 def _stream_text_chunks(
@@ -903,6 +915,7 @@ def run(
     *, coord: str, coord_host: str, coord_ssh: str, ssh_key: str,
     victim_host: str, victim_stage: tuple[int, int], positions: list[int],
     modes: list[str], prompt: str, max_tokens: int, out_name: str,
+    repeats: int = 1,
 ) -> dict[str, Any]:
     def stub_factory() -> Any:
         ch = grpc.insecure_channel(coord, options=_GRPC_OPTIONS)
@@ -950,7 +963,7 @@ def run(
             # subsequent sweep.
             set_recovery_mode(coord_host, "parity" if mode == "raid6" else mode)
             set_parity_k(coord_host, 2 if mode == "raid6" else 1)
-        for p in positions:
+        for rep, p in [(r_, p_) for r_ in range(repeats) for p_ in positions]:
             def _dispatch() -> dict[str, Any]:
                 if mode == "reactive_replacement":
                     return run_reactive_replacement_trial(
@@ -979,13 +992,14 @@ def run(
             # finishes and writes its JSON instead of dying mid-run.
             for attempt in (1, 2):
                 try:
-                    trials.append(_dispatch())
+                    row = _dispatch(); row["repeat"] = rep
+                    trials.append(row)
                     break
                 except (RuntimeError, TimeoutError, OSError, grpc.RpcError) as exc:
                     log.warning("trial mode=%s P=%d attempt %d/2 failed: %s",
                                 mode, p, attempt, exc)
                     if attempt == 2:
-                        trials.append({"mode": mode, "position": p,
+                        trials.append({"mode": mode, "position": p, "repeat": rep,
                                        "fired": False, "error": str(exc)})
                     else:
                         time.sleep(120)
@@ -1013,8 +1027,9 @@ def run(
         if len(pts) >= 2:
             f = _linfit([p for p, _ in pts], [y for _, y in pts])
             fits[mode] = {**f, "n_points": len(pts)}
-            log.info("[fit] %-11s TTR(P) = %.1fms + %.2fms * P  (n=%d)",
-                     mode, f["intercept"] * 1e3, f["slope"] * 1e3, len(pts))
+            log.info("[fit] %-11s TTR(P) = %.1fms (SE %.1f) + %.2fms (SE %.2f) * P  (n=%d)",
+                     mode, f["intercept"] * 1e3, f["intercept_se"] * 1e3,
+                     f["slope"] * 1e3, f["slope_se"] * 1e3, len(pts))
         else:
             fits[mode] = {"intercept": float("nan"), "slope": float("nan"),
                           "n_points": len(pts)}
@@ -1048,6 +1063,8 @@ def main() -> None:
     p.add_argument("--victim-end", type=int, default=17)
     p.add_argument("--positions", default="4,8,16,24,32",
                    help="comma-separated failure depths P")
+    p.add_argument("--repeats", type=int, default=1,
+                   help="independent trials per (mode, position); fits pool them")
     p.add_argument(
         "--modes", default="full_replay,surgical",
         help="comma-separated: full_replay,surgical,parity,replicate,raid6,"
@@ -1082,6 +1099,7 @@ def main() -> None:
         victim_stage=(args.victim_start, args.victim_end),
         positions=positions, modes=modes,
         prompt=args.prompt, max_tokens=max_tokens, out_name=out_name,
+        repeats=args.repeats,
     )
 
 
