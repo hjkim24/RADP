@@ -383,5 +383,10 @@ $0.6\pm10.7$\% of throughput (within measurement noise), double parity
 $3.9\pm3.5$\%, and replication $7.6\pm2.4$\%.  The scheduler's live solve at
 this scale also exhibits the feasibility coupling of
 Section~\ref{sec:eval:feasibility} directly: 496 of 1\,950 candidate
-placements were rejected by backup memory provisioning alone.
+placements were rejected by backup memory provisioning alone, and the
+offline cap sweep repeated on the 7B cluster profile finds the decoupled
+place-then-protect procedure infeasible at \emph{every} per-device memory
+cap at which the model fits (6.5\,GB up to the fleet's actual free memory),
+while the joint solve succeeds throughout --- at this scale the production
+operating point itself lies inside the coupling band.
 

@@ -2495,3 +2495,9 @@ off 1.925±0.049 tok/s; single **+0.6±10.7%(노이즈)**, double −3.9±3.5%, 
 vs KV-CARE ≈0 유지, 저장비 3.7×, k=2 분산-R 절편 0.58 s, Reconfigure 439 s, protection cost, 496/1950 live coupling.
 30.3 s 아티팩트 서술 3곳(각주·§C·discussion)을 "미측정 future work"에서 실측 0.58 s 인용으로 교체. 남은 것: D2.9 offline
 (pre-deploy 스냅샷 절차 진행 중, cap 그리드 28점 확장 `cc0a7ff`).
+
+**D2.9 offline 7B (2026-09-02 오전).** 워커 스테이지를 비운 fresh boot(원 fingerprint 3787dca cache HIT 복귀 확인)에서
+pre-deploy 스냅샷을 떠 40-cap 그리드(200 MB–23 GB)로 스윕. **pipeline scope: coupling band 6500–23000 MB — 모델이
+들어가는 전 구간에서 decoupled 불가·joint만 가용** (350M의 300–600 MB 인공 밴드 → 7B에선 프로덕션 레짐 자체가 밴드 안;
+live 496/1950과 삼각측량). fleet scope는 4.8 GB↑에서 양쪽 가용(밴드 없음), 4.6 GB↓는 model-does-not-fit — scope 구조도
+350M과 동일. `d29_coupling_threshold_20260902.json`. evaluation §Scale Validation에 한 문장으로 반영. 7B 캠페인 전 항목 마감.
