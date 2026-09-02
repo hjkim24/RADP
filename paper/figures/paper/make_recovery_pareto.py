@@ -9,6 +9,7 @@ so its x is the median over all positions, not the P=32 sample.
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import sys
 from pathlib import Path
@@ -18,10 +19,25 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).parent))
 from _paper import COL, EMPH, GRAY, INK, NAME, RESULTS, STYLE, clean, label, save  # noqa: E402
 
-par = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
-rep = json.load(open(RESULTS / "b1_ft_fleet_replicate.json"))
-rea = json.load(open(RESULTS / "b1_ft_fleet_reactive_client_interval_20260830.json"))
-ovh = json.load(open(RESULTS / "b1_ft_overhead.json"))
+MODEL = os.environ.get("RADP_FIG_MODEL", "350m")   # 350m (default) | 7b
+if MODEL == "7b":
+    par = json.load(open(RESULTS / "b1_ft_fleet_7b.json"))
+    rep = json.load(open(RESULTS / "b1_ft_fleet_7b_part2.json"))
+    rea = {"trials": []}
+    for name in ("b1_ft_fleet_7b_reactive_log_20260901.json", "b1_ft_fleet_7b_reactive_p2.json"):
+        if (RESULTS / name).exists():
+            rea["trials"] += json.load(open(RESULTS / name))["trials"]
+    _st = json.load(open(RESULTS / "b1_storage_7b.json"))["state_bytes_per_tok"]
+    ovh = {"replicate_bytes": _st["replicate (DejaVu)"], "parity_bytes": _st["parity k=1 (KV-CARE)"]}
+    XLIM, XTICKS, YLIM, YTICKS = (0.3, 900), [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500], (-15, 450), [0, 100, 200, 300, 400]
+    SUFFIX = "_7b"
+else:
+    par = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
+    rep = json.load(open(RESULTS / "b1_ft_fleet_replicate.json"))
+    rea = json.load(open(RESULTS / "b1_ft_fleet_reactive_client_interval_20260830.json"))
+    ovh = json.load(open(RESULTS / "b1_ft_overhead.json"))
+    XLIM, XTICKS, YLIM, YTICKS = (0.2, 60), [0.2, 0.5, 1, 2, 5, 10, 20, 50], (-1.5, 42), [0, 10, 20, 30, 40]
+    SUFFIX = ""
 KB = 1024
 
 
@@ -55,13 +71,13 @@ for mode, x, y, place in PTS:
     label(ax, text, xy=(x, y), color=st["color"], bold=(mode == "parity"), **place)
 
 ax.set_xscale("log")
-ax.set_xlim(0.2, 60)
-ax.set_xticks([0.2, 0.5, 1, 2, 5, 10, 20, 50])
-ax.set_xticklabels(["0.2", "0.5", "1", "2", "5", "10", "20", "50"])
-ax.set_ylim(-1.5, 42)
-ax.set_yticks([0, 10, 20, 30, 40])
+ax.set_xlim(*XLIM)
+ax.set_xticks(XTICKS)
+ax.set_xticklabels([f"{v:g}" for v in XTICKS])
+ax.set_ylim(*YLIM)
+ax.set_yticks(YTICKS)
 ax.set_xlabel("recovery latency at $P=32$ (s)")
 ax.set_ylabel("retained recovery state\n(kB per KV token)")
 clean(ax, grid_axis="both")
 fig.subplots_adjust(left=0.17, right=0.98, top=0.97, bottom=0.19)
-save(fig, "fig_recovery_pareto")
+save(fig, "fig_recovery_pareto" + SUFFIX)

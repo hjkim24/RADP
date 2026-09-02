@@ -343,10 +343,10 @@ itself is not an evaluation axis in this paper.
     \midrule
     Recompute   & 298 & 453.9 & 0 \\
     Petals      & 1\,012 & 21.4 & 0 \\
-    DejaVu      & 1\,173 & $-15.0^{\mathrm{a}}$ & 426 \\
+    DejaVu      & 1\,173 & $-15.0^{\mathrm{a}}$ & 416 \\
     Reconfigure & \multicolumn{2}{c}{median 439.4\,s (413.1--465.8)} & 0 \\
-    \sys{} $k{=}1$ & 1\,216 & $-6.2$ & 115 \\
-    \sys{} $k{=}2$ & 584 & 30.8 & 229 \\
+    \sys{} $k{=}1$ & 1\,216 & $-6.2$ & 112 \\
+    \sys{} $k{=}2$ & 584 & 30.8 & 224 \\
     \bottomrule
   \end{tabular}
 
@@ -357,7 +357,7 @@ itself is not an evaluation axis in this paper.
 
 To test whether these findings survive model scale, we repeated the recovery
 experiments with OPT-6.7B in fp16 --- 19$\times$ more parameters, 32 decoder
-layers, and 16.4\,kB of KV state per layer per token --- served as a
+layers, and 16\,384 bytes of KV state per layer per token --- served as a
 six-stage pipeline by six CUDA workers of the same testbed (the five above
 plus a fourth Orin Nano), with a failure-free median token interval of
 515\,ms.  Table~\ref{tab:scale-7b} summarizes the same
@@ -368,7 +368,7 @@ costs the equivalent of two to three failure-free decode steps
 (0.86--1.55\,s) regardless of failure depth, and DejaVu's recovery often
 disappears into step jitter outright.
 The zero-recompute storage gap also widens with depth: replication retains
-426\,kB per token against \sys{}'s 115 (ratio 3.7 versus 2.25 at 350M).
+416\,kB per token against \sys{}'s 112 (ratio 3.7 versus 2.25 at 350M).
 
 Three further observations close loops left open at 350M.  First, with the
 7B placement's backups landing on distinct nodes, double-parity recovery

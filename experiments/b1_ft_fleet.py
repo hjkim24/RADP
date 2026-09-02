@@ -219,6 +219,11 @@ def restart_coordinator_and_wait(
         except (subprocess.TimeoutExpired, OSError):
             pass
         if "READY" in out:
+            # A worker whose heartbeat stalled while loading its stage can sit
+            # in the gateway's dead set at boot (nothing revives it on the next
+            # beat); with R={} that turns the very first request into
+            # NoRecoveryError. Clear it now that every stage is loaded.
+            stabilize_dead_set(coord_ssh.split("@")[-1], None)
             return time.perf_counter() - t0
         if "WAIT" in out:
             budget -= (time.time() - tick) + 4
