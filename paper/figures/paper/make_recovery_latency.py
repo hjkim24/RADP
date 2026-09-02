@@ -17,6 +17,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _paper import COL_TALL, EMPH, GRAY, INK, LIGHT, NAME, RESULTS, STYLE, clean, label, save  # noqa: E402
@@ -57,8 +58,10 @@ def valid(t):
             and t["sequence_match"] and t.get(f"{m}_branch_ran", True))
 
 
-median_step = statistics.median(t["median_tbt_seconds"] for t in trials
+_step_src = core["trials"] if MODEL == "7b" else trials
+median_step = statistics.median(t["median_tbt_seconds"] for t in _step_src
                                 if valid(t) and "median_tbt_seconds" in t)
+print(f"  one decode step = {median_step*1e3:.0f} ms")
 
 fig, ax = plt.subplots(figsize=COL_TALL)
 xline = np.linspace(0, 36, 50)
@@ -83,10 +86,11 @@ for mode in ORDER:
                f"{NAME[mode]} ({slope_ms:.0f} ms/pos)"
         ax.plot(xline, f["intercept"] + f["slope"] * xline, linestyle=st["ls"],
                 color=st["color"], linewidth=0.9, zorder=3)
-        h, = ax.plot(xs, ys, linestyle="", marker=st["marker"], color=st["color"],
-                     mfc=st["mfc"], zorder=4, label=text)
-        # legend handle carries both the marker and the line style
-        h.set_linestyle(st["ls"])
+        ax.plot(xs, ys, linestyle="", marker=st["marker"], color=st["color"],
+                mfc=st["mfc"], zorder=4)
+        # legend proxy carries marker + line style without joining the samples
+        h = Line2D([], [], linestyle=st["ls"], marker=st["marker"], color=st["color"],
+                   mfc=st["mfc"], label=text)
     handles.append(h)
 
 # absolute anchor: one normal decode step

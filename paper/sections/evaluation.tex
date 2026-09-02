@@ -360,7 +360,7 @@ experiments with OPT-6.7B in fp16 --- 19$\times$ more parameters, 32 decoder
 layers, and 16\,384 bytes of KV state per layer per token --- served as a
 six-stage pipeline by six CUDA workers of the same testbed (the five above
 plus a fourth Orin Nano), with a failure-free median token interval of
-515\,ms.  Table~\ref{tab:scale-7b} summarizes the same
+454\,ms in these sweeps.  Table~\ref{tab:scale-7b} summarizes the same
 measurement protocol at this scale.  Recomputation becomes steeper with the
 model: Recompute's slope grows 2.8$\times$ (164.3 to 453.9\,ms per position),
 while \sys{}'s slope remains statistically zero, so every \sys{} recovery

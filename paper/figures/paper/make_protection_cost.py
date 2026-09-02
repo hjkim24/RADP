@@ -22,7 +22,7 @@ from _paper import COL, EMPH, GRAY, INK, LIGHT, NAME, RESULTS, clean, save  # no
 MODEL = os.environ.get("RADP_FIG_MODEL", "350m")   # 350m (default) | 7b
 if MODEL == "7b":
     agg = json.load(open(RESULTS / "b1_steady_7b_n3.json"))["aggregate"]
-    YLIM, SUFFIX = (-4, 12), "_7b"
+    YLIM, SUFFIX = (-4, 15), "_7b"
 else:
     agg = json.load(open(RESULTS / "b1_steady_modes_n3_20260830.json"))["aggregate"]
     YLIM, SUFFIX = (0, 12), ""
@@ -52,6 +52,6 @@ ax.set_ylim(*YLIM)
 if YLIM[0] < 0:
     ax.axhline(0, color=INK, linewidth=0.5, zorder=2)
 clean(ax)
-ax.legend(loc="upper left", ncol=2)
+ax.legend(loc="upper center" if MODEL == "7b" else "upper left", ncol=2)
 fig.subplots_adjust(left=0.14, right=0.98, top=0.97, bottom=0.2)
 save(fig, "fig_protection_cost" + SUFFIX)
