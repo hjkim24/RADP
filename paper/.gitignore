@@ -25,3 +25,6 @@ refs/*.pdf
 __pycache__/
 *.pyc
 figures/*.py
+figures/**/*.py
+figures/**/__pycache__/
+figures/paper/README.md

@@ -146,8 +146,8 @@ median token interval); at $P=32$ it is $1.5\times$ faster than Petals and
 $13.5\times$ faster than Recompute, and the gap widens with every additional
 token.  DejaVu, which installs a stored replica instead of decoding parity,
 has the same flat shape and the same intercept within noise (1.17 versus
-1.22\,s), and at two positions its recovery step vanished into decode jitter
-altogether: on this pipeline the zero-recomputation families have reached the
+1.22\,s), and at two positions its recovery step was indistinguishable from decode
+jitter: on this pipeline the zero-recomputation families have reached the
 noise floor of normal decoding.  Relative to DejaVu, \sys{} offers the same
 latency with $3.7\times$ less retained state (Section~\ref{sec:eval:footprint}).
 
@@ -208,8 +208,7 @@ tolerating fewer failures; the implementation stops at $k=2$, the two-column
 construction of Section~\ref{sec:design}.  The per-token difference
 accumulates over the context: at a 2\,048-token context the measured 7B
 placement retains 832\,MB under replication and 224\,MB under single parity,
-and the 350M placement 72 versus 32\,MB.  These totals are arithmetic on the
-measured layer shapes, not measurements.
+and the 350M placement 72 versus 32\,MB.  These totals are a derived projection from the measured layer shapes.
 
 \textbf{Two simultaneous failures.}  With $k=2$, we fail two protected
 stages at once (\texttt{on-2} and \texttt{ao-2}, whose backups
@@ -225,8 +224,7 @@ non-head backup to the same Orin Nano, and the same two-failure trials, while
 reconstructing both columns at every position with a slope of 2.78\,ms per
 position, posted an intercept of 30.3\,s because that board had to load a
 second stage cold before it could serve.  The intercept is a placement
-effect, not a property of the reconstruction, and the distributed mapping at
-7B removes it.
+effect, and the distributed mapping at 7B removes it.
 
 \subsection{KV-State Fidelity}\label{sec:eval:fidelity}
 
@@ -276,11 +274,11 @@ same-tier drift and deeper stages remain to be measured.
     Backup hosts & Both feasible & Only joint feasible & Neither \\
     \midrule
     \multicolumn{4}{l}{\emph{OPT-6.7B (six CUDA workers)}} \\
-    Pipeline devices & --- & $6.5\,\mathrm{GB}\leq c\leq$ actual & $c\leq6.0$\,GB \\
-    Whole fleet & $c\geq4.8$\,GB & --- & $c\leq4.6$\,GB \\
+    Pipeline devices & none & $6.5\,\mathrm{GB}\leq c\leq$ actual & $c\leq6.0$\,GB \\
+    Whole fleet & $c\geq4.8$\,GB & none & $c\leq4.6$\,GB \\
     \multicolumn{4}{l}{\emph{OPT-350M (five CUDA workers)}} \\
     Pipeline devices & $c\geq650$\,MB & $300\leq c\leq600$\,MB & $c\leq250$\,MB \\
-    Whole fleet (+2 CPU nodes) & $c\geq250$\,MB & $c=200$\,MB & --- \\
+    Whole fleet (+2 CPU nodes) & $c\geq250$\,MB & $c=200$\,MB & none \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -317,8 +315,8 @@ feasible appears at 300--600\,MB (pipeline devices) and 200\,MB (whole
 fleet); at $c=600$\,MB the cost-only DP prefers two stages,
 \texttt{on-1}[1--23]$\to$\texttt{on-6}[24], whose 23-layer stage no peer can
 reserve, while the joint solver returns four stages whose largest has a host.
-These are feasibility results under a memory constraint, not serving-latency
-results; they show that the backup reservation in Eq.~\ref{eq:mem} decides
+These are feasibility results under a memory constraint and say nothing
+about serving latency; they show that the backup reservation in Eq.~\ref{eq:mem} decides
 which placements are admissible once memory is tight, and that a 7B-class
 model on 8\,GB boards is already in that regime.
 
@@ -377,8 +375,8 @@ traffic itself is not an evaluation axis in this paper.
 
 Table~\ref{tab:scales} collects the two scales.  A $19\times$ larger model
 makes recomputation $2.8\times$ steeper per position and reconfiguration
-$18\times$ slower, while \sys{}'s slope stays at zero, its recovery stays
-within a few decode steps, its storage advantage over replication widens
-with pipeline depth, its failure-free cost falls below measurement noise,
-and the feasibility coupling that had to be induced with synthetic memory
-caps at 350M binds at the fleet's actual capacity at 7B.
+$18\times$ slower, while \sys{}'s slope stays at zero and its recovery
+stays within a few decode steps.  Its storage advantage over replication
+widens with pipeline depth, its failure-free cost falls below measurement
+noise, and the feasibility coupling that had to be induced with synthetic
+memory caps at 350M binds at the fleet's actual capacity at 7B.

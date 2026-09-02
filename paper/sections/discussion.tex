@@ -32,8 +32,7 @@ loaded and its recovery state current before the failure.
 
 \textbf{Two simultaneous failures.}  The double-parity result should be read
 for its guarantee first: at both scales every two-failure trial reconstructed
-both lost columns from $P$ and $Q$.  Its absolute cost is a property of the
-recovery mapping, not of the reconstruction.  With the two backups on
+both lost columns from $P$ and $Q$.  Its absolute cost depends on the recovery mapping.  With the two backups on
 distinct nodes, as the scheduler placed them at 7B, recovery completes in
 0.53--1.24\,s; with every non-head backup on one Orin Nano, as on the 350M
 placement, the second promotion is a cold weight load and the intercept
