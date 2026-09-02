@@ -2479,3 +2479,19 @@ non-blocking으로 뒤집혀 "requires blocking IO"로 전 호출 거부되던 �
 지연(ao-1/ao-2 재등록 지연) 1건과 ~50분 VPN 단절 1건을 각각 재시도로 흡수(surgical P=8, parity P=8). config.model 하드코딩
 (opt-350m)을 group_vars에서 읽도록 수정하고 이번 JSON provenance 정정. 다음: replicate/raid6/reactive 7B 스윕
 (reactive 전 `reconfigure_over_survivors` timeout 상향), 7B storage footprint·protection cost, 논문 반영.
+
+## Phase B1-7B-COMPLETE — 잔여 7B 측정 마감 + 논문 반영 (2026-09-01~02)
+
+**Reconfigure(reactive) 7B**: 4중 수정 끝에 유효 2점 확보 — ① dead-set 안정화(driver `b544b94`), ② gateway `rebind_plan`
+(reconfigure가 워커에만 배포하고 라우팅을 안 바꿔 replay가 "no stage loaded"로 죽던 근본 버그, `83af612`+테스트),
+③ R={} 재-solve(`c6ee5d8` — 백업 프로비저닝+구 stage 잔존 메모리로 320/320 infeasible이던 것), ④ R={} fleet 배포 +
+**fault.conf를 전 워커로**(기존엔 on-2에만 있어 동적 victim이 inert 워커에 걸림). 결과 **median 439.4 s (413.1–465.8)**,
+전 게이트 통과 — 350M 24.25 s의 ~18×. P=16/24/32는 R={} 부팅 불안정(placement 변동, Nano-tail load_head 사망)에 유실,
+로그 추출본 `b1_ft_fleet_7b_reactive_log_20260901.json`. 드라이버를 **ax-1로 이전**(ansible-core 2.15 설치, inventory·fleet 키
+복사, self-ssh, `_ANSIBLE_BIN` 절대경로 `6005cd5`) — VPN 무관화, 밤샘 8.5 h 단절도 무영향.
+**Protection cost N=3 7B** (`b1_steady_7b.py` `2be3677`+`0d8885a`, ax-1 야간): 12/12 cell, 전 cell 디코드 동일 —
+off 1.925±0.049 tok/s; single **+0.6±10.7%(노이즈)**, double −3.9±3.5%, replication −7.6±2.4%. 350M(−5~−7%)보다 얇음.
+**논문 반영**: evaluation §G "Scale Validation on a 7B-Class Model"(tab:scale-7b) 신설 — Recompute slope 2.8×(164.3→453.9)
+vs KV-CARE ≈0 유지, 저장비 3.7×, k=2 분산-R 절편 0.58 s, Reconfigure 439 s, protection cost, 496/1950 live coupling.
+30.3 s 아티팩트 서술 3곳(각주·§C·discussion)을 "미측정 future work"에서 실측 0.58 s 인용으로 교체. 남은 것: D2.9 offline
+(pre-deploy 스냅샷 절차 진행 중, cap 그리드 28점 확장 `cc0a7ff`).

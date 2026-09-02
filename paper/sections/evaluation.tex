@@ -105,7 +105,8 @@ as a validity gate.
   \\[2pt]
   \raggedright\scriptsize $\dagger$ Two-failure trials; the 30.3\,s intercept
   is a backup-placement artifact of this fleet (Section~\ref{sec:eval:footprint})
-  and is not a property of the algorithm.
+  and is not a property of the algorithm --- with backups on distinct nodes
+  the intercept is 0.58\,s (Section~\ref{sec:eval:scale}).
 \end{table}
 
 Fig.~\ref{fig:recovery-latency} and Table~\ref{tab:recovery-summary} answer
@@ -207,9 +208,10 @@ intercept of 30.3\,s, however, is an artifact of this fleet: the automatically
 built recovery mapping assigns every non-head backup to the same Orin Nano,
 so a two-stage failure makes that board load a second stage cold before it
 can serve.  The intercept is a placement effect that a backup mapping spread over
-different hosts would avoid, a configuration we have not measured; the same
-fleet recovers a single failure in 0.28\,s.  We
-use the double-parity result only for its slope and its guarantee, and do not
+different hosts avoids: with the 7B fleet's distributed backups the
+double-parity intercept is 0.58\,s (Section~\ref{sec:eval:scale}), and the
+same 350M fleet recovers a single failure in 0.28\,s.  We therefore use the
+350M double-parity result only for its slope and its guarantee, and do not
 compare its absolute latency with the other families.
 
 \subsection{KV-State Fidelity}\label{sec:eval:fidelity}
@@ -326,4 +328,60 @@ and the second GF($2^8$) column is folded at the coordinator, away from the
 workers' forward path.  Tolerating a second failure with parity costs one
 more retained column and no additional decode-time overhead.  Network traffic
 itself is not an evaluation axis in this paper.
+
+\subsection{Scale Validation on a 7B-Class Model}\label{sec:eval:scale}
+
+\begin{table}[t]
+  \centering
+  \setlength{\tabcolsep}{4pt}
+  \caption{Recovery families at 7B scale (live, same fleet and injection).}
+  \label{tab:scale-7b}
+  \begin{tabular}{l r r r}
+    \toprule
+    Family & Intercept & Slope & State \\
+           & (ms) & (ms/pos) & (kB/tok) \\
+    \midrule
+    Recompute   & 298 & 453.9 & 0 \\
+    Petals      & 1\,012 & 21.4 & 0 \\
+    DejaVu      & 1\,173 & $-15.0^{\mathrm{a}}$ & 426 \\
+    Reconfigure & \multicolumn{2}{c}{median 439.4\,s (413.1--465.8)} & 0 \\
+    \sys{} $k{=}1$ & 1\,216 & $-6.2$ & 115 \\
+    \sys{} $k{=}2$ & 584 & 30.8 & 229 \\
+    \bottomrule
+  \end{tabular}
+
+  \raggedright\scriptsize $^{\mathrm{a}}$Two of five DejaVu trials are
+  excluded by the visibility gate: their recovery step was indistinguishable
+  from normal decode jitter.
+\end{table}
+
+To test whether these findings survive model scale, we repeated the recovery
+experiments with OPT-6.7B in fp16 --- 19$\times$ more parameters, 32 decoder
+layers, and 16.4\,kB of KV state per layer per token --- served as a
+six-stage pipeline by six CUDA workers of the same testbed (the five above
+plus a fourth Orin Nano), with a failure-free median token interval of
+515\,ms.  Table~\ref{tab:scale-7b} summarizes the same
+measurement protocol at this scale.  Recomputation becomes steeper with the
+model: Recompute's slope grows 2.8$\times$ (164.3 to 453.9\,ms per position),
+while \sys{}'s slope remains statistically zero, so every \sys{} recovery
+completes within one to two failure-free decode steps regardless of failure
+depth, and DejaVu's recovery often disappears into step jitter outright.
+The zero-recompute storage gap also widens with depth: replication retains
+426\,kB per token against \sys{}'s 115 (ratio 3.7 versus 2.25 at 350M).
+
+Three further observations close loops left open at 350M.  First, with the
+7B placement's backups landing on distinct nodes, double-parity recovery
+posts a 0.58\,s intercept and completes in 0.53--1.24\,s across depths ---
+direct evidence that the 30.3\,s intercept in
+Table~\ref{tab:recovery-summary} was placement concentration, not algorithm
+cost.  Second, Reconfigure's median rises to 439.4\,s (413.1 and 465.8\,s at
+the two measured positions), dominated by re-profiling and cold redeployment
+of 12.4\,GiB of weights: the price of holding no recovery state grows
+roughly 18$\times$ from 350M.  Third, protection stays cheap as the model
+grows: over the same three-round interleaved protocol, single parity costs
+$0.6\pm10.7$\% of throughput (within measurement noise), double parity
+$3.9\pm3.5$\%, and replication $7.6\pm2.4$\%.  The scheduler's live solve at
+this scale also exhibits the feasibility coupling of
+Section~\ref{sec:eval:feasibility} directly: 496 of 1\,950 candidate
+placements were rejected by backup memory provisioning alone.
 

@@ -32,9 +32,9 @@ position places it in the same flat band as single parity.  Its 30.3\,s
 intercept reflects the recovery mapping that the scheduler built for this
 fleet, which assigns every non-head backup to one Orin Nano; a second
 promotion on that board is a cold weight load.  A mapping that spreads the
-backups over different hosts removes that cost by construction, but we have
-not measured it, so we do not compare the absolute latency of $k=2$ with the
-other families.
+backups over different hosts removes that cost: at 7B scale, where the
+scheduler's mapping lands the two backups on distinct nodes, the $k=2$
+intercept is 0.58\,s (Section~\ref{sec:eval:scale}).
 
 \textbf{Fidelity of the recovered KV.}  Parity and replication install the
 bytes that were stored, so the recovered KV equals what the failed stage held.
