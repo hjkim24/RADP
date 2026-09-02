@@ -325,15 +325,17 @@ def reconfigure_over_survivors(coord_host: str, timeout: float = 900.0) -> dict:
 
 
 def fetch_cluster(coord_host: str, timeout: float = 30.0) -> dict:
-    """GET /api/cluster → the auto_schedule sidecar (placement, recovery, ...)."""
-    req = urllib.request.Request(_coord_web(coord_host) + "/api/cluster")
+    """GET /api/gateway → the LIVE placement + recovery table the gateway is
+    serving. (/api/cluster is the auto_schedule sidecar file: stale under a
+    manual-placement boot, which silently armed faults on the wrong stage
+    ranges in the 2026-09-02 k=2 repeat sweep.)"""
+    req = urllib.request.Request(_coord_web(coord_host) + "/api/gateway")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
 def fetch_placement(coord_host: str, timeout: float = 30.0) -> list[dict]:
-    """GET /api/cluster → the currently-deployed placement stages
-    ([{device,start,end}, ...])."""
+    """Live placement stages ([{device,start,end}, ...]) from the gateway."""
     return fetch_cluster(coord_host, timeout).get("placement", [])
 
 
