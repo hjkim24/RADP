@@ -2501,3 +2501,14 @@ pre-deploy 스냅샷을 떠 40-cap 그리드(200 MB–23 GB)로 스윕. **pipeli
 들어가는 전 구간에서 decoupled 불가·joint만 가용** (350M의 300–600 MB 인공 밴드 → 7B에선 프로덕션 레짐 자체가 밴드 안;
 live 496/1950과 삼각측량). fleet scope는 4.8 GB↑에서 양쪽 가용(밴드 없음), 4.6 GB↓는 model-does-not-fit — scope 구조도
 350M과 동일. `d29_coupling_threshold_20260902.json`. evaluation §Scale Validation에 한 문장으로 반영. 7B 캠페인 전 항목 마감.
+
+**Reconfigure 7B 보강 시도 → n=2 확정 (2026-09-02 오전).** 잔여 3점(P=16/24/32) 회수를 위해 R={} 부팅을 manual placement로
+고정(group_vars `schedule_mode: manual` + 검증된 AGX-head/AGX-tail 6-stage, `cluster_recovery: {}`). 부팅은 결정론화·단축됐지만
+(프로파일링 생략, reference 1분) 두 가지가 드러남: ① 스테이지 로드 중 heartbeat가 밀린 워커가 dead set에 잔류해 첫 요청이
+NoRecoveryError로 죽음 → `restart_coordinator_and_wait`가 READY 직후 dead set을 정리하도록 수정(`e7863fa`); ② 그 뒤에도 P=16/24가
+동일 패턴으로 실패 — fault는 on-5에서 발화(worker 저널)했으나 gateway가 요청 측에서 RPC 오류를 관측하지 못하고(attribution 로그 없음)
+detector가 하류 on-6을 dead로 마킹, 요청은 재시도로 36토큰 완주(one-shot fault) → 재-solve가 on-6을 제외. manual placement에서의
+fault 전파 경로 차이로 추정, 미해결. **결정: Reconfigure 7B는 유효 2점(median 439.4 s, 413–466)으로 확정** — median(range) 보고
+계열이고 350M(n=5)이 상세 분석을 담당. fleet을 auto+backup_placement=true로 복원 후 **두 번째 victim 스윕**(on-5[15..18],
+full_replay/surgical/parity, `b1_ft_fleet_7b_mid`) 기동. 7B figure 3장(`_7b` 접미, `RADP_FIG_MODEL=7b`)과 kB 관례 통일(416/112/224)은
+`e7863fa`·`be2bad0`.
