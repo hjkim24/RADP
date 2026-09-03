@@ -20,11 +20,9 @@ and 24.25\,s at 350M is dominated by re-profiling the survivors, re-solving
 placement, cold-loading weights on the newly assigned workers, and rebuilding
 the pipeline; replaying the prefix accounts for 1.6--6.4\,s of the 350M
 figure.  Because the surviving fleet, and hence the victim, differs from
-trial to trial, we report level and range rather than a slope.  At 7B we
-report two positions: a deployment that keeps no backups gives the scheduler
-no reservation to anchor, so its boot placement varied between trials, and
-three of the five trials failed their validity gates before the failure was
-injected.  This baseline is deliberately unassisted.  SpotServe reaches much lower
+trial to trial, we report level and range rather than a slope; at 7B two
+positions were measured, and the five-position characterization of this
+baseline is the 350M one.  This baseline is deliberately unassisted.  SpotServe reaches much lower
 migration cost by planning around advance preemption notice and a grace
 period~\cite{miao2024spotserve}; an unannounced crash or out-of-memory kill on
 an edge worker offers neither, which is why \sys{} keeps its backup weights
@@ -70,10 +68,25 @@ measured at two positions.  The protection domain covers
 fail-stop failures of non-head workers: the head stage and the coordinator
 are unprotected, a last-stage failure falls back to replay because no
 downstream survivor can confirm the final slot, and a failure during prefill
-has no prefix to reconstruct.  Latency was measured with synchronous
-forwarding; asynchronous forwarding adds a heartbeat-bounded detection delay
-common to all families that we did not quantify, and a worker that hangs
-rather than crashes can still be misattributed.  The fidelity probe covers
+has no prefix to reconstruct.  The injected failure is a deterministic exception raised by the victim
+after its input for position $P$ has reached the coordinator, which is the
+case the recovery contract is designed for; process kills and out-of-memory
+terminations, failures that strike before the mirrored input lands (contract
+check (iv)), and the latency of the replay fallback that such cases trigger
+were not measured, so the reported latencies bound the parity path rather
+than the average over all failure timings.  Latency was measured with
+synchronous forwarding; asynchronous forwarding adds a heartbeat-bounded
+detection delay common to all families that we did not quantify, and a
+worker that hangs rather than crashes can still be misattributed.  Backup
+weights are preloaded, and Eq.~\ref{eq:mem} reserves memory for them; a
+lazy variant that loads only the failed stage's weights at failure time would
+relax the reservation at a recovery cost between \sys{} and Reconfigure,
+and we did not measure that middle point.  The coordinator holds all parity
+state and is itself unprotected; its memory grows with the number of
+concurrent requests and their context lengths, which we did not quantify
+beyond the per-request figures above.  The scheduler does not optimize where
+backups land, so the sub-second two-failure recovery holds for mappings, like
+the 7B one, that place the two backups on distinct nodes.  The fidelity probe covers
 one tier pair and one two-layer stage on the 350M deployment.  The storage
 advantage depends on placement geometry: double parity saves 46\% over
 replication on the 7B placement but only 11\% on the head-heavy 350M
@@ -85,7 +98,11 @@ three rounds.  Network
 traffic is not an evaluation axis in this paper.
 
 \textbf{Future work.}  Reconfigure with a fixed victim and a full position
-sweep at 7B would complete the latency comparison.  Other model families,
+sweep at 7B would complete the latency comparison, as would end-to-end
+measurements that include heartbeat detection under asynchronous forwarding,
+process-kill injection, and the lazy-backup middle point.  Adding backup
+spread to the placement objective would make the two-failure cost independent
+of where the scheduler happens to place backups.  Other model families,
 fleets with genuinely different SKUs, and a head/middle/tail victim sweep
 would test the generality of the flat-in-$P$ result beyond the two scales
 measured here.  Protecting the coordinator, by replicating parity state or by pairing
