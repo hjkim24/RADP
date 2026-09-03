@@ -2588,3 +2588,9 @@ fig_storage_tolerance는 본문 공식으로 대체·삭제. testbed 필요 항�
 - MUST-FIX 15건 전부 텍스트로 적용(결론 재작성, Pareto 해석, 163/183 구분, Eq. mem weights-only, contract 한정, 3.7×/2.7×, 6-worker/cap rule, 그림 3종 재생성, RPC round trips, Limitations 5문장, Reconfigure n·pairing 정정(P=4→465.8), R head 포함, DejaVu slope/k=2 intercept). SHOULD-FIX 중 텍스트로 가능한 것 적용, 데이터 없는 항목은 응답서에 미적용으로 명시.
 - 산출물: `docs/paper/ars_rereview_decision_2026-09-03.md`, 응답서 Round 2 절, 그림 `_names.py` parity 라벨 "KV-CARE (k=1)".
 - 검증: tectonic 빌드 오류 0, 10쪽, 초록 258단어.
+
+## Phase PAPER-ARS-ROUND3 — 2차 검증 재심사 + 3차 수정 (2026-09-03)
+
+- 3차 패널: R0 Minor(무조건부)·R1 Accept w/ minor·R2 Minor(무조건부)·R3 Minor·DA Minor(조건: "solely"). 응답서 허위 0건. 2차 편집의 회귀: R 정의역이 §III-B의 𝒮(non-head)와 충돌, 결론에 weights-only 미전파, "496 rejected solely"가 코드상 근거 없음(scheduler가 NoFeasible/NoRecovery를 한 handler로 합산).
+- 3차 수정: 위 3건 + DejaVu 기울기 "about two SE", spread→standard deviation, 350M 1.7–1.9, Pareto "within three decode steps", Table I 각주 b, 500(493) ms, "during failure-free decoding", EC-Cache pages. 응답서 Round 3 절 추가, 완전성 과장 3건 정정.
+- 검증: 빌드 오류 0, 10쪽, 초록 259단어.

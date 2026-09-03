@@ -4,9 +4,11 @@
 
 \sys{} consists of one coordinator and a set of heterogeneous edge workers.
 The coordinator profiles the workers, selects an active layer placement
-$\psi$, assigns backup workers through a recovery mapping
-$R:\mathcal{S}\to\mathcal{D}$ that gives every stage $s$, the head included, a backup device
-$R(s)$ other than the one serving it, and manages request recovery.  The placement partitions the decoder into contiguous
+$\psi$, assigns backup workers through a recovery mapping $R$ that gives every
+stage $s$, the head included, a backup device $R(s)\in\mathcal{D}$ other
+than the one serving it (parity protects only the non-head stages
+$\mathcal{S}$; the head's backup serves replay), and manages request
+recovery.  The placement partitions the decoder into contiguous
 stages.  An active worker stores its stage weights and the request KV cache,
 whereas a worker selected by $R$ reserves memory and preloads the weights of
 the stage that it may need to replace.  The coordinator is outside the

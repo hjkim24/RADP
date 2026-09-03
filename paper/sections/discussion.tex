@@ -126,13 +126,14 @@ request's KV state and existing recovery paths trade prefix-length
 recomputation, sum-of-stages replication, or minutes of reconfiguration.
 \sys{} recovers the lost KV from one or two cross-stage parity columns
 without recomputing the prefix and selects the layer placement together with
-the backup assignment so that the recovered state has a device to run on.
+the backup assignment so that the failed stage's weights have a device to
+load on.
 On a six-stage Jetson pipeline serving OPT-6.7B, single parity recovers in
 1.2--1.4\,s, flat over the measured failure positions, while recomputation
 grows to 16\,s; it recovers about one decode step later than replication
 while retaining $3.7\times$ less coordinator state ($2.7\times$ over the
 stages the parity path recovers), and costs less than the $\pm11$\%
-round-to-round spread of the protection-cost measurement; double parity
+round-to-round standard deviation of the protection-cost measurement; double parity
 restores two simultaneous stage failures from the same stored bytes at the
 cost of one when their backups sit on distinct nodes; and with backups
 confined to pipeline devices, joint placement remains feasible at every

@@ -54,7 +54,7 @@ Reconfigure n≥3 at 7B; longer prompts and concurrency; kill/OOM and random-tim
 
 # Round 2 — verification re-review (2026-09-03)
 
-The same five reviewers verified Round 1 against the pre-revision file. Panel: R0/R1/R2 Minor (two conditional), R3/DA Major; editorial decision **Major Revision** on three grounds: the Conclusion had not been revised although this letter said it had, the Fig. 2 reading sentence contradicted Table I, and one quantity (350M decode step) carried two values. All fifteen MUST-FIX items are text-only and are applied below; the letter's four unsupported statements (conclusion alignment; energy; concurrency/prompt length; the coordinator item citing a pre-existing sentence) are corrected above.
+The same five reviewers verified Round 1 against the pre-revision file. Panel: R0/R1/R2 Minor (two conditional), R3/DA Major; editorial decision **Major Revision** on three grounds: the Conclusion had not been revised although this letter said it had, the Fig. 2 reading sentence contradicted Table I, and one quantity (350M decode step) carried two values. Fourteen of the fifteen MUST-FIX items are applied below (item 7's disclosure of the earlier five-worker pool is deliberately omitted from the manuscript, since the submitted version never carried the 6.5 GB band); the letter's four unsupported statements (conclusion alignment; energy; concurrency/prompt length; the coordinator item citing a pre-existing sentence) are corrected above.
 
 | # | Item | Change |
 |---|---|---|
@@ -74,6 +74,28 @@ The same five reviewers verified Round 1 against the pre-revision file. Panel: R
 | 14 | DejaVu slope / k=2 intercept (R1, R2, R3, DA) | "within two standard errors of zero and not modelled"; k=2 intercept 0.11 s below k=1 "within the fit uncertainty". |
 | 15 | This letter | Corrected as above. |
 
-SHOULD-FIX applied: 16 fencing sentence (returning partitioned worker not fenced; R does not model failure domains); 18 iteration bound (ten) and enumeration size, growth stated; 19 fidelity column footnote "by construction", CPU tier absent from the 7B fleet; 22 Parity Models and regenerating-code wording corrected, PagedAttention cited, DOIs added; 23 heartbeat sentence; 24 parity and replication ship identical bytes; 26 cap rule and grid; 27 "throughput choice; capacity binds on the Nanos"; 28 "kB denotes 1 024 bytes"; 29 §Across Scales restored in compressed form with per-step normalisation (1.01 vs 0.89 steps per position); 32/33 α defined as a configured weight, device set 𝒟, DP cost t(i,j,d); 35 roadmap sentence; 37 "offline placement analysis" in the abstract; 40 ±11% referent.
+SHOULD-FIX applied: 16 fencing sentence (returning partitioned worker not fenced; R does not model failure domains); 18 iteration bound (ten) and enumeration size stated (no growth rate or solve time); 19 fidelity column footnote "by construction", CPU tier absent from the 7B fleet; 22 Parity Models and regenerating-code wording corrected, PagedAttention cited, DOIs added to three of the four new entries (EC-Cache is a USENIX paper without a DOI; pages added); 23 heartbeat sentence; 24 parity and replication ship identical bytes; 26 cap rule and grid; 27 "throughput choice; capacity binds on the Nanos"; 28 "kB denotes 1 024 bytes"; 29 §Across Scales restored in compressed form with per-step normalisation (1.01 vs 0.89 steps per position); 32/33 α defined as a configured weight, device set 𝒟, DP cost t(i,j,d); 35 roadmap sentence; 37 "offline placement analysis" in the abstract; 40 ±11% referent.
 
-Not applied (no data without the testbed, or out of page budget): 17 coordinator sizing/availability paragraph; 20 environment versions; 21 per-cell exclusion accounting; 25 forward-path blocking; 30 rank inheritance after promotion; 31 GQA/INT4 recomputation; 34 ℓ_max placement term; 38 orphan background file; 41 Reconfigure remainder accounting. Abstract 258 words; 10 pages.
+Not applied — no data without the testbed: 20 environment versions; 21 per-cell exclusion accounting; 41 Reconfigure remainder accounting. Not applied — page budget (the paper is held at 10 pages): 17 coordinator sizing/availability paragraph; 25 forward-path blocking; 30 rank inheritance after promotion; 31 GQA/INT4 recomputation; 34 ℓ_max placement term; 38 orphan background file. Abstract 258 words; 10 pages.
+
+---
+
+# Round 3 — second verification re-review (2026-09-03)
+
+Panel: R0 Minor (unconditional), R1 Accept subject to minor corrections, R2 Minor (unconditional), R3 Minor, DA Minor conditional on one word. No false statement was found in the Round-2 letter; three completeness overstatements are corrected above. All Round-3 residuals are sentence-scale and applied:
+
+| Item | Reviewers | Change |
+|---|---|---|
+| R's domain vs 𝒮 (non-head) | R0-N10, R1, R2-N3-1, R3, DA-NEW-2 | §Design overview: R maps every stage, the head included, to a device in 𝒟; "parity protects only the non-head stages 𝒮; the head's backup serves replay". The 12.4 GiB figure stands (DA withdrew its ~10 GiB objection after reading the implementation). |
+| Conclusion "recovered state has a device to run on" | R0-N9, R1, R2-N3-2, R3, DA-NEW-4 | "the failed stage's weights have a device to load on". |
+| "496 rejected **solely** because no peer could reserve backup weights" | DA (new CRITICAL) | The scheduler pools backup-infeasible and placement-infeasible subsets in one handler, so a sole cause cannot be asserted; now "rejected as infeasible under Eq. (mem), which charges backup reservations beside each device's own stage". |
+| "within two standard errors of zero" (DejaVu slope, 2.04 SE) | R1, DA-NEW-1 | "about two standard errors from zero". |
+| "spread" is a sample SD | R1 | "round-to-round standard deviation" in the abstract, §Cost and the conclusion. |
+| 350M decode-step range | R1 | 1.6–1.9 → 1.7–1.9. |
+| "within two seconds" excludes Petals by 0.31 s | R0-N13, R2 | "within three decode steps". |
+| Table I footnote b | R0-N11, R2, R3 | "By construction (unit tests assert byte identity); these trials check sequence match; §Fidelity probes replay". |
+| 7B decode step 500 vs 493 ms | R0-N12 | "500 ms (493 ms pooled over the repeated trials)". |
+| "same KV columns … not traffic" vs the recovery fetch | R2-N3-3 | Qualified "during failure-free decoding". |
+| EC-Cache bibliography | R0, R2 | Pages added (USENIX, no DOI). |
+
+Still not applied: the items listed above under "page budget" and "no data".
