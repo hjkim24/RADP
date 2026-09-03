@@ -2567,3 +2567,17 @@ failed_texts=4); 이어진 500은 재-solve 프로파일링 중 생존 워커 on
 work에 명시. 페이지: 10→9쪽 — 결과·그림 삭제 없이 산문 압축(Across-Scales 표→단락, feasibility 350M 블록→문장, related 비교표
 본문 흡수, Design/Eval/Discussion/Intro 압축, bib url/note 정리; pareto 유지). 사용자 결정: **9쪽 확정, 1쪽 초과 요금 감수**.
 Overleaf `824d265`까지 동기화(이전 동기화본의 Fig.1 350M 오류 정정 포함). testbed 접근 종료 — 이후 작업은 이 데이터셋으로만.
+
+## Phase PAPER-ARS-REVIEW — 모의 심사(5인 패널) + revision (2026-09-03)
+
+ARS reviewer 파이프라인: Journal-Fit·Methodology·Domain·Perspective·Devil's Advocate 5개 서브에이전트가 원고만 읽고 독립 심사(보고서
+`scratchpad/ars_review/*.md`, 편집 결정 `EDITORIAL_DECISION.md`). 결정 **Major Revision**, 합의 축: ① abstract/결론 과장("matches
+replication", 위치 독립성 외삽, "a stage failure" 일반화, feasibility scope 누락) ② footprint 정의(백업 가중치 12.4 GiB 제외, Petals
+0 kB/tok 오류 — 실제 40 kB/tok) ③ 계약 조건부 지연·LAN vs 링크 동기 ④ Table I 오류(Reconfigure P=32 열, "median") ⑤ 약한 feasibility
+베이스라인 ⑥ coded-computation 문헌 부재. 대응(새 실험 없음): abstract/intro/결론 범위 정정, footprint 재정의+Table I·Pareto 수정,
+교차점 P≈10·O(N) 명시(2 SE ≤12 ms/pos), Reconfigure 로그 분해(재프로파일 ~250 s, cold-load ~130 s), R 정의·DP 정확성, 문헌 4편
+(Lee 2018, Parity Models, EC-Cache, Dimakis 2010), IoT/LAN 구분, 재보호·양자화 대안 한계, heartbeat 1 s/5 s, Index Terms.
+**오프라인 재분석 2건**(저장 스냅샷만 사용): D2.9 pipeline 풀에 on-5가 빠져 있던 버그 수정 → 7B joint-only 밴드 **4.8 GB–23 GB**
+(이전 6.5 GB, `d29_coupling_threshold_20260903.json`); 마진 휴리스틱 베이스라인(0.75×/0.5×)도 pipeline scope 전 cap에서 실패
+(`d29_margin_baseline_7b.json`) → 리뷰어의 "headroom 규칙이면 충분" 반론 실측 반박. 응답서 `docs/paper/response_to_reviewers_2026-09-03.md`.
+fig_storage_tolerance는 본문 공식으로 대체·삭제. testbed 필요 항목은 Limitations로 명시.

@@ -14,13 +14,11 @@ solve placement, parallelism, or quantization as a coupled optimization over
 datacenter GPUs of different classes~\cite{mei2025helix,jiang2024hexgen,
 jiang2025hexgen2,mo2025hetis,zhao2024llmpq} without a mechanism for restoring
 an interrupted request's KV state; HexGen reacts to a departed GPU by
-re-running its placement search.  On edge pipelines, FTPipeHD replicates and
-redistributes training weights so training survives device
-failures~\cite{chen2024ftpipehd}, a recovery unit of weights and a budget of
-a training batch, whereas decoding must restore per-request KV state within
-a token interval; JARVIS proposes layer redundancy for a tactical edge network
-but evaluates route reconfiguration and layer skipping, a degraded
-execution~\cite{sirera2024jarvis}.
+re-running its placement search.  On edge pipelines, FTPipeHD replicates
+training weights so training survives device failures~\cite{chen2024ftpipehd}
+(a recovery unit of weights, whereas decoding must restore per-request KV
+state within a token interval), and JARVIS evaluates route reconfiguration
+and layer skipping, a degraded execution~\cite{sirera2024jarvis}.
 
 \subsection{Recomputation}
 
@@ -59,7 +57,16 @@ no advance notice and no surviving checkpoint, which our Reconfigure baseline
 
 \subsection{Parity}
 
-GhostServe replaces full KV replicas with erasure-coded checkpoints inside a
+Erasure coding has protected computation and cached state before: coded
+computation recovers straggling or failed workers' matrix products from
+parity workers~\cite{lee2018speeding}, Parity Models learn a parity model so
+that a prediction-serving replica can be reconstructed from coded
+queries~\cite{kosaian2019parity}, EC-Cache stores cached objects as
+erasure-coded splits~\cite{rashmi2016eccache}, and regenerating codes bound
+the bytes a repair must read~\cite{dimakis2010network}.  \sys{} applies
+the same idea to the KV state of a pipeline, where the coded unit is a
+stage's per-token column and the repair reads the surviving stages'
+columns.  GhostServe replaces full KV replicas with erasure-coded checkpoints inside a
 tensor-parallel server, generating XOR, RDP, or Reed--Solomon parity with
 fused GPU kernels into host memory~\cite{jayakody2026ghostserve}; its
 protection domain is the GPU shards of one node with a large host-memory

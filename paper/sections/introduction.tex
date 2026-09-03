@@ -10,8 +10,9 @@ networks~\cite{hussain2025airgap}; remote and maritime sites operate over
 limited or time-varying links~\cite{yuan2023elect,yang2024erocn}; and mobile
 robots are sensitive to delay, packet loss, and disconnection in their control
 loop~\cite{omena2023twotier}.  Keeping inference on site avoids making these
-applications depend on a remote service, but the model weights and growing key-value (KV)
-cache can exceed the memory of a single edge device.  Splitting consecutive
+applications depend on a remote service; the site's own devices then serve
+the model over their local network, and the model weights and growing
+key-value (KV) cache can exceed the memory of a single edge device.  Splitting consecutive
 decoder layers across several devices is therefore a practical way to pool
 the compute and memory already available at the site~\cite{macario2025mdi,
 zhang2024edgeshard,ye2025jupiter,picano2025matching,zheng2026dybap}.  Such a deployment is inherently
@@ -68,16 +69,13 @@ charges backup-weight reservations to each device's memory constraint.  This
 coupling excludes placements that execute normally but cannot admit a valid
 backup after failure.
 
-This paper makes four contributions.  First, it formulates fault recovery for
-heterogeneous distributed LLM inference along the three operational axes of
-Recovery Latency, Recovery-State Footprint, and Recovery Feasibility, and
-defines KV-State Fidelity as a property of the recovered state.  Second, it introduces
-cross-stage KV parity that restores one failed stage without prefix
-recomputation and extends the construction with a second parity column for two
-simultaneous protected-stage failures.  Third, it develops a recovery-aware
-placement search that incorporates backup assignment and backup-weight
-reservation into placement feasibility.  Finally, it evaluates \sys{} on a
-heterogeneous multi-stage testbed against recomputation, Petals-style failed-
-stage replay, DejaVu-style replication, and reactive reconfiguration, measuring
-prefix-length scaling, retained recovery state, exact-state restoration, and
-the memory conditions under which recovery remains feasible.
+This paper makes four contributions: it formulates fault recovery for
+heterogeneous distributed LLM inference along Recovery Latency,
+Recovery-State Footprint, and Recovery Feasibility, with KV-State Fidelity as
+a property of the recovered state; it introduces cross-stage KV parity that
+restores one failed stage without prefix recomputation and a second parity
+column for two simultaneous failures; it develops a recovery-aware placement
+search that folds backup assignment and backup-weight reservation into
+placement feasibility; and it evaluates \sys{} on a heterogeneous Jetson
+testbed against recomputation, Petals-style failed-stage replay,
+DejaVu-style replication, and reactive reconfiguration.

@@ -60,7 +60,9 @@ MB = 1024 ** 2
 
 # Devices the solver ever picks (the CPU-forced Nanos have t=0.011 and are
 # never chosen for the pipeline, but they remain valid backup hosts).
-PIPELINE_POOL = {"on-1", "on-2", "on-6", "ao-1", "ao-2"}
+# All CUDA workers that ever existed in this fleet; a snapshot that lacks one
+# simply filters it out (the CPU-forced on-3/on-4 stay excluded).
+PIPELINE_POOL = {"on-1", "on-2", "on-5", "on-6", "ao-1", "ao-2"}
 
 
 def fetch_snapshot() -> dict:
@@ -144,6 +146,36 @@ def decoupled(spec: ClusterSpec, scope: str):
                     spec.optimization_mode,
                     spec.blend_alpha,
                 )
+                if rank < best_rank - 1e-9:
+                    best_rank, best_psi, best_perm = rank, res.placement, perm
+    if best_psi is None:
+        return None, None, "no placement"
+    try:
+        r = determine_recovery_table(_scoped(spec, best_perm, scope), best_psi)
+    except NoRecoveryError as e:
+        return best_psi, None, f"NoRecoveryError: {e}"
+    return best_psi, r, None
+
+
+def decoupled_margin(spec: ClusterSpec, scope: str, margin: float):
+    """Sequential baseline with a headroom rule: the cost-only DP sees every
+    device's free memory scaled by (1 - margin), then backups are assigned on
+    the TRUE capacities. Answers 'would a simple reservation heuristic suffice
+    instead of the joint search?'"""
+    shrunk = replace(spec, devices=[
+        replace(d, free_memory_bytes=int(d.free_memory_bytes * (1.0 - margin)))
+        for d in spec.devices])
+    pool = _pipeline_devices(shrunk)
+    best_rank, best_psi, best_perm = math.inf, None, None
+    for k in range(2, len(pool) + 1):
+        for subset in combinations(pool, k):
+            for perm in permutations(subset):
+                try:
+                    res = Scheduler(replace(shrunk, devices=list(perm))).solve(recovery={})
+                except Exception:  # noqa: BLE001
+                    continue
+                rank = _rank((res.sum_stage_time, res.max_stage_time),
+                             spec.optimization_mode, spec.blend_alpha)
                 if rank < best_rank - 1e-9:
                     best_rank, best_psi, best_perm = rank, res.placement, perm
     if best_psi is None:

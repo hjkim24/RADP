@@ -29,6 +29,7 @@ if MODEL == "7b":
     _st = json.load(open(RESULTS / "b1_storage_7b.json"))["state_bytes_per_tok"]
     ovh = {"replicate_bytes": _st["replicate (DejaVu)"], "parity_bytes": _st["parity k=1 (KV-CARE)"]}
     XLIM, XTICKS, YLIM, YTICKS = (0.3, 900), [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500], (-15, 450), [0, 100, 200, 300, 400]
+    PETALS_BYTES = 5 * 2 * 4096   # five protected stage inputs, fp16 hidden 4096, per token
     SUFFIX = ""
 else:
     par = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
@@ -36,6 +37,7 @@ else:
     rea = json.load(open(RESULTS / "b1_ft_fleet_reactive_client_interval_20260830.json"))
     ovh = json.load(open(RESULTS / "b1_ft_overhead.json"))
     XLIM, XTICKS, YLIM, YTICKS = (0.2, 60), [0.2, 0.5, 1, 2, 5, 10, 20, 50], (-1.5, 42), [0, 10, 20, 30, 40]
+    PETALS_BYTES = 4 * 2 * 1024   # four protected stage inputs, fp16 hidden 1024, per token
     SUFFIX = "_350m"
 KB = 1024
 
@@ -54,7 +56,7 @@ rea_med = statistics.median(t["ttr_seconds"] for t in rea["trials"]
 PTS = [
     ("reactive_replacement", rea_med,                    0,                          dict(dx=0, dy=6, ha="center", va="bottom")),
     ("full_replay",          ttr_at(par, "full_replay"), 0,                          dict(dx=0, dy=6, ha="center", va="bottom")),
-    ("surgical",             ttr_at(par, "surgical"),    0,                          dict(dx=0, dy=6, ha="center", va="bottom")),
+    ("surgical",             ttr_at(par, "surgical"),    PETALS_BYTES / KB,           dict(dx=6, dy=0, ha="left")),
     ("replicate",            ttr_at(rep, "replicate"),   ovh["replicate_bytes"] / KB, dict(dx=6, dy=0, ha="left")),
     ("parity",               ttr_at(par, "parity"),      ovh["parity_bytes"] / KB,    dict(dx=6, dy=0, ha="left")),
 ]
@@ -66,7 +68,7 @@ for mode, x, y, place in PTS:
             mfc=st["mfc"], markersize=5.5, zorder=4)
     text = NAME[mode]
     if mode == "reactive_replacement":
-        text += "\n(median)"
+        text += "\n(2 positions)" if MODEL == "7b" else "\n(median)"
     label(ax, text, xy=(x, y), color=st["color"], bold=(mode == "parity"), **place)
 
 ax.set_xscale("log")
