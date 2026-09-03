@@ -15,8 +15,8 @@ from _paper import EMPH, GRAY, INK, LIGHT, save  # noqa: E402
 STAGES = [("head", True, False, ["stage $n$"]), ("stage 2", False, False, ["stage 3"]),
           ("stage 3", False, False, ["head"]), ("", False, True, []), ("stage $n$", False, False, ["stage 2"])]
 
-fig, ax = plt.subplots(figsize=(3.45, 2.25))
-ax.set_xlim(0, 100); ax.set_ylim(9, 75); ax.axis("off")
+fig, ax = plt.subplots(figsize=(3.45, 2.4))
+ax.set_xlim(0, 100); ax.set_ylim(9, 80); ax.axis("off")
 
 def box(x0, y0, w, h, *, ls="-", ec=INK, fc="white", lw=0.7, r=1.2):
     ax.add_patch(FancyBboxPatch((x0, y0), w, h, boxstyle=f"round,pad=0,rounding_size={r}",
@@ -28,24 +28,25 @@ def arrow(p, q, *, color=INK, ls="-", lw=0.7, z=3):
                                 shrinkA=0, shrinkB=0, mutation_scale=6))
 
 # --- client
-box(51.5, 66.5, 16, 7); ax.text(59.5, 70, "client", ha="center", va="center", size=7)
-arrow((59.5, 66.5), (59.5, 60.5)); ax.text(61, 63.5, "request", size=5.5, color=GRAY, va="center")
+box(51.5, 71, 16, 7); ax.text(59.5, 74.5, "client", ha="center", va="center", size=7)
+arrow((59.5, 71), (59.5, 65)); ax.text(61, 68, "request", size=5.5, color=GRAY, va="center")
 
 # --- coordinator
-box(28, 40, 63, 20.5, lw=0.9)
-ax.text(59.5, 57.6, "Coordinator", ha="center", va="center", size=7.5, weight="bold")
-for x, y, t in [(44.5, 51.2, "recovery-aware\nplacement ($\\psi$, $R$)"), (74.5, 51.2, "cross-stage\nparity ($P$, $Q$)"),
-                (44.5, 44.0, "input mirror"), (74.5, 44.0, "failure detection")]:
+box(28, 44.5, 63, 20.5, lw=0.9)
+ax.text(59.5, 62.1, "Coordinator", ha="center", va="center", size=7.5, weight="bold")
+for x, y, t in [(44.5, 55.7, "recovery-aware\nplacement ($\\psi$, $R$)"), (74.5, 55.7, "cross-stage\nparity ($P$, $Q$)"),
+                (44.5, 48.5, "input mirror"), (74.5, 48.5, "failure detection")]:
     h = 6.6 if "\n" in t else 4.4
     box(x - 14, y - h / 2, 28, h, ec=LIGHT, lw=0.5, r=0.6)
     ax.text(x, y, t, ha="center", va="center", size=6, linespacing=1.05)
 
-# --- legend (top right)
+# --- legend (left)
 lx = 2
-box(lx, 40, 25, 20.5, ec=LIGHT, lw=0.5)
-ax.plot([lx + 1.5, lx + 6.5], [56.5, 56.5], color=GRAY, lw=0.7); ax.text(lx + 8, 56.5, "activation", size=5.5, va="center")
-ax.plot([lx + 1.5, lx + 6.5], [50.6, 50.6], color=EMPH, lw=0.7); ax.text(lx + 8, 50.6, "KV column,\ninput", size=5.5, va="center", linespacing=1.05)
-box(lx + 1.5, 42.4, 5, 3.2, ls=(0, (2, 1.5)), ec=INK, lw=0.5, r=0.5); ax.text(lx + 8, 44.0, "backup ($R$)", size=5.5, va="center")
+box(lx, 44.5, 25, 20.5, ec=LIGHT, lw=0.5)
+ax.plot([lx + 1.5, lx + 6.5], [61.7, 61.7], color=GRAY, lw=0.7); ax.text(lx + 8, 61.7, "activation", size=5.5, va="center")
+ax.plot([lx + 1.5, lx + 6.5], [56.7, 56.7], color=EMPH, lw=0.7); ax.text(lx + 8, 56.7, "KV column,\ninput", size=5.5, va="center", linespacing=1.05)
+ax.plot([lx + 1.5, lx + 6.5], [51.3, 51.3], color=GRAY, lw=0.7, linestyle=(0, (1, 1.5))); ax.text(lx + 8, 51.3, "control ($\\psi$, $R$)", size=5.5, va="center")
+box(lx + 1.5, 45.9, 5, 3.2, ls=(0, (2, 1.5)), ec=INK, lw=0.5, r=0.5); ax.text(lx + 8, 47.5, "backup ($R$)", size=5.5, va="center")
 
 # --- workers
 W, GAP = 15.5, 3.6
@@ -64,14 +65,24 @@ for i, (lab, head, dots, hosted) in enumerate(STAGES):
         for k, l in enumerate(hosted):
             ax.text(c, 17.2 - h + 1.9 + 3.4 * (len(hosted) - 1 - k), l, ha="center", va="center", size=5.6, color=GRAY)
     if not head:  # KV column + input to the coordinator
-        arrow((c, 30), (c, 36), color=EMPH, lw=0.6)
+        arrow((c + 2.2, 30), (c + 2.2, 38), color=EMPH, lw=0.6)
+    # control stub from the dotted bus
+    ax.plot([c - 2.2, c - 2.2], [34.5, 30], color=GRAY, lw=0.6, linestyle=(0, (1, 1.5)), zorder=3)
 # activation chain
 for i in range(4):
     a = centers[i] + (W / 2 if not STAGES[i][2] else 3.2)
     b = centers[i + 1] - (W / 2 if not STAGES[i + 1][2] else 3.2)
     arrow((a, 24.5), (b, 24.5), color=GRAY, lw=0.6)
-# bus into the coordinator
-ax.plot([centers[1], centers[-1]], [36, 36], color=EMPH, lw=0.6, zorder=3)
-arrow((59.5, 36), (59.5, 40), color=EMPH, lw=0.6)
+# KV bus into the coordinator
+ax.plot([centers[1] + 2.2, centers[-1] + 2.2], [38, 38], color=EMPH, lw=0.6, zorder=3)
+arrow((62, 38), (62, 44.5), color=EMPH, lw=0.6)
+# control bus (dotted) from the coordinator down over every worker
+ax.plot([centers[0] - 2.2, centers[-1] - 2.2], [34.5, 34.5], color=GRAY, lw=0.6, linestyle=(0, (1, 1.5)), zorder=3)
+arrow((50, 44.5), (50, 34.5), color=GRAY, lw=0.6, ls=(0, (1, 1.5)))
+# request path: coordinator -> head (outer left), stage n -> coordinator (outer right)
+ax.plot([32, 32, centers[0] + 3], [44.5, 41.5, 41.5], color=GRAY, lw=0.6, zorder=3)
+arrow((centers[0] + 3, 41.5), (centers[0] + 3, 30), color=GRAY, lw=0.6)
+ax.plot([centers[-1] + 5.8, centers[-1] + 5.8, 88], [30, 41.5, 41.5], color=GRAY, lw=0.6, zorder=3)
+arrow((88, 41.5), (88, 44.5), color=GRAY, lw=0.6)
 
 save(fig, "fig_architecture")
