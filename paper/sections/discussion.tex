@@ -81,7 +81,9 @@ worker that hangs rather than crashes can still be misattributed.  Backup weight
 a lazy variant that loads only the failed stage's weights at failure time
 would relax the reservation at a recovery cost between \sys{} and
 Reconfigure, a middle point we did not measure.  The coordinator holds all
-parity state and is itself unprotected; its memory grows with concurrent
+parity state and is itself unprotected; a head-stage failure is outside the
+parity guarantee and falls to full-prefix replay on the head's preloaded
+backup, a path we did not measure; its memory grows with concurrent
 requests and context length beyond the per-request figures above.  The
 scheduler does not optimize where backups land, so the two-failure result
 holds for mappings that, like the 7B one, place the two backups on distinct
@@ -131,13 +133,14 @@ load on.
 On a six-stage Jetson pipeline serving OPT-6.7B, single parity recovers in
 1.2--1.4\,s, flat over the measured failure positions, while recomputation
 grows to 16\,s; it recovers about one decode step later than replication
-while retaining $3.7\times$ less coordinator state ($2.7\times$ over the
-stages the parity path recovers), and changes failure-free throughput by $+0.6$\% ($\pm11$\% across three
+while retaining $3.7\times$ less coordinator KV state ($2.7\times$ over
+the stages the parity path recovers), and changes failure-free throughput by $+0.6$\% ($\pm11$\% across three
 rounds); double parity
 restores two simultaneous stage failures from the same stored bytes at the
-cost of one when their backups sit on distinct nodes; and with backups
+cost of one when their backups sit on distinct nodes; and, in an offline placement analysis with backups
 confined to pipeline devices, joint placement remains feasible at every
 per-device memory cap at which the model fits, where a cost-first placement
 cannot be backed up.  For edge deployments that cannot depend on a remote
-service, this turns a protected-stage failure from a request loss or a
-minutes-long reconfiguration into a delay of two to four decode steps.
+service, this turns a protected-stage failure whose recovery contract holds
+from a request loss or a minutes-long reconfiguration into a delay of two to
+four decode steps.

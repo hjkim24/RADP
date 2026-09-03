@@ -2596,3 +2596,8 @@ fig_storage_tolerance는 본문 공식으로 대체·삭제. testbed 필요 항�
 - 검증: 빌드 오류 0, 10쪽, 초록 259단어.
 - 3차 통합 판정(Minor Revision, MUST-FIX 9) 반영 후속: 열거 공식·122 s solve, 입력 미러 회계(전 가족 보유, Petals에만 과금, 전가족 과금 시 3.0×/42%), two-to-four steps, +0.6%(±11%) 표기, ±26% 구간, Table I 'no valid trial', §IV-E 12.4 GiB, 비균일 cap ladder. 결정문 `docs/paper/ars_round3_decision_2026-09-03.md`.
 - 아키텍처 그림(fig_architecture, 일반형 n-stage + 코디네이터 4역할 + R 백업 + 제어/요청 경로)을 §III-A Fig. 1로 삽입, §IV-A에서 참조. 10쪽 유지. Table I 숫자 표기(thin space)는 유지 결정.
+
+## Phase PAPER-ARS-ROUND4 — 3차 검증 재심사 + 정오표 (2026-09-04)
+
+- 4차 패널(Fable, Opus 과부하로 교체): 5/5 Accept subject to editor-verified errata. 통합 판정 **Accept with editor-verified errata**, MUST-FIX 5(K1 discussion "backup room", K2 493 ms 삭제(패널 자신의 3차 오류), K3 결론 "offline", K4 Pareto endpoints, K5 Fig. 1 캡션/§III-A 미러 표기) 전부 반영 + SHOULD 대부분 반영. Fig. 1은 §III·코드와 일치 판정; R 비대칭(2/0)·head 음영·코디네이터 비보호 캡션 반영.
+- 미적용: Reconfigure 폐기 사유(사용자 지시), 8-device 탐색 상한(미검증), 환경 문단(지면). 결정문 `docs/paper/ars_round4_decision_2026-09-04.md`(+ .ko.md).

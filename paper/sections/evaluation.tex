@@ -199,7 +199,7 @@ for Recompute, 16 and 17.5 for Petals, 0.87 and 1.43 for \sys{}).
 \end{figure}
 
 Fig.~\ref{fig:recovery-pareto} combines both axes.  Recompute and
-Reconfigure retain nothing and pay in latency; Petals is the low-state endpoint (40\,kB per token) at 2.3\,s and
+Reconfigure retain nothing and pay in latency; At $P{=}32$, Petals is the low-state endpoint (40\,kB per token) at 2.3\,s and
 recovers faster than \sys{} only below $P\approx10$; DejaVu is the
 low-latency endpoint at the sum of all protected columns; \sys{} lies
 between, $3.7\times$ below DejaVu in state at about one decode step later.
@@ -221,7 +221,9 @@ Table~\ref{tab:recovery-summary} charges the mirror to Petals alone.
 Charged to every family, the ratios become $3.0\times$ for one column and
 42\% for two.
 Replication and the replay families tolerate any number of simultaneous
-protected-stage failures that backups can host; parity tolerates $k$.
+protected-stage failures that backups can host; parity restores up to $k$
+without recomputation and falls to replay beyond, and its path additionally
+fetches the surviving columns at recovery.
 During failure-free decoding, parity and replication ship the same KV
 columns from the workers, so their difference is coordinator memory, not
 traffic.  In general, $k$ parity
@@ -361,15 +363,16 @@ the same placement with protection off, single parity, double parity, and
 replication, three rounds each in interleaved order with ten 20-token
 requests per round, all completing with identical greedy output across
 modes.  Fig.~\ref{fig:protection-cost} reports the result (RQ5).  With
-protection off the pipeline decodes 1.93\,tok/s with a median token interval
-of 527\,ms.  Single parity changes throughput by $+0.6\pm10.7$\% and the
+protection off the pipeline decodes 1.93\,tok/s; these runs' median token
+interval is 527\,ms (a quantity distinct from the recovery sweep's 500\,ms
+decode step).  Single parity changes throughput by $+0.6\pm10.7$\% and the
 median token interval by $-1.4\pm9.6$\%, within the round-to-round standard
 deviation of the measurement; double parity costs $3.9\pm3.5$\% of throughput and
 $3.4\pm1.7$\% of token interval; replication costs $7.6\pm2.4$\% and
 $5.2\pm1.6$\%.  At three rounds the protected modes are not separated from
 one another (the single-parity interval encloses the replication mean), so
 these figures bound the cost rather than rank the modes (the 95\% interval
-at three rounds spans about $\pm26$\%).  On the 350M deployment, where these runs decode at 183\,ms per token,
+at three rounds spans about $\pm27$\%).  On the 350M deployment, where these runs decode at 183\,ms per token,
 the same protocol charges 5--7\% for all three modes and double parity and replication
 are indistinguishable (4.906 versus 4.906\,tok/s), because both ship the
 same KV columns and the second GF($2^8$) column is folded at the coordinator,

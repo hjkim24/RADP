@@ -82,7 +82,7 @@ Not applied — deferred desk work (facts or logs we hold but did not write up t
 
 # Round 3 — second verification re-review (2026-09-03)
 
-Panel: R0 Minor (unconditional), R1 Accept subject to minor corrections, R2 Minor (unconditional), R3 Minor, DA Minor conditional on one word. No false statement was found in the Round-2 letter; three completeness overstatements are corrected above. All Round-3 residuals are sentence-scale and applied:
+Panel: R0 Minor (unconditional), R1 Accept subject to minor corrections, R2 Minor (unconditional), R3 Minor, DA Minor conditional on one word. No false change description was found in the Round-2 letter; one numeric clause ("within two standard errors") was false and is corrected in the table below, and three completeness overstatements are corrected above. All Round-3 residuals are sentence-scale and applied:
 
 | Item | Reviewers | Change |
 |---|---|---|
@@ -118,3 +118,5 @@ Panel: R0 Accept subject to editor-verified corrections, R1 Accept subject to tw
 | Letter scope residuals | R0, R1, R2, R3, DA | This section lists Fig. 1; the stale "spread" row above is corrected; J8 (units beyond the table note) and J10 (RAID naming) are recorded as not applied; J10's exactness novelty clause was applied (§II-E) and is now listed. |
 
 Not applied, unchanged from Round 3: page-budget items (17, 25, 31, 34, 38, journal-literature paragraphs), deferred desk work (20, 21, 30, 41, relative-error column), by choice (5-worker note, deleted hedge, RAID naming, thin-space digit grouping in Table I).
+
+Applied after the Round-4 synthesis (same day): K3 "in an offline placement analysis" in the conclusion; "coordinator KV state" in the abstract and conclusion; Limitations name the head-stage failure path (full-prefix replay on its preloaded backup, unmeasured); the conclusion's closing sentence carries "whose recovery contract holds"; the tolerance sentence says parity falls to replay beyond k and fetches surviving columns at recovery; §IV-F names the 527 ms interval as its own quantity; ±27%; 9.9 million; Fig. 1 caption marks the coordinator as unprotected; Fig. 3 uses the mean of Reconfigure's two positions; kosaian2019parity pages added. Not applied: Table I note on discarded Reconfigure positions (item 10, by choice); the eight-device search bound (unverified); the environment paragraph (page budget). Decision document: docs/paper/ars_round4_decision_2026-09-04.md.

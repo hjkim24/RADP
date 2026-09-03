@@ -14,7 +14,7 @@ load on.  On a six-stage Jetson pipeline serving OPT-6.7B, KV-CARE's
 recovery latency is flat over the measured failure positions ($5\pm3$\,ms
 per generated token against $447\pm6$\,ms for recomputation), completing in
 two to four decode steps; it recovers about one decode step later than
-replication while retaining 3.7$\times$ less coordinator state
+replication while retaining 3.7$\times$ less coordinator KV state
 (2.7$\times$ over the stages it recovers), and restores
 two simultaneous failures at the cost of one when their backups sit on
 distinct nodes; in an offline placement analysis with backups confined to pipeline

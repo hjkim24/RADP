@@ -9,7 +9,8 @@
   ($\psi$, $R$), folds the protected stages' KV columns into parity, retains
   stage inputs, and detects failures; each worker serves one stage and
   preloads the backup weights $R$ assigns to it (dashed; a device may host
-  two backups or none).  The shaded head stage ships no KV column.}
+  two backups or none).  The shaded head stage ships no KV column, and the
+  coordinator itself is unprotected.}
   \label{fig:architecture}
 \end{figure}
 
@@ -222,7 +223,7 @@ when $\psi$ and $R$ repeat or after ten iterations,
 returning the best self-consistent pair; the alternation is a heuristic
 without an optimality guarantee.  Every ordered device subset is enumerated around this loop (1\,950 on the
 six-worker fleet, $\sum_{k=2}^{|\mathcal{D}|}P(|\mathcal{D}|,k)$ in general,
-about 9.8 million at ten devices); the 7B solve took 122\,s on this fleet.
+about 9.9 million at ten devices); the 7B solve took 122\,s on this fleet.
 
 
 \subsection{Runtime Integration}\label{sec:design:runtime}

@@ -3,7 +3,7 @@
 At P=32 the frontier has three non-dominated points (DejaVu, KV-CARE, Petals).  The default 7B
 view reads live latency from b1_ft_fleet_7b*.json and retained state from
 b1_storage_7b.json; RADP_FIG_MODEL=350m selects the earlier microscopy data.
-Reconfigure's x is its median over valid positions rather than a P=32 sample.
+Reconfigure's x is its mean over valid positions rather than a P=32 sample.
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def ttr_at(d, mode, P=32):
     return sum(xs) / len(xs)
 
 
-rea_med = statistics.median(t["ttr_seconds"] for t in rea["trials"]
+rea_med = statistics.mean(t["ttr_seconds"] for t in rea["trials"]
                             if t["fired"] and t["sequence_match"] and t.get("reconfigured"))
 
 #            mode, x (s), y (KB/token), label placement
