@@ -28,21 +28,21 @@ def arrow(p, q, *, color=INK, ls="-", lw=0.7, z=3):
                                 shrinkA=0, shrinkB=0, mutation_scale=6))
 
 # --- client
-box(6, 66.5, 16, 7); ax.text(14, 70, "client", ha="center", va="center", size=7)
-arrow((14, 66.5), (14, 60.5)); ax.text(15.5, 63.5, "request", size=5.5, color=GRAY, va="center")
+box(51.5, 66.5, 16, 7); ax.text(59.5, 70, "client", ha="center", va="center", size=7)
+arrow((59.5, 66.5), (59.5, 60.5)); ax.text(61, 63.5, "request", size=5.5, color=GRAY, va="center")
 
 # --- coordinator
-box(6, 40, 62, 20.5, lw=0.9)
-ax.text(37, 57.6, "Coordinator", ha="center", va="center", size=7.5, weight="bold")
-for x, y, t in [(22.5, 51.2, "recovery-aware\nplacement ($\\psi$, $R$)"), (51.5, 51.2, "cross-stage\nparity ($P$, $Q$)"),
-                (22.5, 44.0, "input mirror"), (51.5, 44.0, "failure detection")]:
+box(28, 40, 63, 20.5, lw=0.9)
+ax.text(59.5, 57.6, "Coordinator", ha="center", va="center", size=7.5, weight="bold")
+for x, y, t in [(44.5, 51.2, "recovery-aware\nplacement ($\\psi$, $R$)"), (74.5, 51.2, "cross-stage\nparity ($P$, $Q$)"),
+                (44.5, 44.0, "input mirror"), (74.5, 44.0, "failure detection")]:
     h = 6.6 if "\n" in t else 4.4
     box(x - 14, y - h / 2, 28, h, ec=LIGHT, lw=0.5, r=0.6)
     ax.text(x, y, t, ha="center", va="center", size=6, linespacing=1.05)
 
 # --- legend (top right)
-lx = 72
-box(lx, 40, 26, 20.5, ec=LIGHT, lw=0.5)
+lx = 2
+box(lx, 40, 23.5, 20.5, ec=LIGHT, lw=0.5)
 ax.plot([lx + 2, lx + 8], [55.5, 55.5], color=GRAY, lw=0.7); ax.text(lx + 9.5, 55.5, "activation", size=5.5, va="center")
 ax.plot([lx + 2, lx + 8], [50, 50], color=EMPH, lw=0.7); ax.text(lx + 9.5, 50, "KV column,\ninput", size=5.5, va="center", linespacing=1.05)
 box(lx + 2, 42.8, 6, 3.2, ls=(0, (2, 1.5)), ec=INK, lw=0.5, r=0.5); ax.text(lx + 9.5, 44.4, "backup ($R$)", size=5.5, va="center")
@@ -72,6 +72,6 @@ for i in range(4):
     arrow((a, 24.5), (b, 24.5), color=GRAY, lw=0.6)
 # bus into the coordinator
 ax.plot([centers[1], centers[-1]], [36, 36], color=EMPH, lw=0.6, zorder=3)
-arrow((37, 36), (37, 40), color=EMPH, lw=0.6)
+arrow((59.5, 36), (59.5, 40), color=EMPH, lw=0.6)
 
 save(fig, "fig_architecture")
