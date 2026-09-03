@@ -90,7 +90,7 @@ Panel: R0 Minor (unconditional), R1 Accept subject to minor corrections, R2 Mino
 | Conclusion "recovered state has a device to run on" | R0-N9, R1, R2-N3-2, R3, DA-NEW-4 | "the failed stage's weights have a device to load on". |
 | "496 rejected **solely** because no peer could reserve backup weights" | DA (new CRITICAL) | The scheduler pools backup-infeasible and placement-infeasible subsets in one handler, so a sole cause cannot be asserted; now "rejected as infeasible under Eq. (mem), which charges backup reservations beside each device's own stage". |
 | "within two standard errors of zero" (DejaVu slope, 2.04 SE) | R1, DA-NEW-1 | "about two standard errors from zero". |
-| "spread" is a sample SD | R1 | "round-to-round standard deviation" in the abstract, §Cost and the conclusion. |
+| "spread" is a sample SD | R1 | "round-to-round standard deviation" in §Cost; the abstract and conclusion were then rewritten under S7 to quote "+0.6% (±11% across three rounds)" directly. |
 | 350M decode-step range | R1 | 1.6–1.9 → 1.7–1.9. |
 | "within two seconds" excludes Petals by 0.31 s | R0-N13, R2 | "within three decode steps". |
 | Table I footnote b | R0-N11, R2, R3 | "By construction (unit tests assert byte identity); these trials check sequence match; §Fidelity probes replay". |
@@ -101,3 +101,20 @@ Panel: R0 Minor (unconditional), R1 Accept subject to minor corrections, R2 Mino
 Still not applied: the items listed above under "page budget" and "no data".
 
 Round-3 roadmap items applied after the panel's synthesis (same day): J5 enumeration formula and 122 s solve time; J7 "within three decode steps"; J11 "two to four decode steps" in the abstract and conclusion; J13 non-uniform cap ladder stated; J14 §I premise reconciled ("or one device cannot meet the throughput target"); S3 the prototype's per-position input mirror is retained for every family and charged to Petals alone, with the all-family ratios (3.0×, 42%) stated; S4 Table I note "no valid trial at P=16, 24, 32"; S5 "standard deviation" for the per-position figure; S7 abstract and conclusion now quote "+0.6% (±11% across three rounds)" instead of comparing against the spread; S8 the ±26% 95% interval at three rounds; S9 tolerated-failure sentence; S11 the §IV-F out-of-scope sentence deleted; S12 §IV-E receives the 12.4 GiB reservation. J6 (relative error), J8 (units beyond the table note), J9 (environment), J10 (RAID naming), S10 (journal literature), S13 (rank inheritance) remain on the not-applied lists above.
+
+---
+
+# Round 4 — third verification re-review (2026-09-04)
+
+Panel: R0 Accept subject to editor-verified corrections, R1 Accept subject to two corrections, R2 Accept subject to one clause, R3 Accept subject to one erratum, DA Accept after four clauses. No false change description was found in the Round-3 letter. All items below are applied.
+
+| Item | Reviewers | Change |
+|---|---|---|
+| "for want of backup room" (§V-A) kept the sole-cause attribution deleted from §IV-E | R1-NEW-13, R2, R3-NEW-1, DA | "as infeasible under Eq. (mem)". |
+| "(493 ms pooled over the repeated trials)" was computed over all 75 rows including 15 unfired k=2 rows; the 60 valid trials give 498–500 ms | R0 (withdrawing its own Round-3 N12), R1-NEW-14, DA | Parenthetical deleted; "500 ms" stands. |
+| Pareto sentence: "within three decode steps" drew the class 0.08 s above KV-CARE's own point and excluded Petals | R0, DA | Rewritten as endpoints: Petals low-state (40 kB/tok, 2.3 s), DejaVu low-latency at the sum of columns, KV-CARE between (3.7× below DejaVu, about one decode step later). No "least state" claim. |
+| §III-A "current position" vs the prototype's per-position mirror history | DA, R3 | §III-A now notes that the prototype keeps the per-position history the replay ladder needs, pointing to §IV-C's accounting. |
+| Fig. 1 (new this round; omitted from the Round-3 letter) | R0, R1, R2, R3, DA | Added in §III-A as Fig. 1 (later figures renumbered). Reviewers found it accurate against §III and the code. Applied their suggestions: R drawn asymmetric (one device hosts two backups, one none, as in the live 7B mapping); caption says the shaded head ships no KV column and "retains stage inputs" instead of "the interrupted position's input". |
+| Letter scope residuals | R0, R1, R2, R3, DA | This section lists Fig. 1; the stale "spread" row above is corrected; J8 (units beyond the table note) and J10 (RAID naming) are recorded as not applied; J10's exactness novelty clause was applied (§II-E) and is now listed. |
+
+Not applied, unchanged from Round 3: page-budget items (17, 25, 31, 34, 38, journal-literature paragraphs), deferred desk work (20, 21, 30, 41, relative-error column), by choice (5-worker note, deleted hedge, RAID naming, thin-space digit grouping in Table I).
