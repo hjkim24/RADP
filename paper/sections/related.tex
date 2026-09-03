@@ -66,7 +66,9 @@ erasure-coded splits~\cite{rashmi2016eccache}, and regenerating codes bound
 the bandwidth a repair must transfer~\cite{dimakis2010network}.  \sys{} applies
 the same idea to the KV state of a pipeline, where the coded unit is a
 stage's per-token column and the repair reads the surviving stages'
-columns.  GhostServe replaces full KV replicas with erasure-coded checkpoints inside a
+columns; because the coded unit is stored bytes rather than a model's
+output, the code is exact where prediction serving admitted only a learned
+approximation.  GhostServe replaces full KV replicas with erasure-coded checkpoints inside a
 tensor-parallel server, generating XOR, RDP, or Reed--Solomon parity with
 fused GPU kernels into host memory~\cite{jayakody2026ghostserve}; its
 protection domain is the GPU shards of one node with a large host-memory

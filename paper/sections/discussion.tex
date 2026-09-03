@@ -132,12 +132,12 @@ On a six-stage Jetson pipeline serving OPT-6.7B, single parity recovers in
 1.2--1.4\,s, flat over the measured failure positions, while recomputation
 grows to 16\,s; it recovers about one decode step later than replication
 while retaining $3.7\times$ less coordinator state ($2.7\times$ over the
-stages the parity path recovers), and costs less than the $\pm11$\%
-round-to-round standard deviation of the protection-cost measurement; double parity
+stages the parity path recovers), and changes failure-free throughput by $+0.6$\% ($\pm11$\% across three
+rounds); double parity
 restores two simultaneous stage failures from the same stored bytes at the
 cost of one when their backups sit on distinct nodes; and with backups
 confined to pipeline devices, joint placement remains feasible at every
 per-device memory cap at which the model fits, where a cost-first placement
 cannot be backed up.  For edge deployments that cannot depend on a remote
 service, this turns a protected-stage failure from a request loss or a
-minutes-long reconfiguration into a delay of two to three decode steps.
+minutes-long reconfiguration into a delay of two to four decode steps.

@@ -12,7 +12,8 @@ robots are sensitive to delay, packet loss, and disconnection in their control
 loop~\cite{omena2023twotier}.  Keeping inference on site avoids making these
 applications depend on a remote service; the site's own devices then serve
 the model over their local network, and the model weights and growing
-key-value (KV) cache can exceed the memory of a single edge device.  Splitting consecutive
+key-value (KV) cache can exceed the memory of a single edge device, or one device cannot meet
+the throughput target.  Splitting consecutive
 decoder layers across several devices is therefore a practical way to pool
 the compute and memory already available at the site~\cite{macario2025mdi,
 zhang2024edgeshard,ye2025jupiter,picano2025matching,zheng2026dybap}.  Such a deployment is inherently
