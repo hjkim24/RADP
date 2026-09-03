@@ -2594,3 +2594,4 @@ fig_storage_tolerance는 본문 공식으로 대체·삭제. testbed 필요 항�
 - 3차 패널: R0 Minor(무조건부)·R1 Accept w/ minor·R2 Minor(무조건부)·R3 Minor·DA Minor(조건: "solely"). 응답서 허위 0건. 2차 편집의 회귀: R 정의역이 §III-B의 𝒮(non-head)와 충돌, 결론에 weights-only 미전파, "496 rejected solely"가 코드상 근거 없음(scheduler가 NoFeasible/NoRecovery를 한 handler로 합산).
 - 3차 수정: 위 3건 + DejaVu 기울기 "about two SE", spread→standard deviation, 350M 1.7–1.9, Pareto "within three decode steps", Table I 각주 b, 500(493) ms, "during failure-free decoding", EC-Cache pages. 응답서 Round 3 절 추가, 완전성 과장 3건 정정.
 - 검증: 빌드 오류 0, 10쪽, 초록 259단어.
+- 3차 통합 판정(Minor Revision, MUST-FIX 9) 반영 후속: 열거 공식·122 s solve, 입력 미러 회계(전 가족 보유, Petals에만 과금, 전가족 과금 시 3.0×/42%), two-to-four steps, +0.6%(±11%) 표기, ±26% 구간, Table I 'no valid trial', §IV-E 12.4 GiB, 비균일 cap ladder. 결정문 `docs/paper/ars_round3_decision_2026-09-03.md`.
