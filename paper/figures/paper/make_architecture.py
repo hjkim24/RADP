@@ -27,6 +27,13 @@ def arrow(p, q, *, color=INK, ls="-", lw=0.7, z=3):
                 arrowprops=dict(arrowstyle="-|>", color=color, lw=lw, linestyle=ls,
                                 shrinkA=0, shrinkB=0, mutation_scale=6))
 
+def dotted_arrow(p, q, *, color=GRAY, lw=0.6):
+    """Dotted shaft with a solid arrowhead (matplotlib would dot the head too)."""
+    (x0, y0), (x1, y1) = p, q
+    L = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5; ux, uy = (x1 - x0) / L, (y1 - y0) / L
+    ax.plot([x0, x1 - 1.6 * ux], [y0, y1 - 1.6 * uy], color=color, lw=lw, linestyle=(0, (1, 1.5)), zorder=3)
+    arrow((x1 - 1.8 * ux, y1 - 1.8 * uy), q, color=color, lw=lw)
+
 # --- client
 box(51.5, 71, 16, 7); ax.text(59.5, 74.5, "client", ha="center", va="center", size=7)
 arrow((59.5, 71), (59.5, 65)); ax.text(61, 68, "request", size=5.5, color=GRAY, va="center")
@@ -43,10 +50,10 @@ for x, y, t in [(44.5, 55.7, "recovery-aware\nplacement ($\\psi$, $R$)"), (74.5,
 # --- legend (left)
 lx = 2
 box(lx, 44.5, 25, 20.5, ec=LIGHT, lw=0.5)
-ax.plot([lx + 1.5, lx + 6.5], [61.7, 61.7], color=GRAY, lw=0.7); ax.text(lx + 8, 61.7, "activation", size=5.5, va="center")
-ax.plot([lx + 1.5, lx + 6.5], [56.7, 56.7], color=EMPH, lw=0.7); ax.text(lx + 8, 56.7, "KV column,\ninput", size=5.5, va="center", linespacing=1.05)
-ax.plot([lx + 1.5, lx + 6.5], [51.3, 51.3], color=GRAY, lw=0.7, linestyle=(0, (1, 1.5))); ax.text(lx + 8, 51.3, "control ($\\psi$, $R$)", size=5.5, va="center")
-box(lx + 1.5, 45.9, 5, 3.2, ls=(0, (2, 1.5)), ec=INK, lw=0.5, r=0.5); ax.text(lx + 8, 47.5, "backup ($R$)", size=5.5, va="center")
+for y, col, ls, t in [(62.3, INK, "-", "request path"), (58.5, GRAY, "-", "activation"),
+                      (54.7, EMPH, "-", "KV + input"), (50.9, GRAY, (0, (1, 1.5)), "control ($\\psi$, $R$)")]:
+    ax.plot([lx + 1.5, lx + 6.5], [y, y], color=col, lw=0.7, linestyle=ls); ax.text(lx + 8, y, t, size=5.5, va="center")
+box(lx + 1.5, 45.5, 5, 3.2, ls=(0, (2, 1.5)), ec=INK, lw=0.5, r=0.5); ax.text(lx + 8, 47.1, "backup ($R$)", size=5.5, va="center")
 
 # --- workers
 W, GAP = 15.5, 3.6
@@ -67,7 +74,7 @@ for i, (lab, head, dots, hosted) in enumerate(STAGES):
     if not head:  # KV column + input to the coordinator
         arrow((c + 2.2, 30), (c + 2.2, 38), color=EMPH, lw=0.6)
     # control stub from the dotted bus
-    ax.plot([c - 2.2, c - 2.2], [34.5, 30], color=GRAY, lw=0.6, linestyle=(0, (1, 1.5)), zorder=3)
+    dotted_arrow((c - 2.2, 34.5), (c - 2.2, 30))
 # activation chain
 for i in range(4):
     a = centers[i] + (W / 2 if not STAGES[i][2] else 3.2)
@@ -78,11 +85,11 @@ ax.plot([centers[1] + 2.2, centers[-1] + 2.2], [38, 38], color=EMPH, lw=0.6, zor
 arrow((62, 38), (62, 44.5), color=EMPH, lw=0.6)
 # control bus (dotted) from the coordinator down over every worker
 ax.plot([centers[0] - 2.2, centers[-1] - 2.2], [34.5, 34.5], color=GRAY, lw=0.6, linestyle=(0, (1, 1.5)), zorder=3)
-arrow((50, 44.5), (50, 34.5), color=GRAY, lw=0.6, ls=(0, (1, 1.5)))
+ax.plot([50, 50], [44.5, 34.5], color=GRAY, lw=0.6, linestyle=(0, (1, 1.5)), zorder=3)
 # request path: coordinator -> head (outer left), stage n -> coordinator (outer right)
-ax.plot([32, 32, centers[0] + 3], [44.5, 41.5, 41.5], color=GRAY, lw=0.6, zorder=3)
-arrow((centers[0] + 3, 41.5), (centers[0] + 3, 30), color=GRAY, lw=0.6)
-ax.plot([centers[-1] + 5.8, centers[-1] + 5.8, 88], [30, 41.5, 41.5], color=GRAY, lw=0.6, zorder=3)
-arrow((88, 41.5), (88, 44.5), color=GRAY, lw=0.6)
+ax.plot([32, 32, centers[0] + 3], [44.5, 41.5, 41.5], color=INK, lw=0.6, zorder=3)
+arrow((centers[0] + 3, 41.5), (centers[0] + 3, 30), color=INK, lw=0.6)
+ax.plot([centers[-1] + 5.8, centers[-1] + 5.8, 88], [30, 41.5, 41.5], color=INK, lw=0.6, zorder=3)
+arrow((88, 41.5), (88, 44.5), color=INK, lw=0.6)
 
 save(fig, "fig_architecture")
