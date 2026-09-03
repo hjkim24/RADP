@@ -42,10 +42,10 @@ for x, y, t in [(44.5, 51.2, "recovery-aware\nplacement ($\\psi$, $R$)"), (74.5,
 
 # --- legend (top right)
 lx = 2
-box(lx, 40, 23.5, 20.5, ec=LIGHT, lw=0.5)
-ax.plot([lx + 2, lx + 8], [55.5, 55.5], color=GRAY, lw=0.7); ax.text(lx + 9.5, 55.5, "activation", size=5.5, va="center")
-ax.plot([lx + 2, lx + 8], [50, 50], color=EMPH, lw=0.7); ax.text(lx + 9.5, 50, "KV column,\ninput", size=5.5, va="center", linespacing=1.05)
-box(lx + 2, 42.8, 6, 3.2, ls=(0, (2, 1.5)), ec=INK, lw=0.5, r=0.5); ax.text(lx + 9.5, 44.4, "backup ($R$)", size=5.5, va="center")
+box(lx, 40, 25, 20.5, ec=LIGHT, lw=0.5)
+ax.plot([lx + 1.5, lx + 6.5], [56.5, 56.5], color=GRAY, lw=0.7); ax.text(lx + 8, 56.5, "activation", size=5.5, va="center")
+ax.plot([lx + 1.5, lx + 6.5], [50.6, 50.6], color=EMPH, lw=0.7); ax.text(lx + 8, 50.6, "KV column,\ninput", size=5.5, va="center", linespacing=1.05)
+box(lx + 1.5, 42.4, 5, 3.2, ls=(0, (2, 1.5)), ec=INK, lw=0.5, r=0.5); ax.text(lx + 8, 44.0, "backup ($R$)", size=5.5, va="center")
 
 # --- workers
 W, GAP = 15.5, 3.6
