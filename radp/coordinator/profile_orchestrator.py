@@ -47,6 +47,10 @@ _GRPC_OPTIONS: list[tuple[str, Any]] = [
 ]
 
 
+_PROFILE_RPC_ATTEMPTS = 4
+_PROFILE_RPC_RETRY_SECONDS = 30
+
+
 class ProfileOrchestrator:
     def __init__(
         self,
@@ -160,20 +164,39 @@ class ProfileOrchestrator:
         repeats: int,
         seq_length: int,
     ) -> list[LayerProfile]:
-        channel = grpc.insecure_channel(address, options=_GRPC_OPTIONS)
-        try:
-            stub = radp_pb2_grpc.WorkerServiceStub(channel)
-            resp = stub.ProfileLayers(
-                radp_pb2.ProfileLayersRequest(
-                    model_id=model_id,
-                    warmup=warmup,
-                    repeats=repeats,
-                    seq_length=seq_length,
-                ),
-                timeout=self.rpc_timeout_seconds,
-            )
-        finally:
-            channel.close()
+        # A worker can drop mid-profile (a Nano that still holds its stage can
+        # OOM under the profiling load and be restarted by systemd, which
+        # cancels the in-flight call with UNAVAILABLE). Retry a few times so a
+        # reactive re-solve survives that restart instead of failing outright.
+        last_exc: Exception | None = None
+        for attempt in range(1, _PROFILE_RPC_ATTEMPTS + 1):
+            channel = grpc.insecure_channel(address, options=_GRPC_OPTIONS)
+            try:
+                stub = radp_pb2_grpc.WorkerServiceStub(channel)
+                resp = stub.ProfileLayers(
+                    radp_pb2.ProfileLayersRequest(
+                        model_id=model_id,
+                        warmup=warmup,
+                        repeats=repeats,
+                        seq_length=seq_length,
+                    ),
+                    timeout=self.rpc_timeout_seconds,
+                )
+                break
+            except grpc.RpcError as e:
+                last_exc = e
+                code = e.code() if hasattr(e, "code") else None
+                if code not in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.CANCELLED) \
+                        or attempt == _PROFILE_RPC_ATTEMPTS:
+                    raise
+                log.warning("ProfileLayers on %s (%s) failed with %s; retry %d/%d in %ds",
+                            device_id, address, code, attempt, _PROFILE_RPC_ATTEMPTS,
+                            _PROFILE_RPC_RETRY_SECONDS)
+                time.sleep(_PROFILE_RPC_RETRY_SECONDS)
+            finally:
+                channel.close()
+        else:  # pragma: no cover - loop always breaks or raises
+            raise last_exc  # type: ignore[misc]
         if not resp.ok:
             raise RuntimeError(
                 f"ProfileLayers failed on {device_id} ({address}): {resp.error}"
