@@ -12,22 +12,18 @@ the stage that it may need to replace.  The coordinator is outside the
 protection domain; the current design targets fail-stop worker failures.
 
 During normal decoding, an activation passes through the active stages in
-layer order.  Each protected non-head stage also sends its newly appended KV
-bytes to the coordinator.  The coordinator combines columns from the same
-request and token position into one or two cross-stage parity columns.  It
-also retains the input activation required to execute the current position at
-a replacement stage.  These two forms of state serve different purposes:
-parity restores the completed KV prefix, while the mirrored activation starts
-execution at the point where the failed stage stopped.  On failure, the
-coordinator reconstructs the lost KV, activates the assigned backup, installs
-the recovered state, and rewires the pipeline.
-
-The architecture therefore separates two conditions that a recovery path must
-satisfy.  The request state must be reconstructable, and a surviving worker
-must have enough memory to execute the failed layer range.  Cross-stage parity
-addresses the first condition.  Recovery-aware placement addresses the
-second by admitting only $(\psi,R)$ pairs whose active and backup weights fit
-together.
+layer order, and each protected non-head stage also sends its newly appended
+KV bytes to the coordinator, which folds columns of the same request and
+token position into one or two cross-stage parity columns and retains the
+input activation of the current position.  Parity restores the completed KV
+prefix; the mirrored activation restarts execution where the failed stage
+stopped.  On failure, the coordinator reconstructs the lost KV, activates the
+assigned backup, installs the recovered state, and rewires the pipeline.  A
+recovery path must therefore satisfy two conditions, a reconstructable
+request state and a surviving worker with memory for the failed layer range;
+cross-stage parity addresses the first, and recovery-aware placement the
+second by admitting only $(\psi,R)$ pairs whose active and backup weights
+fit together.
 
 \subsection{Execution and Recovery Model}\label{sec:design:model}
 
@@ -41,24 +37,22 @@ observed as a fail-stop event.  Byzantine corruption, coordinator failure, a
 head-stage failure, and more than $k$ simultaneous protected-stage failures
 are outside this guarantee.
 
-A failure count within the configured limit is necessary but not sufficient.
-Before decoding parity, the coordinator checks that (i) every failed stage is
-protected, (ii) the surviving KV columns have valid per-position lengths,
-(iii) the parity entries for the common completed prefix are complete, (iv)
-the mirrored input for the interrupted position is present, and (v) $R$
-identifies a live worker with the required weights loaded.  These checks form
-the recovery contract.  If the contract does not hold, \sys{} first attempts
-failed-stage replay using the retained stage inputs and then falls back to
-full-prefix replay.  Only a completed parity path carries the bit-exact
-KV-state guarantee; replay fallbacks regenerate the state through model
-execution.
+A failure count within the limit is necessary but not sufficient.  Before
+decoding parity, the coordinator checks the \emph{recovery contract}: (i)
+every failed stage is protected, (ii) the surviving KV columns have valid
+per-position lengths, (iii) the parity entries for the common completed
+prefix are complete, (iv) the mirrored input for the interrupted position is
+present, and (v) $R$ identifies a live worker with the required weights
+loaded.  Otherwise \sys{} attempts failed-stage replay from the retained
+stage inputs and then full-prefix replay; only a completed parity path
+carries the bit-exact KV-state guarantee.
 
-The recovery mapping cannot be appended after an otherwise independent
-placement decision.  Assigning more layers to a fast worker increases both
-its active weight footprint and the reservation required on its backup.  A
-placement that fits during normal execution can therefore leave no surviving
-worker able to host the failed stage.  Section~\ref{sec:design:dp} accounts for
-this coupling while constructing $\psi$.
+The recovery mapping cannot be appended after an independent placement
+decision: assigning more layers to a fast worker increases both its active
+footprint and the reservation required on its backup, so a placement that
+fits during normal execution can leave no surviving worker able to host the
+failed stage.  Section~\ref{sec:design:dp} accounts for this coupling while
+constructing $\psi$.
 
 \subsection{Cross-Stage KV Parity}\label{sec:design:parity}
 
@@ -94,13 +88,12 @@ column.
 \label{sec:design:mirror}
 
 After identifying $F$, the coordinator fetches the surviving KV columns and
-checks their slot geometry.  A surviving byte stream must be divisible by its
-expected bytes per position.  Under synchronous pipeline execution, adjacent
-stages may differ by one completed slot because an upstream stage can finish
-the interrupted position before the failure propagates.  A larger difference
-indicates inconsistent state.  \sys{} therefore recovers only the common
-completed prefix $N$, defined by the minimum valid slot count, and requires a
-complete parity entry for every $q<N$.
+checks their slot geometry: each byte stream must be divisible by its bytes
+per position, and adjacent stages may differ by one completed slot, since an
+upstream stage can finish the interrupted position before the failure
+propagates; a larger difference indicates inconsistent state.  \sys{}
+recovers only the common completed prefix $N$, the minimum valid slot count,
+and requires a complete parity entry for every $q<N$.
 
 For one failed stage $x$, each prefix column is recovered as
 \begin{equation}\label{eq:recover-single}
@@ -122,13 +115,12 @@ decoding of a Reed--Solomon code~\cite{plank1997tutorial}:
     \label{eq:recover-double-y}
 \end{align}
 
-Algorithm~\ref{alg:cross-stage-parity} summarizes the guarded recovery path.
-After the reconstructed prefix has been installed on the backup, the
-coordinator executes the interrupted position once using its mirrored input
-activation and then continues with the next decode step.  Positions preceding
-the failure are not forwarded through the failed layer range again.  If any
-contract check fails, the algorithm returns to the replay ladder instead of
-using incomplete or inconsistent parity state.
+Algorithm~\ref{alg:cross-stage-parity} summarizes the guarded path.  After
+the reconstructed prefix is installed on the backup, the coordinator executes
+the interrupted position once from its mirrored input and continues with the
+next decode step; positions before the failure are never forwarded through
+the failed layer range again, and any contract failure returns to the replay
+ladder.
 
 \begin{algorithm}[t]
   \caption{Guarded cross-stage parity recovery}
@@ -176,8 +168,7 @@ configured optimization mode ranks a candidate by
     z_{\Sigma}+\alpha z_{\max}, & \text{blended}.
   \end{cases}
 \end{equation}
-This retains both cumulative latency and bottleneck time in the DP state
-instead of converting one into a fixed additive increment.
+This keeps both cumulative latency and bottleneck time in the DP state.
 
 For a fixed device order $(d_1,\ldots,d_n)$, let
 $A[y,n]=(A_{\Sigma}[y,n],A_{\max}[y,n])$ be the best state after placing the
@@ -194,10 +185,9 @@ The recurrence is
   l^*=\underset{\substack{n-1\leq l<y\\\text{feasible}}}
   {\arg\min}\;\rho\!\left(z(l)\right).
 \end{equation}
-Candidate device orders supply subset selection.  As in heterogeneous
-partitioning systems such as EdgeShard and Jupiter, the resulting objective
-can prioritize end-to-end latency or the slowest pipeline stage
-~\cite{zhang2024edgeshard,ye2025jupiter}.
+Candidate device orders supply subset selection, and as in EdgeShard and
+Jupiter the objective can prioritize end-to-end latency or the slowest
+stage~\cite{zhang2024edgeshard,ye2025jupiter}.
 
 Recovery changes the feasible set.  Let $W_{\psi}(d)$ be the active weights
 placed on device $d$, $W_{\psi}(s)$ the weights in stage $s$, and $M(d)$ the
@@ -206,16 +196,15 @@ usable model-memory capacity.  Every candidate must satisfy
   W_{\psi}(d)+\sum_{s:R(s)=d}W_{\psi}(s)\leq M(d),
   \qquad \forall d\in D.
 \end{equation}
-The second term is the memory reserved for backup weights.  Because the stage
-intervals determine this term while the reservations constrain the next
-placement, \sys{} alternates between the two: starting from a uniform
-placement, each iteration builds $R$ for the current $\psi$, re-solves the DP
-with that $R$ as the backup burden, keeps the new pair if it satisfies
-Eq.~\ref{eq:mem} under its own reservations and ranks better under
-Eq.~\ref{eq:rank}, and stops when $\psi$ and $R$ repeat or after a bounded
-number of iterations.  The best self-consistent pair found is returned; the
-search does not assume that every step improves the objective.  Candidate
-device orders and subsets are enumerated around this loop.
+The second term is the memory reserved for backup weights.  Because the
+stage intervals determine this term while the reservations constrain the
+next placement, \sys{} alternates: starting from a uniform placement, each
+iteration builds $R$ for the current $\psi$, re-solves the DP with that $R$
+as the backup burden, keeps the pair if it satisfies Eq.~\ref{eq:mem} under
+its own reservations and ranks better under Eq.~\ref{eq:rank}, and stops
+when $\psi$ and $R$ repeat or after a bounded number of iterations,
+returning the best self-consistent pair.  Candidate device orders and
+subsets are enumerated around this loop.
 
 
 \subsection{Runtime Integration}\label{sec:design:runtime}
@@ -223,16 +212,13 @@ device orders and subsets are enumerated around this loop.
 
 At deployment time the coordinator profiles layer execution and peer links,
 runs the alternating search, loads the active stage weights, and preloads the
-backup weights selected by $R$.  During decoding, workers report each new
-protected KV column, and parity updates and input mirrors are keyed by request
-and position, so duplicate delivery is idempotent.  The coordinator detects
-worker loss through the request remote procedure call (RPC) path or
-heartbeat; the failure report carries the failed layer interval, which is
-resolved against the active placement.  The coordinator then freezes the
-affected request, applies the contract in Algorithm~\ref{alg:cross-stage-parity},
-promotes the backup, and updates the neighboring stage routes.  Forwarding may
-be synchronous or asynchronous; asynchronous forwarding relies on heartbeat
-when an RPC trailer can no longer carry the failed interval.  The prototype is
-implemented in Python with PyTorch and gRPC; the coordinator owns placement,
-parity state, failure attribution, and request-level recovery, and the worker
-data path is limited to stage execution and state transfer.
+backup weights selected by $R$.  Parity updates and input mirrors are keyed by
+request and position, so duplicate delivery is idempotent.  Worker loss is
+detected through the request remote procedure call (RPC) path, whose trailer
+carries the failed layer interval, or through heartbeat under asynchronous
+forwarding; the coordinator then freezes the affected request, applies the
+contract in Algorithm~\ref{alg:cross-stage-parity}, promotes the backup, and
+updates the neighboring routes.  The prototype is implemented in Python with
+PyTorch and gRPC; the coordinator owns placement, parity state, failure
+attribution, and recovery, and the worker data path is limited to stage
+execution and state transfer.

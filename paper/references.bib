@@ -1,17 +1,3 @@
-% Placeholder bib file. Real entries land as related-work prose stabilises.
-
-@inproceedings{borzunov2023petals,
-  title={Petals: Collaborative inference and fine-tuning of large models},
-  author={Borzunov, Alexander and Baranchuk, Dmitry and Dettmers, Tim and Riabinin, Maksim and Belkada, Younes and Chumachenko, Artem and Samygin, Pavel and Raffel, Colin},
-  booktitle={Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 3: System Demonstrations)},
-  pages={558--568},
-  year={2023},
-  doi={10.18653/v1/2023.acl-demo.54},
-  url={https://aclanthology.org/2023.acl-demo.54/}
-}
-
-% Key kept as ...2024 (arXiv year) so existing \cite calls don't break;
-% published IoT-J issue is 2025 (vol 12), reflected in the year field.
 @article{zhang2024edgeshard,
   title={{EdgeShard}: Efficient {LLM} Inference via Collaborative Edge Computing},
   author={Zhang, Mingjin and Shen, Xiaoming and Cao, Jiannong and Cui, Zeyang and Jiang, Shan},
@@ -35,11 +21,13 @@
 }
 
 @inproceedings{mei2025helix,
-  title={Helix: Serving large language models over heterogeneous gpus and network via max-flow},
+  title={{Helix}: Serving Large Language Models over Heterogeneous {GPU}s and Network via Max-Flow},
   author={Mei, Yixuan and Zhuang, Yonghao and Miao, Xupeng and Yang, Juncheng and Jia, Zhihao and Vinayak, Rashmi},
   booktitle={Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1},
   pages={586--602},
-  year={2025}
+  year={2025},
+  publisher={ACM},
+  doi={10.1145/3669940.3707215}
 }
 
 @inproceedings{borzunov2023distributed,
@@ -85,30 +73,6 @@
   url={https://arxiv.org/abs/2606.17787}
 }
 
-@article{dai2025joint,
-  title={Joint optimization of device placement and model partitioning for cooperative {DNN} inference in heterogeneous edge computing},
-  author={Dai, Penglin and Han, Biao and Li, Ke and Xu, Xincao and Xing, Huanlai and Liu, Kai},
-  journal={IEEE Transactions on Mobile Computing},
-  volume={24},
-  number={1},
-  pages={210--226},
-  year={2025},
-  publisher={IEEE},
-  doi={10.1109/TMC.2024.3457793}
-}
-
-@article{xu2025edgellm,
-  title={{EdgeLLM}: Fast on-device {LLM} inference with speculative decoding},
-  author={Xu, Daliang and Yin, Wangsong and Zhang, Hao and Jin, Xin and Zhang, Ying and Wei, Shiyun and Xu, Mengwei and Liu, Xuanzhe},
-  journal={IEEE Transactions on Mobile Computing},
-  volume={24},
-  number={4},
-  pages={3256--3273},
-  year={2025},
-  publisher={IEEE},
-  doi={10.1109/TMC.2024.3513457}
-}
-
 @article{chen2024ftpipehd,
   title={{FTPipeHD}: A fault-tolerant pipeline-parallel distributed training approach for heterogeneous edge devices},
   author={Chen, Yuhao and Yang, Qianqian and He, Shibo and Shi, Zhiguo and Chen, Jiming and Guizani, Mohsen},
@@ -121,18 +85,18 @@
   doi={10.1109/TMC.2023.3272567}
 }
 
-% =====================================================================
-% Datacenter / heterogeneous-GPU LLM serving  (Related Work A; Intro transfer-gap)
-% Verified via Crossref (ACM DOIs) and arXiv/dblp (ICML/ICLR preprints).
-% =====================================================================
-
 @inproceedings{jiang2024hexgen,
   title={{HexGen}: Generative Inference of Large Language Model over Heterogeneous Environment},
   author={Jiang, Youhe and Yan, Ran and Yao, Xiaozhe and Zhou, Yang and Chen, Beidi and Yuan, Binhang},
-  booktitle={International Conference on Machine Learning (ICML)},
+  booktitle={Proceedings of the 41st International Conference on Machine Learning},
+  series={Proceedings of Machine Learning Research},
+  volume={235},
+  pages={21946--21961},
   year={2024},
+  publisher={PMLR},
   eprint={2311.11514},
-  archivePrefix={arXiv}
+  archivePrefix={arXiv},
+  url={https://proceedings.mlr.press/v235/jiang24f.html}
 }
 
 @inproceedings{jiang2025hexgen2,
@@ -141,7 +105,8 @@
   booktitle={International Conference on Learning Representations (ICLR)},
   year={2025},
   eprint={2502.07903},
-  archivePrefix={arXiv}
+  archivePrefix={arXiv},
+  url={https://openreview.net/forum?id=Cs6MrbFuMq}
 }
 
 @inproceedings{mo2025hetis,
@@ -158,10 +123,11 @@
   title={{LLM-PQ}: Serving {LLM} on Heterogeneous Clusters with Phase-Aware Partition and Adaptive Quantization},
   author={Zhao, Juntao and Wan, Borui and Peng, Yanghua and Lin, Haibin and Wu, Chuan},
   booktitle={Proceedings of the 29th ACM SIGPLAN Annual Symposium on Principles and Practice of Parallel Programming (PPoPP)},
+  pages={460--462},
   year={2024},
   publisher={ACM},
   doi={10.1145/3627535.3638480},
-  note={Poster; extended version arXiv:2403.01136}
+  url={https://arxiv.org/abs/2403.01136}
 }
 
 @inproceedings{miao2024spotserve,
@@ -194,11 +160,6 @@
   year={2026},
   url={https://proceedings.mlsys.org/paper_files/paper/2026/hash/d99e8e80a6c41e148db686918dd7eab3-Abstract-Conference.html}
 }
-
-% =====================================================================
-% IoT deployment context (Intro motivation)
-% Metadata extracted from DOI records and checked against publisher/dblp.
-% =====================================================================
 
 @article{hussain2025airgap,
   title={A Survey on Malware Attacks in Industrial Air-Gap Systems},
@@ -244,13 +205,6 @@
   publisher={Elsevier},
   doi={10.1016/j.iot.2022.100666}
 }
-
-% =====================================================================
-% Industrial informatics context (IEEE Trans. Industrial Informatics)
-% Related Work C; Intro industrial framing. Roles: A=LLM-in-industry,
-% B=distributed inference, D=fault tolerance. All DOI-verified via
-% Crossref content negotiation (see paper/refs/TII-industrial-refs.md).
-% =====================================================================
 
 @article{zhang2026finetuning,
   title={Fine-Tuning a {3B}-Parameter Large Language Model for Multistate Coestimation of Lithium-Ion Batteries Under Random Charging Behaviors},
@@ -312,96 +266,6 @@
   doi={10.1109/TII.2022.3204560}
 }
 
-@article{xu2020dynamic,
-  title={Dynamic Resource Provisioning With Fault Tolerance for Data-Intensive Meteorological Workflows in Cloud},
-  author={Xu, Xiaolong and Mo, Ruichao and Dai, Fei and Lin, Wenmin and Wan, Shaohua and Dou, Wanchun},
-  journal={IEEE Transactions on Industrial Informatics},
-  volume={16},
-  number={9},
-  pages={6172--6181},
-  year={2020},
-  publisher={IEEE},
-  doi={10.1109/TII.2019.2959258}
-}
-
-@article{gessner2019faulttolerant,
-  title={A Fault-Tolerant Ethernet for Hard Real-Time Adaptive Systems},
-  author={Gessner, David and Proenza, Julian and Barranco, Manuel and Ballesteros, Alberto},
-  journal={IEEE Transactions on Industrial Informatics},
-  volume={15},
-  number={5},
-  pages={2980--2991},
-  year={2019},
-  publisher={IEEE},
-  doi={10.1109/TII.2019.2895046}
-}
-
-@article{devaraj2021resourceoptimal,
-  title={Resource-Optimal Fault-Tolerant Scheduler Design for Task Graphs Using Supervisory Control},
-  author={Devaraj, Rajesh and Sarkar, Arnab},
-  journal={IEEE Transactions on Industrial Informatics},
-  volume={17},
-  number={11},
-  pages={7325--7337},
-  year={2021},
-  publisher={IEEE},
-  doi={10.1109/TII.2020.3042161}
-}
-
-@article{lin2020costdriven,
-  title={Cost-Driven Off-Loading for {DNN}-Based Applications Over Cloud, Edge, and End Devices},
-  author={Lin, Bing and Huang, Yinhao and Zhang, Jianshan and Hu, Junqin and Chen, Xing and Li, Jun},
-  journal={IEEE Transactions on Industrial Informatics},
-  volume={16},
-  number={8},
-  pages={5456--5466},
-  year={2020},
-  publisher={IEEE},
-  doi={10.1109/TII.2019.2961237}
-}
-
-@article{wu2021accuracyguaranteed,
-  title={Accuracy-Guaranteed Collaborative {DNN} Inference in Industrial {IoT} via Deep Reinforcement Learning},
-  author={Wu, Wen and Yang, Peng and Zhang, Weiting and Zhou, Conghao and Shen, Xuemin},
-  journal={IEEE Transactions on Industrial Informatics},
-  volume={17},
-  number={7},
-  pages={4988--4998},
-  year={2021},
-  publisher={IEEE},
-  doi={10.1109/TII.2020.3017573}
-}
-
-@article{fan2023dnn,
-  title={{DNN} Deployment, Task Offloading, and Resource Allocation for Joint Task Inference in {IIoT}},
-  author={Fan, Wenhao and Chen, Zeyu and Hao, Zhibo and Su, Yi and Wu, Fan and Tang, Bihua and Liu, Yuan'an},
-  journal={IEEE Transactions on Industrial Informatics},
-  volume={19},
-  number={2},
-  pages={1634--1646},
-  year={2023},
-  publisher={IEEE},
-  doi={10.1109/TII.2022.3192882}
-}
-
-@article{fang2021edgeke,
-  title={{EdgeKE}: An On-Demand Deep Learning {IoT} System for Cognitive Big Data on Industrial Edge Devices},
-  author={Fang, Weiwei and Xue, Feng and Ding, Yi and Xiong, Naixue and Leung, Victor C. M.},
-  journal={IEEE Transactions on Industrial Informatics},
-  volume={17},
-  number={9},
-  pages={6144--6152},
-  year={2021},
-  publisher={IEEE},
-  doi={10.1109/TII.2020.3044930}
-}
-
-% =====================================================================
-% Edge distributed LLM inference -- comparison/motivation set
-% (why-edge intro comparison; see paper/refs/comparison.md, PAPERS.md).
-% Published venues verified via Crossref DOI; preprints marked.
-% =====================================================================
-
 @inproceedings{macario2025mdi,
   title={Model-Distributed Inference for Large Language Models at the Edge},
   author={Macario, Davide and Seferoglu, Hulya and Koyuncu, Erdem},
@@ -412,67 +276,6 @@
   doi={10.1109/LANMAN66415.2025.11154542}
 }
 
-@inproceedings{khoshsirat2024decentralized,
-  title={Decentralized {LLM} Inference over Edge Networks with Energy Harvesting},
-  author={Khoshsirat, Aria and Perin, Giovanni and Rossi, Michele},
-  booktitle={GLOBECOM 2024 -- 2024 IEEE Global Communications Conference},
-  pages={3703--3708},
-  year={2024},
-  publisher={IEEE},
-  doi={10.1109/GLOBECOM52923.2024.10901542}
-}
-
-@inproceedings{dong2026hybridflow,
-  title={{HybridFlow}: Resource-Adaptive Subtask Routing for Efficient Edge-Cloud {LLM} Inference},
-  author={Dong, Jiangwen and Li, Jiayu and Zheng, Tianhang and Lin, Wanyu},
-  booktitle={International Conference on Machine Learning (ICML)},
-  year={2026},
-  eprint={2512.22137},
-  archivePrefix={arXiv}
-}
-
-@inproceedings{zheng2025communication,
-  title={Communication-Efficient Collaborative {LLM} Inference via Distributed Speculative Decoding},
-  author={Zheng, Ce and Yang, Tingting},
-  booktitle={2025 Seventeenth International Conference on Wireless Communications and Signal Processing (WCSP)},
-  pages={1--6},
-  year={2025},
-  publisher={IEEE},
-  doi={10.1109/WCSP68525.2025.1010651}
-}
-
-@inproceedings{mitra2025distributed,
-  title={Distributed Mixture-of-Agents for Edge Inference with Large Language Models},
-  author={Mitra, Purbesh and Kaswan, Priyanka and Ulukus, Sennur},
-  booktitle={2025 IEEE 36th International Symposium on Personal, Indoor and Mobile Radio Communications (PIMRC)},
-  pages={1--5},
-  year={2025},
-  publisher={IEEE},
-  doi={10.1109/PIMRC62392.2025.11275145}
-}
-
-% -- Preprints (no published venue as of 2026-07-09) --
-
-@misc{zhu2025efficient,
-  title={Efficient {LLM} Inference over Heterogeneous Edge Networks with Speculative Decoding},
-  author={Zhu, Bingjie and Chen, Zhixiong and Zhao, Liqiang and Shin, Hyundong and Nallanathan, Arumugam},
-  year={2025},
-  eprint={2510.11331},
-  archivePrefix={arXiv},
-  primaryClass={eess.SY}
-}
-
-@misc{deng2025federated,
-  title={Federated Attention: A Distributed Paradigm for Collaborative {LLM} Inference over Edge Networks},
-  author={Deng, Xiumei and Xiong, Zehui and Chen, Binbin and Kim, Dong In and Debbah, Merouane and Poor, H. Vincent},
-  year={2025},
-  eprint={2511.02647},
-  archivePrefix={arXiv},
-  note={Submitted to IEEE JSAC}
-}
-
-
-% ---- Added 2026-08-30: PDFs in paper/refs that had no bib entry (edge LLM placement/scheduling and decentralized serving) ----
 @article{picano2025matching,
   title={A Matching Game for {LLM} Layer Deployment in Heterogeneous Edge Networks},
   author={Picano, Benedetta and Hoang, Dinh Thai and Nguyen, Diep N.},
@@ -482,14 +285,15 @@
   year={2025},
   doi={10.1109/OJCOMS.2025.3561605}
 }
+
 @article{zheng2026dybap,
   title={Joint Optimization of Dynamic Batching and Adaptive Partitioning for Distributed {LLMs} Inference in Mobile Edge Computing},
   author={Zheng, Tong and Bi, Yuanguo and Han, Guangjie and Xiang, Tianao and Xu, Lexi and He, Qiang and Zhao, Liang},
   journal={IEEE Transactions on Mobile Computing},
   year={2026},
-  note={Early access},
   doi={10.1109/TMC.2026.3650838}
 }
+
 @misc{tong2025parallax,
   title={Parallax: Efficient {LLM} Inference Service over Decentralized Environment},
   author={Tong, Chris and Jiang, Youhe and Chen, Gufeng and Zhao, Tianyi and Lu, Sibian and Qu, Wenjie and Yang, Eric and Ai, Lynn and Yuan, Binhang},
@@ -499,26 +303,6 @@
   primaryClass={cs.DC},
   doi={10.48550/arXiv.2509.26182},
   url={https://arxiv.org/abs/2509.26182}
-}
-@misc{chow2025slice,
-  title={{SLICE}: {SLO}-Driven Scheduling for {LLM} Inference on Edge Computing Devices},
-  author={Chow, Will},
-  year={2025},
-  eprint={2510.18544},
-  archivePrefix={arXiv},
-  primaryClass={cs.DC},
-  doi={10.48550/arXiv.2510.18544},
-  url={https://arxiv.org/abs/2510.18544}
-}
-@misc{kumar2026qeil,
-  title={Quantifying Edge Intelligence: Inference-Time Scaling Formalisms for Heterogeneous Computing},
-  author={Kumar, Satyam and Jha, Saurabh},
-  year={2026},
-  eprint={2602.06057},
-  archivePrefix={arXiv},
-  primaryClass={cs.DC},
-  doi={10.48550/arXiv.2602.06057},
-  url={https://arxiv.org/abs/2602.06057}
 }
 
 @article{plank1997tutorial,

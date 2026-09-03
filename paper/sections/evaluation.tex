@@ -36,17 +36,16 @@ token interval in these sweeps is 500\,ms.  Every (family, position) pair is
 measured in three independent trials, each on a freshly restarted pipeline,
 so each fit pools 15 trials and carries a standard error.
 
-\textbf{Small-model microscopy.}  Three measurements need repeated boots or
-byte-level instrumentation that the 7B deployment makes impractical: the
-cross-tier fidelity probe, the five-position Reconfigure sweep, and the
-analysis of a concentrated backup mapping.  For these we use OPT-350M in fp16
-(24 layers, 4\,096 bytes of KV per layer per token) on a five-stage pipeline
-over five of the same workers (\texttt{ao-2} head, layers 1--15;
-\texttt{on-1} 16--17; \texttt{on-6} 18--19; \texttt{ao-1} 20--23;
-\texttt{on-2} 24; 183\,ms token interval), with two further Orin Nano boards
-running CPU-only workers as candidate backup hosts in the placement study.
-Both deployments share the coordinator, the injection mechanism, and the
-validity gates below, and every 350M result is marked as such.
+\textbf{Small-model microscopy.}  The cross-tier fidelity probe, the
+five-position Reconfigure sweep, and the analysis of a concentrated backup
+mapping need byte-level instrumentation or repeated boots that the 7B
+deployment makes impractical; for these we use OPT-350M in fp16 (24 layers,
+4\,096 bytes of KV per layer per token) on a five-stage pipeline over five of
+the same workers (\texttt{ao-2} head, layers 1--15; \texttt{on-1} 16--17;
+\texttt{on-6} 18--19; \texttt{ao-1} 20--23; \texttt{on-2} 24; 183\,ms token
+interval), plus two CPU-only Orin Nano workers as candidate backup hosts in
+the placement study.  Both deployments share the coordinator, the injection
+mechanism, and the validity gates, and every 350M result is marked.
 
 \textbf{Recovery families.}  We compare five recovery paths under one
 coordinator and one injection mechanism.  \emph{Recompute} rebuilds the
@@ -64,15 +63,14 @@ of named systems.
 \textbf{Failure injection.}  A worker-side fault raises a crash on the victim
 while it computes position $P$, after the victim's input for that position
 has reached the coordinator, so every trial fails at exactly the intended
-token.  Pipeline forwarding is synchronous during these sweeps so that the
-failed layer interval propagates through the RPC trailer; asynchronous
-forwarding adds a heartbeat-bounded detection delay that is common to all
-families and is not part of the recovery work compared here.  The primary
-victim is \texttt{on-2} (layers 7--10) with \texttt{on-1} as its assigned
-backup; a second sweep on the same placement fails \texttt{on-5} (layers
-15--18) to test victim sensitivity.  Reconfigure has no assigned backup, so
-its victim is chosen from the live placement in each trial and is marked dead
-explicitly, which also excludes its detection delay.
+token.  Forwarding is synchronous during these sweeps so that the failed
+layer interval propagates through the RPC trailer; the heartbeat-bounded
+detection delay of asynchronous forwarding is common to all families and not
+part of the recovery work compared here.  The primary victim is
+\texttt{on-2} (layers 7--10) with \texttt{on-1} as its assigned backup; a
+second sweep on the same placement fails \texttt{on-5} (layers 15--18).
+Reconfigure has no assigned backup, so its victim is chosen from the live
+placement in each trial and marked dead explicitly.
 
 \textbf{Metrics and validity.}  \emph{Recovery Latency} is the client-observed
 interval from the last token received before the failure to the first valid
@@ -149,13 +147,12 @@ zero-recomputation families sit within one to three decode steps of a normal
 token.  Relative to DejaVu, \sys{} trades that 0.28\,s for $3.7\times$ less
 retained state (Section~\ref{sec:eval:footprint}).
 
-Reconfigure recovers in 439.4\,s at the median (413.1 and 465.8\,s at the two
-measured positions).  The time is dominated by re-profiling the survivors,
-re-solving placement, cold-loading 12.4\,GiB of weights on the newly assigned
-workers, and rebuilding the pipeline, all of which are independent of $P$;
-because the surviving fleet differs per trial, we report the level and range
-rather than a slope.  Holding no recovery state thus costs more than two
-orders of magnitude in recovery latency relative to any family with a
+Reconfigure recovers in 439.4\,s at the median (413.1 and 465.8\,s at the
+two measured positions), dominated by re-profiling the survivors, re-solving
+placement, cold-loading 12.4\,GiB of weights, and rebuilding the pipeline,
+all independent of $P$; because the surviving fleet differs per trial, we
+report level and range rather than a slope.  Holding no recovery state thus
+costs more than two orders of magnitude relative to any family with a
 pre-assigned backup, and the penalty grows with the model: on the 350M
 deployment the same baseline recovers in 24.25\,s at the median
 (18.62--39.35\,s over five positions).
@@ -195,18 +192,16 @@ low-latency, low-state corner.
 
 On the measured placement, the five protected stages hold 425\,984 bytes of
 KV per token in total (416\,kB) and the largest holds 114\,688 (112\,kB).
-DejaVu retains the sum.  A single parity column retains one padded largest
+DejaVu retains the sum; a single parity column retains one padded largest
 column, $3.7\times$ less, and two columns retain 224\,kB, 46\% less than
 replication.  Fig.~\ref{fig:storage-tolerance} generalizes this: $k$ parity
 columns cost $k\cdot\ell_{\max}$ while replication costs $\sum_s\ell_s$, so
-parity is smaller only while $k<\sum_s\ell_s/\ell_{\max}$.  The crossover is
-3.71 on this placement and 2.25 on the head-heavy 350M placement, where a
-third column would already retain more state than replication while
-tolerating fewer failures; the implementation stops at $k=2$, the two-column
-construction of Section~\ref{sec:design}.  The per-token difference
-accumulates over the context: at a 2\,048-token context the measured 7B
-placement retains 832\,MB under replication and 224\,MB under single parity,
-and the 350M placement 72 versus 32\,MB.  These totals are a derived projection from the measured layer shapes.
+parity is smaller only while $k<\sum_s\ell_s/\ell_{\max}$, 3.71 on this
+placement and 2.25 on the head-heavy 350M placement, where a third column
+would already retain more state than replication; the implementation stops
+at $k=2$.  Over a 2\,048-token context the 7B placement retains 832\,MB
+under replication and 224\,MB under single parity (350M: 72 versus 32\,MB),
+a derived projection from the measured layer shapes.
 
 \textbf{Two simultaneous failures.}  With $k=2$, we fail two protected
 stages at once (\texttt{on-2} and \texttt{ao-2}, whose backups
@@ -244,19 +239,18 @@ The parity and replication paths install the bytes that were stored, so a
 completed parity recovery is bit-exact by construction; the unit tests assert
 layer-wise identity of the recovered K and V tensors, and the live trials at
 both scales confirm the branch executed.  Replay-based recovery regenerates
-KV through a model forward pass, and on heterogeneous hardware that pass need
-not reproduce the original bytes.  Table~\ref{tab:fidelity} quantifies this
-with a controlled probe on the 350M deployment, the only one whose stages fit
-a CPU-only board: the same fp16 input forwarded through the same two-layer
+KV through a model forward pass, which on heterogeneous hardware need not
+reproduce the original bytes.  Table~\ref{tab:fidelity} quantifies this with
+a controlled probe on the 350M deployment, the only one whose stages fit a
+CPU-only board: the same fp16 input forwarded through the same two-layer
 stage (layers 16--17, eight positions) on \texttt{on-1} (CUDA) and on a
-CPU-only Orin Nano worker differs in 26.9\% of KV elements, with a maximum
-absolute difference of $2^{-8}$, consistent with kernel-dependent reduction
-order and accumulation precision rather than a defect.  We present fidelity
-as a determinism property of the recovered state: parity and replication
-guarantee it whenever their primary path completes, whereas replay fallbacks,
-Petals, Recompute, and Reconfigure regenerate a KV cache whose bytes depend on
-the backup's hardware tier.  The probe covers one tier pair and one stage;
-same-tier drift and deeper stages remain to be measured.
+CPU-only Orin Nano differs in 26.9\% of KV elements, with a maximum absolute
+difference of $2^{-8}$, consistent with kernel-dependent reduction order and
+accumulation precision.  Fidelity is thus a determinism property of the
+recovered state: parity and replication guarantee it whenever their primary
+path completes, whereas replay fallbacks, Petals, Recompute, and Reconfigure
+regenerate KV whose bytes depend on the backup's hardware tier.  The probe
+covers one tier pair and one stage.
 
 \subsection{Recovery Feasibility}\label{sec:eval:feasibility}
 
@@ -264,19 +258,15 @@ same-tier drift and deeper stages remain to be measured.
   \centering
   \scriptsize
   \setlength{\tabcolsep}{3.5pt}
-  \caption{Recovery Feasibility under a per-device free-memory cap $c$
-  (controlled offline analysis on measured fleet profiles).}
+  \caption{Recovery Feasibility of OPT-6.7B under a per-device free-memory
+  cap $c$ (controlled offline analysis on the measured fleet profile).}
   \label{tab:feasibility}
   \begin{tabular}{l l l l}
     \toprule
     Backup hosts & Both feasible & Only joint feasible & Neither \\
     \midrule
-    \multicolumn{4}{l}{\emph{OPT-6.7B (six CUDA workers)}} \\
     Pipeline devices & none & $6.5\,\mathrm{GB}\leq c\leq$ actual & $c\leq6.0$\,GB \\
     Whole fleet & $c\geq4.8$\,GB & none & $c\leq4.6$\,GB \\
-    \multicolumn{4}{l}{\emph{OPT-350M (five CUDA workers)}} \\
-    Pipeline devices & $c\geq650$\,MB & $300\leq c\leq600$\,MB & $c\leq250$\,MB \\
-    Whole fleet (+2 CPU nodes) & $c\geq250$\,MB & $c=200$\,MB & none \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -300,19 +290,16 @@ restricted to pipeline devices, cost-first placement finds no backup at
 \emph{any} cap at which the model fits, from 6.5\,GB up to the fleet's actual
 free memory (3.1--5.8\,GB on the Nanos, 23\,GB on the AGX boards before
 deployment), while joint placement is feasible throughout: the production
-operating point of this deployment lies inside the coupling band.  The
-mechanism is that the cost-only DP concentrates large stages on the two AGX
-boards and leaves no peer able to reserve a 2.4\,GB backup beside its own
-stage, whereas the joint solver charges the reservation to the next placement
-and spreads the stages.  Allowing backups on non-pipeline devices dissolves
-the gap, since a device that holds no stage absorbs the reservations, and
-both procedures then succeed down to 4.8\,GB.  The 350M deployment shows the
+operating point of this deployment lies inside the coupling band.  The cost-only DP concentrates large stages on the two AGX boards and leaves
+no peer able to reserve a 2.4\,GB backup beside its own stage, whereas the
+joint solver charges the reservation to the next placement and spreads the
+stages.  Allowing backups on non-pipeline devices dissolves the gap, since a
+device that holds no stage absorbs the reservations, and both procedures
+then succeed down to 4.8\,GB.  The 350M deployment shows the
 same structure only under synthetic caps: with 5--25\,GB free per device
-both procedures succeed, and the band in which only joint placement is
-feasible appears at 300--600\,MB (pipeline devices) and 200\,MB (whole
-fleet); at $c=600$\,MB the cost-only DP prefers two stages,
-\texttt{on-1}[1--23]$\to$\texttt{on-6}[24], whose 23-layer stage no peer can
-reserve, while the joint solver returns four stages whose largest has a host.
+both procedures succeed, and the joint-only band appears at 300--600\,MB
+(pipeline devices) and 200\,MB (whole fleet, where two CPU-only nodes absorb
+reservations).
 These are feasibility results under a memory constraint and say nothing
 about serving latency; they show that the backup reservation in Eq.~\ref{eq:mem} decides
 which placements are admissible once memory is tight, and that a 7B-class
@@ -350,31 +337,13 @@ traffic itself is not an evaluation axis in this paper.
 
 \subsection{Across Scales}\label{sec:eval:scale}
 
-\begin{table}[t]
-  \centering
-  \scriptsize
-  \setlength{\tabcolsep}{4pt}
-  \caption{The same protocol at two model scales (live unless marked).}
-  \label{tab:scales}
-  \begin{tabular}{l r r}
-    \toprule
-    & OPT-350M & OPT-6.7B \\
-    \midrule
-    Recompute slope (ms/pos) & 164.3 & $446.7\pm5.7$ \\
-    \sys{} slope (ms/pos) & 0.87 & $5.2\pm3.2$ \\
-    \sys{} recovery, in decode steps & 1.6--1.9 & 2.1--3.2 \\
-    Replication\,/\,\sys{} retained state & 2.25$\times$ & 3.7$\times$ \\
-    Reconfigure median (s) & 24.25 & 439.4 \\
-    Single-parity throughput change & $-5.1\pm2.4$\% & $+0.6\pm10.7$\% \\
-    Only-joint feasibility band (offline) & 300--600\,MB & 6.5\,GB--actual \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-Table~\ref{tab:scales} collects the two scales.  A $19\times$ larger model
-makes recomputation $2.7\times$ steeper per position and reconfiguration
-$18\times$ slower, while \sys{}'s slope stays at zero and its recovery
-stays within a few decode steps.  Its storage advantage over replication
-widens with pipeline depth, its failure-free cost falls below measurement
-noise, and the feasibility coupling that had to be induced with synthetic
-memory caps at 350M binds at the fleet's actual capacity at 7B.
+Between OPT-350M and OPT-6.7B, a $19\times$ larger model, recomputation
+becomes $2.7\times$ steeper per position (164 to $447\pm6$\,ms) and
+reconfiguration $18\times$ slower (24.25 to 439.4\,s at the median), while
+\sys{}'s slope stays at zero (0.87 to $5.2\pm3.2$\,ms) and its recovery
+stays within a few decode steps (1.6--1.9 to 2.1--3.2).  Its storage
+advantage over replication widens with pipeline depth ($2.25\times$ to
+$3.7\times$), its failure-free cost falls from $5.1\pm2.4$\% to within
+measurement noise, and the feasibility coupling that had to be induced with
+synthetic memory caps at 350M (300--600\,MB) binds at the fleet's actual
+capacity at 7B.

@@ -18,15 +18,14 @@ zhang2024edgeshard,ye2025jupiter,picano2025matching,zheng2026dybap}.  Such a dep
 heterogeneous: its pipeline may span GPUs, CPUs, and embedded accelerators
 with different execution rates and memory capacities.
 
-Distribution removes a single-device capacity bottleneck, but makes each
+Distribution removes a single-device capacity bottleneck but makes each
 request depend on every stage of the pipeline.  Fault-tolerant Industrial
 Internet of Things routing already treats node and link failures as operating
-conditions~\cite{kaur2023intelligent}; we also encountered unexpected process
-exits and out-of-memory failures while operating our testbed.  This dependence
-is particularly consequential for autoregressive
-inference.  Each stage retains the KV cache produced for earlier tokens, so a
-failed stage loses both its assigned computation and the request-specific
-state needed to continue decoding.  EdgeShard and Jupiter optimize layer
+conditions~\cite{kaur2023intelligent}, and we encountered unexpected process
+exits and out-of-memory failures while operating our testbed.  For
+autoregressive inference the dependence is severe: each stage retains the KV
+cache produced for earlier tokens, so a failed stage loses both its assigned
+computation and the request-specific state needed to continue decoding.  EdgeShard and Jupiter optimize layer
 partitioning and placement across heterogeneous devices, but neither paper
 specifies a runtime path that restores this lost state and resumes an in-flight
 request~\cite{zhang2024edgeshard,ye2025jupiter}.  Moving the failed layer range
@@ -57,13 +56,12 @@ single protected-stage failure, the coordinator reconstructs the lost KV from
 the parity column and the surviving stages without recomputing the prefix; the
 retained redundancy is proportional to the largest protected KV column rather
 than their sum.  Direct state reconstruction also has a distinct property on
-heterogeneous hardware.  Replaying the same stage through different execution
-backends can change KV bytes because operation order, precision, and kernel
-implementations differ, and we observed such bit-level differences in a
-cross-tier replay experiment.  We therefore treat \emph{KV-State Fidelity}
-as a property of the recovered state itself.  When its validation gates pass,
-the parity path reconstructs the stored bytes exactly; this guarantee does not
-extend to replay fallbacks.  The second component, \emph{recovery-aware layer
+heterogeneous hardware: replaying the same stage through different execution
+backends can change KV bytes because operation order, precision, and kernels
+differ, as a cross-tier replay experiment confirms.  We therefore treat
+\emph{KV-State Fidelity} as a property of the recovered state itself; when
+its validation gates pass, the parity path reconstructs the stored bytes
+exactly, a guarantee that does not extend to replay fallbacks.  The second component, \emph{recovery-aware layer
 placement}, ensures that the reconstructed state has somewhere to run.
 \sys{} searches active layer placement and backup assignment together and
 charges backup-weight reservations to each device's memory constraint.  This
