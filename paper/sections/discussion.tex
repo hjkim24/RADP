@@ -81,9 +81,8 @@ worker that hangs rather than crashes can still be misattributed.  Backup weight
 a lazy variant that loads only the failed stage's weights at failure time
 would relax the reservation at a recovery cost between \sys{} and
 Reconfigure, a middle point we did not measure.  The coordinator holds all
-parity state and is itself unprotected; a head-stage failure is outside the
-parity guarantee and falls to full-prefix replay on the head's preloaded
-backup, a path we did not measure; its memory grows with concurrent
+parity state and is itself unprotected; a head failure falls to full-prefix
+replay on its preloaded backup, unmeasured; its memory grows with concurrent
 requests and context length beyond the per-request figures above.  The
 scheduler does not optimize where backups land, so the two-failure result
 holds for mappings that, like the 7B one, place the two backups on distinct

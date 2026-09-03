@@ -32,7 +32,7 @@ layer order, and each protected non-head stage also sends its newly appended
 KV bytes to the coordinator, which folds columns of the same request and
 token position into one or two cross-stage parity columns and retains the
 input activation of the current position (the prototype keeps the
-per-position history that the replay ladder needs, Section~\ref{sec:eval:footprint}).  Parity restores the completed KV
+per-position history for the replay ladder).  Parity restores the completed KV
 prefix; the mirrored activation restarts execution where the failed stage
 stopped.  On failure, the coordinator reconstructs the lost KV, activates the
 assigned backup, installs the recovered state, and rewires the pipeline.  A

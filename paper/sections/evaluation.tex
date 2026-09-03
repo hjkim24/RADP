@@ -222,8 +222,7 @@ Charged to every family, the ratios become $3.0\times$ for one column and
 42\% for two.
 Replication and the replay families tolerate any number of simultaneous
 protected-stage failures that backups can host; parity restores up to $k$
-without recomputation and falls to replay beyond, and its path additionally
-fetches the surviving columns at recovery.
+and falls to replay beyond.
 During failure-free decoding, parity and replication ship the same KV
 columns from the workers, so their difference is coordinator memory, not
 traffic.  In general, $k$ parity
@@ -364,8 +363,7 @@ replication, three rounds each in interleaved order with ten 20-token
 requests per round, all completing with identical greedy output across
 modes.  Fig.~\ref{fig:protection-cost} reports the result (RQ5).  With
 protection off the pipeline decodes 1.93\,tok/s; these runs' median token
-interval is 527\,ms (a quantity distinct from the recovery sweep's 500\,ms
-decode step).  Single parity changes throughput by $+0.6\pm10.7$\% and the
+interval is 527\,ms, a quantity distinct from the 500\,ms decode step.  Single parity changes throughput by $+0.6\pm10.7$\% and the
 median token interval by $-1.4\pm9.6$\%, within the round-to-round standard
 deviation of the measurement; double parity costs $3.9\pm3.5$\% of throughput and
 $3.4\pm1.7$\% of token interval; replication costs $7.6\pm2.4$\% and
