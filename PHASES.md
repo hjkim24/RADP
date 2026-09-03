@@ -2561,3 +2561,9 @@ failed_texts=4); 이어진 500은 재-solve 프로파일링 중 생존 워커 on
 추가(`5c3349a`). 그 직후 on-1이 랩 내부에서도 unreachable + VPN 단절 → Reconfigure 5점 스윕은 링크·on-1 복귀 후. 논문: Table 1
 ±SE 열, 본문/abstract/discussion을 n=15 수치로 갱신, latency·pareto 그림을 rep3 데이터로 재생성(latency 스크립트의 7B/350M 접미
 반전 버그도 수정 — 이전 Overleaf 동기화본의 fig_recovery_latency는 350M 그림이었음 → 재동기화 필요). `analyze_repeats.py` 신설.
+
+**논문 마감 — 9쪽 확정 (2026-09-03).** 모의 심사 로드맵 1·2번 대응 완료(n=15 ± SE, k=2 15/15; Reconfigure 7B는 n=2로 사실만 명시),
+미측정 케이스(kill/OOM·mirror 미도착·fallback 지연·검출 지연·lazy backup·코디네이터 확장성·backup 분산 비보장)를 Limitations/Future
+work에 명시. 페이지: 10→9쪽 — 결과·그림 삭제 없이 산문 압축(Across-Scales 표→단락, feasibility 350M 블록→문장, related 비교표
+본문 흡수, Design/Eval/Discussion/Intro 압축, bib url/note 정리; pareto 유지). 사용자 결정: **9쪽 확정, 1쪽 초과 요금 감수**.
+Overleaf `824d265`까지 동기화(이전 동기화본의 Fig.1 350M 오류 정정 포함). testbed 접근 종료 — 이후 작업은 이 데이터셋으로만.
