@@ -1,11 +1,10 @@
 """Fig. recovery latency vs failure position P — five recovery families (paper, B&W).
 
-Data: experiments/results/b1_ft_fleet_parity.json (Recompute, Petals, KV-CARE),
-b1_ft_fleet_replicate.json (DejaVu), and the 2026-08-30 client-observed
-Reconfigure re-measurement. The four same-victim families get their fitted
-line; Reconfigure's victim differs per P, so it is drawn as points plus its
-median only (no slope claim). Log y so a flat line stays flat while the 100x
-spread between KV-CARE and Reconfigure still fits.
+The default OPT-6.7B view uses b1_ft_fleet_7b.json, its part-2 run, and the
+client-observed Reconfigure log.  RADP_FIG_MODEL=350m selects the earlier
+microscopy data.  Reconfigure is drawn as points plus its median only, without
+a slope claim.  Log y keeps the flat zero-recomputation paths visible beside
+the much slower cold redeployment baseline.
 """
 from __future__ import annotations
 
@@ -26,8 +25,9 @@ MODEL = os.environ.get("RADP_FIG_MODEL", "7b")     # 7b (default, main paper) | 
 if MODEL == "7b":
     # OPT-6.7B: canonical 3-family sweep + part-2 (DejaVu, k=2) + Reconfigure
     # (log-extracted n=2 run and the pinned-placement top-up run, when present)
-    core = json.load(open(RESULTS / "b1_ft_fleet_7b.json"))
-    p2 = json.load(open(RESULTS / "b1_ft_fleet_7b_part2.json"))
+    # n=3 repeat sweeps (15 trials per family) on the pinned canonical placement
+    core = json.load(open(RESULTS / "b1_ft_fleet_7b_rep3.json"))
+    p2 = json.load(open(RESULTS / "b1_ft_fleet_7b_raid6_rep3.json"))
     rea_trials = []
     for name in ("b1_ft_fleet_7b_reactive_log_20260901.json", "b1_ft_fleet_7b_reactive_p2.json"):
         if (RESULTS / name).exists():
@@ -37,7 +37,7 @@ if MODEL == "7b":
     fits.pop("reactive_replacement", None)     # median + band, never a fit
     ORDER = ["reactive_replacement", "full_replay", "surgical", "replicate", "raid6", "parity"]
     YLIM, YTICKS = (0.3, 900), [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-    SUFFIX = "_350m"
+    SUFFIX = ""
 else:
     par = json.load(open(RESULTS / "b1_ft_fleet_parity.json"))
     rep = json.load(open(RESULTS / "b1_ft_fleet_replicate.json"))
@@ -46,7 +46,7 @@ else:
     fits = {**par["fits"], **rep["fits"]}          # reactive fit deliberately excluded
     ORDER = ["reactive_replacement", "full_replay", "surgical", "replicate", "parity"]
     YLIM, YTICKS = (0.11, 60), [0.2, 0.5, 1, 2, 5, 10, 20, 50]
-    SUFFIX = ""
+    SUFFIX = "_350m"
 
 
 def valid(t):

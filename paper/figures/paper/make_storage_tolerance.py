@@ -2,10 +2,10 @@
 
 KV-CARE stores k parity columns, each the size of the largest protected stage
 (k x max); DejaVu stores every protected stage (sum) and tolerates any number.
-So k-parity is smaller only while k < sum/max, which is 2.25 on the measured
-5-stage OPT-350M placement (non-head stages of 1/3/4/1 layers, 4096 B per
-layer-token) — the reason the implementation stops at k=2. Placement geometry,
-not a live run.
+So k-parity is smaller only while k < sum/max: 3.71 on the main OPT-6.7B
+placement and 2.25 on the OPT-350M microscopy placement.  The implementation
+supports k=1 and k=2; higher-k markers show geometry only, not implemented
+recovery paths.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ label(ax, f"{NAME['parity']} ($k$=1): {MAX_STAGE//KB} kB", xy=(1, MAX_STAGE / KB
       color=EMPH, bold=True)
 label(ax, f"{NAME['parity']} ($k$=2): {2*MAX_STAGE//KB} kB", xy=(2, 2 * MAX_STAGE / KB), dx=6, dy=-3,
       color=EMPH, bold=True)
-label(ax, "$k \\geq 3$: more state than DejaVu,\nless tolerance (not implemented)",
+label(ax, "$k \\geq 3$: not implemented\n(geometry only)",
       xy=(4.35, NOTE_Y), dx=0, dy=0, ha="right", va="top", color=INK, size=6.5)
 
 # crossover

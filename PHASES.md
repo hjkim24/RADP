@@ -1,14 +1,14 @@
-# RADP — 구현 히스토리 (Phase Log)
+# RADP/KV-CARE — 구현 히스토리 (Phase Log)
 
-PETALS 기반 이기종 엣지 클러스터 분산 LLM 추론 시스템. plan.md의 연구 계획에 따라 단계적으로 구현됩니다.
+이종 엣지 클러스터의 분산 LLM 추론과 KV-cache fault tolerance를 위한 시스템. RADP는 저장소·코드 이름이고 논문 표시 이름은 KV-CARE다.
 
 이 파일은 **각 Phase의 목표/구현/검증/한계**를 기록합니다. 새 기능이 추가될 때마다 맨 아래 "## 업데이트 규칙" 섹션의 형식으로 새 항목을 추가합니다.
 
 ## 현재 상태 요약
 
-- **Phase 0 ~ 4 + Phase 2.5 ~ 2.10 + Phase A1 + Phase B2 + Phase OPS1 + Phase D0 ~ D4 완료** (총 20개 Phase)
-- **단위 테스트 79개 + slow 통합 테스트 17개 모두 통과**
-- ruff ✓ / mypy strict (33 source files) ✓
+- Phase 0부터 B1-7B/PAPER-7B-MAIN까지 구현·실험 로그 완료
+- 현재 pytest collection: **160 tests** (2026-09-02 확인)
+- 최신 검증 상태는 저장소 CI/로컬 테스트 결과를 우선하고, 과거 phase별 숫자는 당시 스냅샷으로 해석
 - 지원 모델: OPT, LLaMA, Mistral (단일 + sharded safetensors/bin 모두)
 - Mac CPU에서 OPT-125M / SmolLM-135M / SmolLM-1.7B (2-shard) 검증; Jetson은 **Ansible playbook 한 줄로 배포**
 
@@ -2531,4 +2531,33 @@ on-5 462/48/−4.0 + 350M 두 victim 한 문장), §Footprint(416/112/224 kB/tok
 joint-only 6.5 GB–actual/neither ≤6.0, fleet both ≥4.8; 350M 합성 cap 밴드), §Cost(7B: single +0.6±10.7%/double −3.9/repl −7.6; 350M
 5–7% 한 문장), 신설 §Across Scales(tab:scales 7행). fig_storage_scaling 삭제(실측 2스케일이 대체), 나머지 4 figure는 7B 판이 메인
 이름(`RADP_FIG_MODEL` 기본값 7b, 350M은 `_350m`), storage-tolerance 7B 판 신설. discussion/abstract/conclusion 정합(abstract 249단어).
-Overleaf 동기화·페이지 수 재확인은 사용자 지시 대기.
+Overleaf 동기화 완료: paper source/figure를 7B-main 원고로 반영했고 Overleaf commit `429d38e`까지 clean 상태를 확인했다.
+로컬 `paper/main.pdf`는 2026-09-02 빌드 기준 10페이지다. 다음 편집 과제는 reference 근거 감사와 분량 압축이다.
+
+## Phase PAPER-CITATION-AUDIT — 참고문헌·주장 근거 감사 (2026-09-02)
+
+현재 7B-main 원고를 기준으로 본문 인용과 `references.bib`를 원문 대조했다. 47개 BibTeX 중 실제 사용 31개·미사용 16개였던
+상태에서, 중복 Petals demo 논문과 현재 주장에 맞지 않던 cloud-workflow 논문까지 제외해 **29개 인용 / 29개 BibTeX / orphan 0 /
+missing 0**으로 정리했다. 삭제한 18개 항목의 PDF는 후속 연구용 `paper/refs/` 읽기 라이브러리에 그대로 보존했다.
+
+본문에서는 FTPipeHD의 training-weight 복제 범위, SpotServe의 advance-notice 가정, Parallax의 deallocation/reallocation 범위,
+KevlarFlow의 active-instance block replication, Petals의 stage-input cache와 replicated-block 가정을 원문 수준으로 좁혔다. EdgeShard와
+Jupiter 등 placement 논문의 부정적 주장은 각 논문이 제시한 formulation/runtime scope까지만 진술하도록 수정했다. Helix·HexGen·
+LLM-PQ 등의 공식 서지정보와 DOI/URL도 보강했다. 상세 판정은 `paper/refs/citation-audit-2026-09-02.md`에 남겼다.
+
+동시에 7B storage figure의 잘못된 `k>=3` dominated 표기를 제거했다. 현재 7B geometry는 `sum/max=3.71`이므로 k=3도 replication보다
+작을 수 있으나, 구현·실측 범위는 k=1,2뿐이다. Tectonic 빌드 결과는 10페이지이며 undefined citation, missing entry, overfull box가 없다.
+
+## Phase B1-7B-REPEATS — 리뷰 대응 재측정: n=3 반복 + k=2 완결 (2026-09-02~03)
+
+모의 심사(Major Revision) 로드맵 1·2번 대응. 드라이버에 `--repeats N`과 OLS 표준오차(`701bd52`)를 넣고 canonical 6-stage
+placement+R을 manual로 고정해 5계열 × 5위치 × 3반복(ax-1 무인, 75 트라이얼 ~5.5 h). 결과(`b1_ft_fleet_7b_rep3.json`, 각 n=15,
+decode step 500 ms): Recompute **1 284±112 ms + 446.7±5.7 ms/pos**, Petals 849±64 + 43.2±3.3, **KV-CARE 1 234±63 + 5.2±3.2**(0의 2 SE
+이내, 반복별 5.3±7.8), DejaVu 954±58 − 6.0±3.0. 위치별 SD 0.03–0.3 s. **바뀐 사실**: DejaVu 절편이 KV-CARE보다 0.28 s(≈3.3 SE) 낮게
+분리 → "tied within noise" 철회, 350M(239 vs 284 ms)과 같은 방향으로 서술. k=2는 첫 런 15/15 무효 — manual 모드에서 victim 쌍을
+stale `/api/cluster` 사이드카에서 읽던 버그 → `/api/gateway` 라이브 상태로 수정(`f878d58`) 후 재실행 **15/15 유효: 1 128±77 ms +
+3.5±3.9 ms/pos**(2-실패 = 1-실패 비용). 같은 버그가 어제 Reconfigure manual 실패의 원인이었음을 프로브로 확인(crash 정상 abort,
+failed_texts=4); 이어진 500은 재-solve 프로파일링 중 생존 워커 on-1의 gRPC 서버 종료("Cancelling all calls") — 프로파일 RPC 재시도
+추가(`5c3349a`). 그 직후 on-1이 랩 내부에서도 unreachable + VPN 단절 → Reconfigure 5점 스윕은 링크·on-1 복귀 후. 논문: Table 1
+±SE 열, 본문/abstract/discussion을 n=15 수치로 갱신, latency·pareto 그림을 rep3 데이터로 재생성(latency 스크립트의 7B/350M 접미
+반전 버그도 수정 — 이전 Overleaf 동기화본의 fig_recovery_latency는 350M 그림이었음 → 재동기화 필요). `analyze_repeats.py` 신설.

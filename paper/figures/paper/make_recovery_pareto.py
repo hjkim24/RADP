@@ -1,10 +1,9 @@
 """Fig. recovery latency at P=32 (log x) vs retained recovery state per token (y).
 
-Only KV-CARE sits in the low-latency AND low-storage corner. Latency from the
-measured JSONs (mean of valid P=32 trials); storage from the placement
-geometry in b1_ft_overhead.json (kB per KV token: DejaVu = sum of non-head
-stages, KV-CARE = largest non-head stage). Reconfigure's victim differs per P,
-so its x is the median over all positions, not the P=32 sample.
+Only KV-CARE sits in the low-latency AND low-storage corner.  The default 7B
+view reads live latency from b1_ft_fleet_7b*.json and retained state from
+b1_storage_7b.json; RADP_FIG_MODEL=350m selects the earlier microscopy data.
+Reconfigure's x is its median over valid positions rather than a P=32 sample.
 """
 from __future__ import annotations
 
@@ -21,8 +20,8 @@ from _paper import COL, EMPH, GRAY, INK, NAME, RESULTS, STYLE, clean, label, sav
 
 MODEL = os.environ.get("RADP_FIG_MODEL", "7b")     # 7b (default, main paper) | 350m (microscopy)
 if MODEL == "7b":
-    par = json.load(open(RESULTS / "b1_ft_fleet_7b.json"))
-    rep = json.load(open(RESULTS / "b1_ft_fleet_7b_part2.json"))
+    par = json.load(open(RESULTS / "b1_ft_fleet_7b_rep3.json"))
+    rep = json.load(open(RESULTS / "b1_ft_fleet_7b_rep3.json"))
     rea = {"trials": []}
     for name in ("b1_ft_fleet_7b_reactive_log_20260901.json", "b1_ft_fleet_7b_reactive_p2.json"):
         if (RESULTS / name).exists():

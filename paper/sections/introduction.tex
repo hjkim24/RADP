@@ -2,7 +2,7 @@
 
 \IEEEPARstart{L}{arge} language models (LLMs) are increasingly being used
 for battery management, industrial fault diagnosis, visual monitoring, and
-industrial control system analysis~\cite{zhang2026finetuning,liu2024joint,
+industrial-control protocol emulation~\cite{zhang2026finetuning,liu2024joint,
 wang2024largescale,chamotra2026advancing}.  Many of these deployments cannot
 assume an uninterrupted path to a public cloud.  Industrial operational
 technology networks may be physically isolated from untrusted external
@@ -19,28 +19,28 @@ heterogeneous: its pipeline may span GPUs, CPUs, and embedded accelerators
 with different execution rates and memory capacities.
 
 Distribution removes a single-device capacity bottleneck, but makes each
-request depend on every stage of the pipeline.  Internet of Things (IoT) nodes are exposed to
-resource exhaustion, process crashes, hardware faults, and intermittent
-connectivity~\cite{kaur2023intelligent,xu2020dynamic}; we also encountered
-unexpected process exits and out-of-memory failures while operating our
-testbed.  This dependence is particularly consequential for autoregressive
+request depend on every stage of the pipeline.  Fault-tolerant Industrial
+Internet of Things routing already treats node and link failures as operating
+conditions~\cite{kaur2023intelligent}; we also encountered unexpected process
+exits and out-of-memory failures while operating our testbed.  This dependence
+is particularly consequential for autoregressive
 inference.  Each stage retains the KV cache produced for earlier tokens, so a
 failed stage loses both its assigned computation and the request-specific
 state needed to continue decoding.  EdgeShard and Jupiter optimize layer
-partitioning and placement across heterogeneous devices, but neither provides
-a runtime path that restores this lost state and resumes an in-flight
+partitioning and placement across heterogeneous devices, but neither paper
+specifies a runtime path that restores this lost state and resumes an in-flight
 request~\cite{zhang2024edgeshard,ye2025jupiter}.  Moving the failed layer range
 to another device is therefore insufficient by itself: the replacement must
 also recover the current KV state before the next token can be generated.
 
 Existing recovery mechanisms trade recovery time against the state retained
 during normal operation.  Recomputation, even when limited to the failed
-stage as in Petals~\cite{borzunov2023petals}, replays model computation whose
+stage as in Petals~\cite{borzunov2023distributed}, replays model computation whose
 cost grows with the prefix produced before the failure; KV replication, as in
 DejaVu~\cite{strati2024dejavu}, avoids that replay but stores the sum of the
 protected stages' KV caches; reactive reconfiguration stores nothing but must
-reload weights and restart the request, a cold path that SpotServe avoids only
-when preemption is announced in advance~\cite{miao2024spotserve}; and
+reload weights and restart the request, whereas SpotServe migrates state during
+an announced preemption grace period~\cite{miao2024spotserve}; and
 GhostServe's erasure-coded KV checkpoints target tensor-parallel serving with
 parity in host memory~\cite{jayakody2026ghostserve}.  None of these
 establishes how to protect KV state across the stages of a heterogeneous,

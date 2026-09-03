@@ -3,10 +3,10 @@
 \subsection{Discussion}\label{sec:disc:discussion}
 
 \textbf{Parity against replication.}  The two zero-recomputation paths
-recover in the same time: their intercepts are tied within noise at 7B
-(1.17 versus 1.22\,s), and on the 350M deployment DejaVu-style replication
-is lower (239 versus 284\,ms) because it installs one stored column instead
-of fetching the surviving ones.  The argument for parity is therefore
+have the same flat shape, and DejaVu-style replication has the lower
+intercept at both scales (0.95 versus 1.23\,s at 7B, 239 versus 284\,ms at
+350M) because it installs one stored column instead of fetching the surviving
+ones.  The argument for parity is therefore
 retained state, and it holds when that state matters: long contexts, larger
 models, or a coordinator whose memory is itself constrained.  With short
 requests and a coordinator that has memory to spare, replication is the
@@ -34,7 +34,7 @@ loaded and its recovery state current before the failure.
 for its guarantee first: at both scales every two-failure trial reconstructed
 both lost columns from $P$ and $Q$.  Its absolute cost depends on the recovery mapping.  With the two backups on
 distinct nodes, as the scheduler placed them at 7B, recovery completes in
-0.53--1.24\,s; with every non-head backup on one Orin Nano, as on the 350M
+1.1--1.4\,s, the same as a single failure; with every non-head backup on one Orin Nano, as on the 350M
 placement, the second promotion is a cold weight load and the intercept
 rises to 30.3\,s while the slope stays flat.  A scheduler that spreads
 backups therefore buys double-failure tolerance at roughly the cost of
@@ -66,8 +66,7 @@ fleets.
 \textbf{Limitations.}  The measurements come from one fleet of Jetson boards
 and from two models of one family, OPT-6.7B and OPT-350M; other model
 families and device classes remain to be measured.  At 7B, Reconfigure was
-measured at two positions, DejaVu's fit uses three of five trials, and the
-two-failure sweep covers four positions.  The protection domain covers
+measured at two positions.  The protection domain covers
 fail-stop failures of non-head workers: the head stage and the coordinator
 are unprotected, a last-stage failure falls back to replay because no
 downstream survivor can confirm the final slot, and a failure during prefill
@@ -79,8 +78,10 @@ one tier pair and one two-layer stage on the 350M deployment.  The storage
 advantage depends on placement geometry: double parity saves 46\% over
 replication on the 7B placement but only 11\% on the head-heavy 350M
 placement, where a third parity column would cost more state than
-replication while tolerating fewer failures.  Each recovery-latency point is
-one trial; the protection-cost figures are means over three rounds.  Network
+replication while tolerating fewer failures.  Each recovery-latency fit
+pools three trials per position; the victim-sensitivity sweep and the 350M
+sweeps are one trial per position; the protection-cost figures are means over
+three rounds.  Network
 traffic is not an evaluation axis in this paper.
 
 \textbf{Future work.}  Reconfigure with a fixed victim and a full position
@@ -107,8 +108,8 @@ that takes minutes.  \sys{} recovers the lost KV from one or two
 cross-stage parity columns without recomputing the prefix, and it selects the
 layer placement together with the backup assignment so that the recovered
 state has a device to run on.  On a six-stage Jetson pipeline serving OPT-6.7B, single parity
-recovers in 1.0--1.5\,s regardless of the failure position while
-recomputation grows to 14\,s, retains $3.7\times$ less state than
+recovers in 1.2--1.4\,s regardless of the failure position while
+recomputation grows to 16\,s, retains $3.7\times$ less state than
 replication, and costs no measurable failure-free throughput; double parity
 restores two simultaneous stage failures from the same stored bytes in about
 a second; and joint placement remains feasible at every per-device memory cap

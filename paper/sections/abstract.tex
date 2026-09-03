@@ -13,10 +13,10 @@ recomputing the prefix, retaining one largest-stage column rather than their
 sum.  Recovery-aware placement charges backup-weight reservations to each
 device's memory while placing layers, so the recovered state always has a
 device to run on.  On a six-stage Jetson pipeline serving OPT-6.7B, KV-CARE's
-recovery latency is independent of the failure position ($-6$\,ms per
-generated token against 454\,ms for recomputation), completing in two to
-three decode steps at every position; it matches replication's latency with 3.7$\times$ less
-retained state and restores two simultaneous failures in about one second;
+recovery latency is independent of the failure position ($5\pm3$\,ms per
+generated token against $447\pm6$\,ms for recomputation), completing in two
+to three decode steps at every position; it matches replication's latency with 3.7$\times$ less
+retained state and restores two simultaneous failures at the same cost as one;
 joint placement stays feasible at every per-device memory limit at which the
 model fits, where placement followed by backup assignment fails; and
 single-parity protection costs less than the run-to-run variation of

@@ -1,10 +1,9 @@
 """Fig. failure-free cost of protection — throughput loss and TBT p50 increase vs protection off.
 
-Data: experiments/results/b1_steady_modes_n3_20260830.json (OPT-350M, async
-chain, 3 rounds with interleaved order, 30 requests x 20 tokens per mode).
-Bars are the mean delta vs the same round's protection-off run; error bars are
-the sample standard deviation over the 3 rounds. Absolute protection-off values
-(5.24 tok/s, TBT p50 183 ms) belong in the caption.
+The default OPT-6.7B view reads b1_steady_7b_n3.json; RADP_FIG_MODEL=350m
+selects b1_steady_modes_n3_20260830.json.  Both are three-round interleaved
+runs.  Bars are the mean delta from the same round's protection-off run and
+error bars are the sample standard deviation across rounds.
 """
 from __future__ import annotations
 
