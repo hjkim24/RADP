@@ -2,7 +2,18 @@
 
 \subsection{System Overview and Architecture}\label{sec:design:overview}
 
-\sys{} consists of one coordinator and a set of heterogeneous edge workers.
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{paper/fig_architecture.pdf}
+  \caption{\sys{} architecture.  The coordinator places layers and backups
+  ($\psi$, $R$), folds the protected stages' KV columns into parity, retains
+  the interrupted position's input, and detects failures; each worker serves
+  one stage and preloads the backup weights $R$ assigns to it (dashed).}
+  \label{fig:architecture}
+\end{figure}
+
+\sys{} consists of one coordinator and a set of heterogeneous edge workers
+(Fig.~\ref{fig:architecture}).
 The coordinator profiles the workers, selects an active layer placement
 $\psi$, assigns backup workers through a recovery mapping $R$ that gives every
 stage $s$, the head included, a backup device $R(s)\in\mathcal{D}$ other

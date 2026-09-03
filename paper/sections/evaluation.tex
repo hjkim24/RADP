@@ -26,7 +26,8 @@ $\times$ 128 dimensions, 12.4\,GiB of weights, so each layer appends
 16\,384 bytes of KV state per token and no Orin Nano can hold the model
 alone; either AGX Orin could, so on this fleet the pipeline is the
 scheduler's throughput choice and capacity binds on the Nanos.  \sys{}'s scheduler places it, under its
-throughput objective, as a six-stage pipeline:
+throughput objective, as a six-stage pipeline of the form in
+Fig.~\ref{fig:architecture}:
 \texttt{on-6} holds the head stage (layers 1--6) and the five protected
 non-head stages hold 26 layers, \texttt{on-2} (7--10), \texttt{on-1}
 (11--14), \texttt{on-5} (15--18), \texttt{ao-2} (19--25), and \texttt{ao-1}
