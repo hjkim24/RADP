@@ -54,7 +54,7 @@ which placements are admissible, and the alternating search of
 Section~\ref{sec:design:dp} finds placements that a sequential procedure
 discards.  The 350M deployment reaches that regime only under synthetic
 memory caps, whereas the 7B deployment lives in it: the live solve rejected a
-quarter of its candidate placements for want of backup room, and the
+quarter of its candidate placements as infeasible under Eq.~\ref{eq:mem}, and the
 cost-first procedure has no feasible placement at any cap at which the model
 fits.  Where the threshold lies depends on which devices may host backups;
 allowing backups on devices outside the pipeline dissolved the gap on both

@@ -7,8 +7,9 @@
   \includegraphics[width=\linewidth]{paper/fig_architecture.pdf}
   \caption{\sys{} architecture.  The coordinator places layers and backups
   ($\psi$, $R$), folds the protected stages' KV columns into parity, retains
-  the interrupted position's input, and detects failures; each worker serves
-  one stage and preloads the backup weights $R$ assigns to it (dashed).}
+  stage inputs, and detects failures; each worker serves one stage and
+  preloads the backup weights $R$ assigns to it (dashed; a device may host
+  two backups or none).  The shaded head stage ships no KV column.}
   \label{fig:architecture}
 \end{figure}
 
@@ -29,7 +30,8 @@ During normal decoding, an activation passes through the active stages in
 layer order, and each protected non-head stage also sends its newly appended
 KV bytes to the coordinator, which folds columns of the same request and
 token position into one or two cross-stage parity columns and retains the
-input activation of the current position.  Parity restores the completed KV
+input activation of the current position (the prototype keeps the
+per-position history that the replay ladder needs, Section~\ref{sec:eval:footprint}).  Parity restores the completed KV
 prefix; the mirrored activation restarts execution where the failed stage
 stopped.  On failure, the coordinator reconstructs the lost KV, activates the
 assigned backup, installs the recovered state, and rewires the pipeline.  A

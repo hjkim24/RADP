@@ -37,8 +37,7 @@ greedily for 36 tokens, the failure position $P\in\{4,8,16,24,32\}$ (a
 scalar, distinct from the parity column $P[r,q]$) is the number of tokens
 generated before the failure, and one \emph{decode step}
 below denotes the median failure-free token interval of the same sweep,
-500\,ms at 7B (493\,ms pooled over the repeated trials) and 163\,ms at
-350M.  Every (family, position) pair is
+500\,ms at 7B and 163\,ms at 350M.  Every (family, position) pair is
 measured in three independent trials, each on a freshly restarted pipeline,
 so each fit pools 15 trials and carries a standard error.
 
@@ -200,11 +199,10 @@ for Recompute, 16 and 17.5 for Petals, 0.87 and 1.43 for \sys{}).
 \end{figure}
 
 Fig.~\ref{fig:recovery-pareto} combines both axes.  Recompute and
-Reconfigure retain nothing and pay in latency; Petals retains its stage
-inputs and recovers faster than \sys{} only below $P\approx10$; DejaVu
-recovers about one decode step sooner but retains the sum of all protected
-columns; among the families that recover within three decode steps, \sys{}
-retains the least state.
+Reconfigure retain nothing and pay in latency; Petals is the low-state endpoint (40\,kB per token) at 2.3\,s and
+recovers faster than \sys{} only below $P\approx10$; DejaVu is the
+low-latency endpoint at the sum of all protected columns; \sys{} lies
+between, $3.7\times$ below DejaVu in state at about one decode step later.
 
 \subsection{Recovery-State Footprint and Failure Tolerance}\label{sec:eval:footprint}
 

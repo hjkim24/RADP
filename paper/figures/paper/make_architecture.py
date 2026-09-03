@@ -12,8 +12,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _paper import EMPH, GRAY, INK, LIGHT, save  # noqa: E402
 
 # generic pipeline: (label, is_head, is_ellipsis, backups hosted by this device)
-STAGES = [("head", True, False, ["stage $n$"]), ("stage 2", False, False, ["stage 3"]),
-          ("stage 3", False, False, ["head"]), ("", False, True, []), ("stage $n$", False, False, ["stage 2"])]
+STAGES = [("head", True, False, ["stage $n$"]), ("stage 2", False, False, []),
+          ("stage 3", False, False, ["head", "stage 2"]), ("", False, True, []), ("stage $n$", False, False, ["stage 3"])]
 
 fig, ax = plt.subplots(figsize=(3.45, 2.4))
 ax.set_xlim(0, 100); ax.set_ylim(9, 80); ax.axis("off")
