@@ -76,7 +76,7 @@ for mode in ORDER:
         # no fit (victim differs per P): draw the level as median + min–max band
         ax.axhspan(min(ys), max(ys), color=LIGHT, alpha=0.35, linewidth=0, zorder=1)
         ax.axhline(med, color=st["color"], linewidth=0.7, linestyle=(0, (1, 2)), zorder=2)
-        text = f"{NAME[mode]} (median {med:.2f} s, band {min(ys):.2f}–{max(ys):.2f} s)"
+        text = f"{NAME[mode]} (mean {statistics.mean(ys):.2f} s, band {min(ys):.2f}–{max(ys):.2f} s)"
         h, = ax.plot(xs, ys, linestyle="", marker=st["marker"], color=st["color"],
                      mfc=st["mfc"], zorder=4, label=text)
     else:

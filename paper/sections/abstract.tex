@@ -1,27 +1,26 @@
 \begin{abstract}
 Internet of Things deployments that cannot depend on a remote service run
-large language models (LLMs) on site by splitting decoder layers across
-heterogeneous edge devices as a pipeline.  A stage failure
-then loses the request's key-value (KV) cache, and the in-flight request cannot
-continue.  Existing recovery paths recompute the lost state at a cost that grows
-with the prefix, replicate every protected stage's KV cache, or reconfigure
-the pipeline in minutes; none suits devices whose memory is nearly full.  This paper presents KV-CARE (KV Cache
+large language models (LLMs) on site as a pipeline of decoder layers over
+heterogeneous edge devices.  A stage failure then loses the request's
+key-value (KV) cache.  Existing recovery paths recompute the lost state at
+prefix-length cost, replicate every protected stage's KV cache, or
+reconfigure the pipeline in minutes.  This paper presents KV-CARE (KV Cache
 Availability and Recovery at the Edge).  Cross-stage parity folds the
 protected stages' KV columns into one parity column (two for simultaneous
 failures) and reconstructs a failed stage's KV cache bit-exactly without
-recomputing the prefix, retaining one largest-stage column rather than their
-sum.  Recovery-aware placement charges backup-weight reservations to each
-device's memory while placing layers, so the recovered state always has a
-device to run on.  On a six-stage Jetson pipeline serving OPT-6.7B, KV-CARE's
+recomputing the prefix.  Recovery-aware placement charges backup-weight reservations to each
+device's memory while placing layers, so the failed stage's weights have a device to
+load on.  On a six-stage Jetson pipeline serving OPT-6.7B, KV-CARE's
 recovery latency is flat over the measured failure positions ($5\pm3$\,ms
 per generated token against $447\pm6$\,ms for recomputation), completing in
 two to three decode steps; it recovers about one decode step later than
-replication while retaining 3.7$\times$ less coordinator state, and restores
+replication while retaining 3.7$\times$ less coordinator state
+(2.7$\times$ over the stages it recovers), and restores
 two simultaneous failures at the cost of one when their backups sit on
-distinct nodes; with backups confined to pipeline devices, joint placement
-remains feasible across the memory range in which the model fits, where
+distinct nodes; in an offline placement analysis with backups confined to pipeline
+devices, joint placement remains feasible across the memory range in which the model fits, where
 placement followed by backup assignment does not; and single-parity
-protection costs less than the $\pm11$\% run-to-run variation of
-failure-free throughput.  On site, a protected-stage failure becomes a delay
-of a few decode steps.
+protection costs less than the $\pm11$\% round-to-round spread of the
+throughput measurement.  On site, a protected-stage failure whose recovery contract holds becomes
+a delay of a few decode steps.
 \end{abstract}

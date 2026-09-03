@@ -2581,3 +2581,10 @@ replication", 위치 독립성 외삽, "a stage failure" 일반화, feasibility 
 (이전 6.5 GB, `d29_coupling_threshold_20260903.json`); 마진 휴리스틱 베이스라인(0.75×/0.5×)도 pipeline scope 전 cap에서 실패
 (`d29_margin_baseline_7b.json`) → 리뷰어의 "headroom 규칙이면 충분" 반론 실측 반박. 응답서 `docs/paper/response_to_reviewers_2026-09-03.md`.
 fig_storage_tolerance는 본문 공식으로 대체·삭제. testbed 필요 항목은 Limitations로 명시.
+
+## Phase PAPER-ARS-REREVIEW — 검증 재심사(re-review) + 2차 수정 (2026-09-03)
+
+- 동일 5인 패널이 수정 전 스냅샷·수정본·응답서를 대조: R0/R1/R2 Minor(2건 조건부), R3/DA Major → 편집 판정 **Major Revision** (결론 미수정 + 응답서 "Conclusion aligned" 허위, Fig. 2 해석 문장이 Table I와 모순, 350M decode step 163 vs 183 ms).
+- MUST-FIX 15건 전부 텍스트로 적용(결론 재작성, Pareto 해석, 163/183 구분, Eq. mem weights-only, contract 한정, 3.7×/2.7×, 6-worker/cap rule, 그림 3종 재생성, RPC round trips, Limitations 5문장, Reconfigure n·pairing 정정(P=4→465.8), R head 포함, DejaVu slope/k=2 intercept). SHOULD-FIX 중 텍스트로 가능한 것 적용, 데이터 없는 항목은 응답서에 미적용으로 명시.
+- 산출물: `docs/paper/ars_rereview_decision_2026-09-03.md`, 응답서 Round 2 절, 그림 `_names.py` parity 라벨 "KV-CARE (k=1)".
+- 검증: tectonic 빌드 오류 0, 10쪽, 초록 258단어.

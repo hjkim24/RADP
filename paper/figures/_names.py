@@ -9,7 +9,7 @@ never rename them; only the values are display text.
 NAME = {
     "full_replay": "Recompute",             # controlled baseline: replay all stages from position 0
     "surgical":    "Petals",                # failed-stage input replay (Petals-style)
-    "parity":      "KV-CARE",               # our method, single parity (k=1)
+    "parity": "KV-CARE (k=1)",               # our method, single parity (k=1)
     "raid6":       "KV-CARE (k=2)",         # our method, double parity (k=2)
     "replicate":   "DejaVu",                # KV replication baseline (ASCII: deck font lacks à/é)
     "reactive_replacement": "Reconfigure",  # controlled baseline: re-solve + cold reload + replay

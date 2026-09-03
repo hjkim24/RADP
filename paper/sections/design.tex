@@ -5,7 +5,7 @@
 \sys{} consists of one coordinator and a set of heterogeneous edge workers.
 The coordinator profiles the workers, selects an active layer placement
 $\psi$, assigns backup workers through a recovery mapping
-$R:\mathcal{S}\to D$ that gives every protected stage $s$ a backup device
+$R:\mathcal{S}\to\mathcal{D}$ that gives every stage $s$, the head included, a backup device
 $R(s)$ other than the one serving it, and manages request recovery.  The placement partitions the decoder into contiguous
 stages.  An active worker stores its stage weights and the request KV cache,
 whereas a worker selected by $R$ reserves memory and preloads the weights of
@@ -36,7 +36,8 @@ stage, and two columns protect two simultaneous failed stages.  We assume an
 unannounced process crash, out-of-memory termination, or network partition is
 observed as a fail-stop event.  Byzantine corruption, coordinator failure, a
 head-stage failure, and more than $k$ simultaneous protected-stage failures
-are outside this guarantee.
+are outside this guarantee.  A partitioned worker that later returns is
+not fenced by the prototype, and $R$ does not model shared failure domains.
 
 A failure count within the limit is necessary but not sufficient.  Before
 decoding parity, the coordinator checks the \emph{recovery contract}: (i)
@@ -148,10 +149,10 @@ ladder.
 
 \subsection{Recovery-Aware Layer Placement}\label{sec:design:dp}
 
-Let $L$ be the number of decoder layers and $D$ the available workers.  A
+Let $L$ be the number of decoder layers and $\mathcal{D}$ the available workers.  A
 candidate placement partitions the layers into contiguous stages assigned to
-an ordered subset of $D$.  For a stage containing layers $i$ through $j$ on
-worker $d$, let $c(i,j,d)$ include its profiled execution time and the cost of
+an ordered subset of $\mathcal{D}$.  For a stage containing layers $i$ through $j$ on
+worker $d$, let $t(i,j,d)$ include its profiled execution time and the cost of
 receiving its input from the preceding stage.  The placement dynamic program (DP) maintains the
 sum of stage costs, $z_{\Sigma}$, and the slowest stage cost, $z_{\max}$.  The
 configured optimization mode ranks a candidate by
@@ -165,15 +166,16 @@ configured optimization mode ranks a candidate by
 \end{equation}
 This keeps both cumulative latency and bottleneck time in the DP state; the
 recurrence is exact for the throughput and latency modes and a heuristic for
-the blended mode, whose objective lacks optimal substructure.
+the blended mode, whose objective lacks optimal substructure; $\alpha$ is a
+configured weight, and the evaluation uses the throughput mode.
 
 For a fixed device order $(d_1,\ldots,d_n)$, let
 $A[y,n]=(A_{\Sigma}[y,n],A_{\max}[y,n])$ be the best state after placing the
 first $y$ layers on the first $n$ devices.  For a final split after layer
 $l$, define
 \begin{align*}
-  z_{\Sigma}(l) &= A_{\Sigma}[l,n-1]+c(l+1,y,d_n),\\
-  z_{\max}(l) &= \max\{A_{\max}[l,n-1],c(l+1,y,d_n)\},\\
+  z_{\Sigma}(l) &= A_{\Sigma}[l,n-1]+t(l+1,y,d_n),\\
+  z_{\max}(l) &= \max\{A_{\max}[l,n-1],t(l+1,y,d_n)\},\\
   z(l) &= (z_{\Sigma}(l),z_{\max}(l)).
 \end{align*}
 The recurrence is
@@ -191,18 +193,20 @@ placed on device $d$, $W_{\psi}(s)$ the weights in stage $s$, and $M(d)$ the
 usable model-memory capacity.  Every candidate must satisfy
 \begin{equation}\label{eq:mem}
   W_{\psi}(d)+\sum_{s:R(s)=d}W_{\psi}(s)\leq M(d),
-  \qquad \forall d\in D.
+  \qquad \forall d\in\mathcal{D}.
 \end{equation}
-The second term is the memory reserved for backup weights.  Because the
+The second term is the memory reserved for backup weights; Eq.~\ref{eq:mem}
+charges weights only, and the KV cache installed on a backup at recovery
+time is working memory of the request rather than a placement reservation.  Because the
 stage intervals determine this term while the reservations constrain the
 next placement, \sys{} alternates: starting from a uniform placement, each
 iteration builds $R$ for the current $\psi$, re-solves the DP with that $R$
 as the backup burden, keeps the pair if it satisfies Eq.~\ref{eq:mem} under
 its own reservations and ranks better under Eq.~\ref{eq:rank}, and stops
-when $\psi$ and $R$ repeat or after a bounded number of iterations,
+when $\psi$ and $R$ repeat or after ten iterations,
 returning the best self-consistent pair; the alternation is a heuristic
-without an optimality guarantee.  Candidate device orders and subsets are
-enumerated around this loop.
+without an optimality guarantee.  Every ordered device subset is enumerated around this loop (1\,950 on the
+six-worker fleet), so the search grows with the number of ordered subsets.
 
 
 \subsection{Runtime Integration}\label{sec:design:runtime}

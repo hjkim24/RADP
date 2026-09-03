@@ -21,12 +21,13 @@ from _paper import COL, EMPH, GRAY, INK, LIGHT, NAME, RESULTS, clean, save  # no
 MODEL = os.environ.get("RADP_FIG_MODEL", "7b")     # 7b (default, main paper) | 350m (microscopy)
 if MODEL == "7b":
     agg = json.load(open(RESULTS / "b1_steady_7b_n3.json"))["aggregate"]
-    YLIM, SUFFIX = (-4, 15), ""
+    YLIM, SUFFIX = (-13, 15), ""
 else:
     agg = json.load(open(RESULTS / "b1_steady_modes_n3_20260830.json"))["aggregate"]
     YLIM, SUFFIX = (0, 12), "_350m"
-MODES = [("single_parity", f"{NAME['parity']}\n($k$=1)"),
-         ("double_parity", f"{NAME['parity']}\n($k$=2)"),
+BASE = NAME['parity'].split(" (")[0]
+MODES = [("single_parity", f"{BASE}\n($k$=1)"),
+         ("double_parity", f"{BASE}\n($k$=2)"),
          ("replication",   f"{NAME['replicate']}\n(replication)")]
 METRICS = [("throughput_delta_vs_off_pct", "throughput loss", -1, "white", ""),
            ("tbt_p50_delta_vs_off_pct",    "TBT p50 increase", +1, LIGHT, "////")]

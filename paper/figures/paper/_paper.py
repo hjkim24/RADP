@@ -47,7 +47,7 @@ STYLE = {
     "replicate":            dict(marker="D", ls=":",  color=GRAY, mfc="white"),
     "reactive_replacement": dict(marker="v", ls="",   color=GRAY, mfc="white"),
     "parity":               dict(marker="^", ls="-",  color=EMPH, mfc=EMPH),
-    "raid6":                dict(marker="^", ls="-",  color=EMPH, mfc="white"),
+    "raid6":                dict(marker="^", ls="--", color=EMPH, mfc="white"),
 }
 
 mpl.rcParams.update({

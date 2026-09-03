@@ -1,6 +1,6 @@
 """Fig. recovery latency at P=32 (log x) vs retained recovery state per token (y).
 
-Only KV-CARE sits in the low-latency AND low-storage corner.  The default 7B
+At P=32 the frontier has three non-dominated points (DejaVu, KV-CARE, Petals).  The default 7B
 view reads live latency from b1_ft_fleet_7b*.json and retained state from
 b1_storage_7b.json; RADP_FIG_MODEL=350m selects the earlier microscopy data.
 Reconfigure's x is its median over valid positions rather than a P=32 sample.

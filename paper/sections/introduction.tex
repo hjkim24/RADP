@@ -50,8 +50,8 @@ execute the failed stage.  Edge recovery must therefore consider
 \emph{Recovery Feasibility} together.
 
 We present \emph{KV Cache Availability and Recovery at the Edge}
-(\sys{}), which addresses state recovery and executable backup capacity in
-one system.  Its first component, \emph{cross-stage parity}, encodes the KV
+(\sys{}), which pairs state recovery with executable backup capacity for the failed
+stage's weights.  Its first component, \emph{cross-stage parity}, encodes the KV
 byte streams of protected non-head stages into one parity column.  After a
 single protected-stage failure, the coordinator reconstructs the lost KV from
 the parity column and the surviving stages without recomputing the prefix; the
@@ -78,4 +78,7 @@ column for two simultaneous failures; it develops a recovery-aware placement
 search that folds backup assignment and backup-weight reservation into
 placement feasibility; and it evaluates \sys{} on a heterogeneous Jetson
 testbed against recomputation, Petals-style failed-stage replay,
-DejaVu-style replication, and reactive reconfiguration.
+DejaVu-style replication, and reactive reconfiguration.  Section~\ref{sec:related}
+positions the work, Section~\ref{sec:design} presents the design,
+Section~\ref{sec:eval} evaluates it, and Section~\ref{sec:disc} discusses
+limitations.

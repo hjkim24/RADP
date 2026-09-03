@@ -37,7 +37,7 @@ state: it replays every stage from position zero.
 DejaVu streams each pipeline worker's KV cache to a replica and, after a
 failure, restores the latest acknowledged replica and recomputes only the
 unreplicated tail~\cite{strati2024dejavu}; protecting all stages stores the
-sum of their KV caches.  KevlarFlow copies PagedAttention KV blocks to the
+sum of their KV caches.  KevlarFlow copies PagedAttention~\cite{kwon2023efficient} KV blocks to the
 corresponding stage of another model instance~\cite{qian2026kevlarflow}, and
 LUMEN checkpoints requests in host memory on holders that each hold a
 complete model~\cite{cao2026lumen}; neither places layer partitions and
@@ -60,10 +60,10 @@ no advance notice and no surviving checkpoint, which our Reconfigure baseline
 Erasure coding has protected computation and cached state before: coded
 computation recovers straggling or failed workers' matrix products from
 parity workers~\cite{lee2018speeding}, Parity Models learn a parity model so
-that a prediction-serving replica can be reconstructed from coded
-queries~\cite{kosaian2019parity}, EC-Cache stores cached objects as
+that an unavailable replica's prediction can be approximately reconstructed
+from coded queries~\cite{kosaian2019parity}, EC-Cache stores cached objects as
 erasure-coded splits~\cite{rashmi2016eccache}, and regenerating codes bound
-the bytes a repair must read~\cite{dimakis2010network}.  \sys{} applies
+the bandwidth a repair must transfer~\cite{dimakis2010network}.  \sys{} applies
 the same idea to the KV state of a pipeline, where the coded unit is a
 stage's per-token column and the repair reads the surviving stages'
 columns.  GhostServe replaces full KV replicas with erasure-coded checkpoints inside a

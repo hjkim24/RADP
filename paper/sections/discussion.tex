@@ -94,10 +94,16 @@ advantage depends on placement geometry: double parity saves 46\% over
 replication on the 7B placement but only 11\% on the head-heavy 350M
 placement, where a third parity column would cost more state than
 replication while tolerating fewer failures.  Each recovery-latency fit
-pools three trials per position; the victim-sensitivity sweep and the 350M
+pools three trials per position; the victim-sensitivity sweep, the 7B Reconfigure trials, and the 350M
 sweeps are one trial per position; the protection-cost figures are means over
-three rounds.  Network
-traffic is not an evaluation axis in this paper.
+three rounds.  Network traffic and per-token energy were not measured.
+Recovery latencies are measured with the failure detected on the request
+RPC path; a failure detected only by heartbeat adds up to the 5\,s timeout.  Every
+measurement is single-request; concurrency and prompt length were not
+varied.  Recovery latency excludes post-recovery degradation: a promoted
+backup that serves two stages decodes more slowly until re-protection.  The
+$k=1$ and $k=2$ trials differ in victim identity and backup tier as well as
+in $k$.
 
 \textbf{Future work.}  A full Reconfigure sweep at 7B, end-to-end
 measurements that include heartbeat detection, process-kill injection, and
@@ -120,13 +126,17 @@ request's KV state and existing recovery paths trade prefix-length
 recomputation, sum-of-stages replication, or minutes of reconfiguration.
 \sys{} recovers the lost KV from one or two cross-stage parity columns
 without recomputing the prefix and selects the layer placement together with
-the backup assignment so that the recovered state has a device to run on.  On a six-stage Jetson pipeline serving OPT-6.7B, single parity
-recovers in 1.2--1.4\,s regardless of the failure position while
-recomputation grows to 16\,s, retains $3.7\times$ less state than
-replication, and costs no measurable failure-free throughput; double parity
-restores two simultaneous stage failures from the same stored bytes in about
-a second; and joint placement remains feasible at every per-device memory cap
-at which the model fits, where a cost-first placement cannot be backed up.
-For edge deployments that cannot depend on a remote service, this turns a
-stage failure from a request loss or a minutes-long reconfiguration into a
-delay of two to three decode steps.
+the backup assignment so that the recovered state has a device to run on.
+On a six-stage Jetson pipeline serving OPT-6.7B, single parity recovers in
+1.2--1.4\,s, flat over the measured failure positions, while recomputation
+grows to 16\,s; it recovers about one decode step later than replication
+while retaining $3.7\times$ less coordinator state ($2.7\times$ over the
+stages the parity path recovers), and costs less than the $\pm11$\%
+round-to-round spread of the protection-cost measurement; double parity
+restores two simultaneous stage failures from the same stored bytes at the
+cost of one when their backups sit on distinct nodes; and with backups
+confined to pipeline devices, joint placement remains feasible at every
+per-device memory cap at which the model fits, where a cost-first placement
+cannot be backed up.  For edge deployments that cannot depend on a remote
+service, this turns a protected-stage failure from a request loss or a
+minutes-long reconfiguration into a delay of two to three decode steps.
