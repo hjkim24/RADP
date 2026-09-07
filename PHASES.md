@@ -2601,3 +2601,4 @@ fig_storage_tolerance는 본문 공식으로 대체·삭제. testbed 필요 항�
 
 - 4차 패널(Fable, Opus 과부하로 교체): 5/5 Accept subject to editor-verified errata. 통합 판정 **Accept with editor-verified errata**, MUST-FIX 5(K1 discussion "backup room", K2 493 ms 삭제(패널 자신의 3차 오류), K3 결론 "offline", K4 Pareto endpoints, K5 Fig. 1 캡션/§III-A 미러 표기) 전부 반영 + SHOULD 대부분 반영. Fig. 1은 §III·코드와 일치 판정; R 비대칭(2/0)·head 음영·코디네이터 비보호 캡션 반영.
 - 미적용: Reconfigure 폐기 사유(사용자 지시), 8-device 탐색 상한(미검증), 환경 문단(지면). 결정문 `docs/paper/ars_round4_decision_2026-09-04.md`(+ .ko.md).
+- 2026-09-07 지면 제약 해제 후 추가: §IV-A 소프트웨어 환경 문단, §IV-C 코디네이터 사이징 + Limitations 코디네이터 SPOF 문장, §II-B 엣지/IoT 내결함성 문헌 위치 설정(IoT-J 5편 추가, Crossref 서지 확인). 11쪽. IoT-J 투고 하드 리밋 없음(8쪽 초과분 $175/쪽) 확인.
