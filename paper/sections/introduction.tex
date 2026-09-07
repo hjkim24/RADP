@@ -1,12 +1,13 @@
 \section{Introduction}\label{sec:intro}
 
-\IEEEPARstart{L}{arge} language models (LLMs) are increasingly being used
-for battery management, industrial fault diagnosis, visual monitoring, and
-industrial-control protocol emulation~\cite{zhang2026finetuning,liu2024joint,
-wang2024largescale,chamotra2026advancing}.  Many of these deployments cannot
-assume an uninterrupted path to a public cloud.  Industrial operational
-technology networks may be physically isolated from untrusted external
-networks~\cite{hussain2025airgap}; remote and maritime sites operate over
+\IEEEPARstart{L}{arge} language models (LLMs) are moving into deployments
+that run on site: collective agents over IoT devices~\cite{zhong2024casit},
+assistants in homes and buildings, and monitoring, fault diagnosis, and
+control-system emulation in industrial
+plants~\cite{wang2024largescale,liu2024joint,chamotra2026advancing}.  Many of
+these deployments cannot assume an uninterrupted path to a public cloud:
+operational-technology networks may be physically isolated from untrusted
+external networks~\cite{hussain2025airgap}; remote and maritime sites operate over
 limited or time-varying links~\cite{yuan2023elect,yang2024erocn}; and mobile
 robots are sensitive to delay, packet loss, and disconnection in their control
 loop~\cite{omena2023twotier}.  Keeping inference on site avoids making these
@@ -21,8 +22,8 @@ heterogeneous: its pipeline may span GPUs, CPUs, and embedded accelerators
 with different execution rates and memory capacities.
 
 Distribution removes a single-device capacity bottleneck but makes each
-request depend on every stage of the pipeline.  Fault-tolerant Industrial
-Internet of Things routing already treats node and link failures as operating
+request depend on every stage of the pipeline.  Fault-tolerant IoT routing
+already treats node and link failures as operating
 conditions~\cite{kaur2023intelligent}, and we encountered unexpected process
 exits and out-of-memory failures while operating our testbed.  For
 autoregressive inference the dependence is severe: each stage retains the KV
