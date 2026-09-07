@@ -20,6 +20,25 @@ training weights so training survives device failures~\cite{chen2024ftpipehd}
 state within a token interval), and JARVIS evaluates route reconfiguration
 and layer skipping, a degraded execution~\cite{sirera2024jarvis}.
 
+\subsection{Fault Tolerance in Edge and IoT Systems}
+
+Edge-service fault tolerance in the IoT literature works at task or service
+granularity.  Mudassar et al.\ checkpoint IoT application tasks and replicate
+the checkpoint files on neighbouring edge nodes~\cite{mudassar2022adaptive};
+Sun et al.\ migrate tasks away from failed nodes in an industrial edge
+network~\cite{sun2025robustness}; Zhang et al.\ select substitute fog nodes
+from a Markov model of node reliability~\cite{zhang2022faulttolerant}; and Ma
+et al.\ schedule DNN inference tasks onto edge servers whose availability is
+uncertain~\cite{ma2023reliability}.  These mechanisms protect a task's
+completion, and the substitute node is chosen after the service it replaces
+has been placed.  For edge-server and service placement, Zhang et al.\ show
+that coupled placement decisions must be solved
+together~\cite{zhang2022joint}.  \sys{} carries both observations to the
+request state of a pipelined LLM: the protected unit is a stage's per-token
+KV column, restored within a few decode steps rather than by re-executing
+the task, and the backup device is chosen inside the layer-placement search
+because its memory reservation constrains that search.
+
 \subsection{Recomputation}
 
 Recomputation rebuilds lost KV state by executing model layers again.  Petals
