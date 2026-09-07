@@ -11,7 +11,7 @@ external networks~\cite{hussain2025airgap}; remote and maritime sites operate ov
 limited or time-varying links~\cite{yuan2023elect,yang2024erocn}; and mobile
 robots are sensitive to delay, packet loss, and disconnection in their control
 loop~\cite{omena2023twotier}.  Keeping inference on site avoids making these
-applications depend on a remote service; the site's own devices then serve
+applications depend on a remote service.  The site's own devices then serve
 the model over their local network, and the model weights and growing
 key-value (KV) cache can exceed the memory of a single edge device, or one device cannot meet
 the throughput target.  Splitting consecutive
@@ -38,11 +38,11 @@ also recover the current KV state before the next token can be generated.
 Existing recovery mechanisms trade recovery time against the state retained
 during normal operation.  Recomputation, even when limited to the failed
 stage as in Petals~\cite{borzunov2023distributed}, replays model computation whose
-cost grows with the prefix produced before the failure; KV replication, as in
-DejaVu~\cite{strati2024dejavu}, avoids that replay but stores the sum of the
-protected stages' KV caches; reactive reconfiguration stores nothing but must
-reload weights and restart the request, whereas SpotServe migrates state during
-an announced preemption grace period~\cite{miao2024spotserve}; and
+cost grows with the prefix produced before the failure.  KV replication, as
+in DejaVu~\cite{strati2024dejavu}, avoids that replay but stores the sum of
+the protected stages' KV caches.  Reactive reconfiguration stores nothing but
+must reload weights and restart the request, whereas SpotServe migrates state
+during an announced preemption grace period~\cite{miao2024spotserve}.
 GhostServe's erasure-coded KV checkpoints target tensor-parallel serving with
 parity in host memory~\cite{jayakody2026ghostserve}.  None of these
 establishes how to protect KV state across the stages of a heterogeneous,
@@ -71,14 +71,14 @@ charges backup-weight reservations to each device's memory constraint.  This
 coupling excludes placements that execute normally but cannot admit a valid
 backup after failure.
 
-This paper makes four contributions: it formulates fault recovery for
+This paper makes four contributions: (i) it formulates fault recovery for
 heterogeneous distributed LLM inference along Recovery Latency,
 Recovery-State Footprint, and Recovery Feasibility, with KV-State Fidelity as
-a property of the recovered state; it introduces cross-stage KV parity that
+a property of the recovered state; (ii) it introduces cross-stage KV parity that
 restores one failed stage without prefix recomputation and a second parity
-column for two simultaneous failures; it develops a recovery-aware placement
+column for two simultaneous failures; (iii) it develops a recovery-aware placement
 search that folds backup assignment and backup-weight reservation into
-placement feasibility; and it evaluates \sys{} on a heterogeneous Jetson
+placement feasibility; and (iv) it evaluates \sys{} on a heterogeneous Jetson
 testbed against recomputation, Petals-style failed-stage replay,
 DejaVu-style replication, and reactive reconfiguration.  Section~\ref{sec:related}
 positions the work, Section~\ref{sec:design} presents the design,

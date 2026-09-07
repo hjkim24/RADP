@@ -135,8 +135,7 @@ decoding of a Reed--Solomon code~\cite{plank1997tutorial}:
 
 Algorithm~\ref{alg:cross-stage-parity} summarizes the guarded path.  After
 the reconstructed prefix is installed on the backup, the coordinator executes
-the interrupted position once from its mirrored input and continues with the
-next decode step; positions before the failure are never forwarded through
+the interrupted position once from its mirrored input and continues with the next decode step.  Positions before the failure are never forwarded through
 the failed layer range again, and any contract failure returns to the replay
 ladder.
 
@@ -220,10 +219,10 @@ iteration builds $R$ for the current $\psi$, re-solves the DP with that $R$
 as the backup burden, keeps the pair if it satisfies Eq.~\ref{eq:mem} under
 its own reservations and ranks better under Eq.~\ref{eq:rank}, and stops
 when $\psi$ and $R$ repeat or after ten iterations,
-returning the best self-consistent pair; the alternation is a heuristic
+returning the best self-consistent pair.  The alternation is a heuristic
 without an optimality guarantee.  Every ordered device subset is enumerated around this loop (1\,950 on the
 six-worker fleet, $\sum_{k=2}^{|\mathcal{D}|}P(|\mathcal{D}|,k)$ in general,
-about 9.9 million at ten devices); the 7B solve took 122\,s on this fleet.
+about 9.9 million at ten devices).  The 7B solve took 122\,s on this fleet.
 
 
 \subsection{Runtime Integration}\label{sec:design:runtime}
@@ -234,8 +233,7 @@ runs the alternating search, loads the active stage weights, and preloads the
 backup weights selected by $R$.  Parity updates and input mirrors are keyed by
 request and position, so duplicate delivery is idempotent.  Worker loss is
 detected through the request remote procedure call (RPC) path, whose trailer
-carries the failed layer interval, or through heartbeat (1\,s ticks, 5\,s timeout) under asynchronous
-forwarding; the coordinator then freezes the affected request, applies the
+carries the failed layer interval, or through heartbeat (1\,s ticks, 5\,s timeout) under asynchronous forwarding.  The coordinator then freezes the affected request, applies the
 contract in Algorithm~\ref{alg:cross-stage-parity}, promotes the backup, and
 updates the neighboring routes.  The prototype is Python with PyTorch and gRPC; the coordinator owns
 placement, parity state, failure attribution, and recovery, and the worker

@@ -33,7 +33,7 @@ loaded and its recovery state current before the failure.
 for its guarantee first: at both scales every two-failure trial reconstructed
 both lost columns from $P$ and $Q$.  Its absolute cost depends on the recovery mapping.  With the two backups on
 distinct nodes, as the scheduler placed them at 7B, recovery completes in
-1.1--1.4\,s, the same as a single failure; with every non-head backup on one Orin Nano, as on the 350M
+1.1--1.4\,s, the same as a single failure.  With every non-head backup on one Orin Nano, as on the 350M
 placement, the second promotion is a cold weight load and the intercept
 rises to 30.3\,s while the slope stays flat.  A scheduler that spreads
 backups therefore buys double-failure tolerance at roughly the cost of
@@ -61,8 +61,7 @@ allowing backups on devices outside the pipeline dissolved the gap on both
 fleets.
 
 \textbf{Limitations.}  The measurements come from one fleet of Jetson boards
-on a wired LAN and from two models of one family, OPT-6.7B and OPT-350M;
-other model families, device classes, and lossy or intermittent links, under
+on a wired LAN and from two models of one family, OPT-6.7B and OPT-350M.  Other model families, device classes, and lossy or intermittent links, under
 which a missed KV column fails the contract into replay, remain to be
 measured.  At 7B, Reconfigure was
 measured at two positions.  The protection domain covers
@@ -70,7 +69,7 @@ fail-stop failures of non-head workers: the head stage and the coordinator
 are unprotected, a last-stage failure falls back to replay because no
 downstream survivor can confirm the final slot, and a failure during prefill
 has no prefix to reconstruct.  The injected failure is a deterministic exception raised after the victim's
-input for position $P$ has reached the coordinator; process kills,
+input for position $P$ has reached the coordinator.  Process kills,
 out-of-memory terminations, failures before the mirrored input lands
 (contract check (iv)), and the replay fallback they trigger were not
 measured, so the reported latencies characterize the parity path rather than
@@ -83,9 +82,10 @@ would relax the reservation at a recovery cost between \sys{} and
 Reconfigure, a middle point we did not measure.  The coordinator holds all
 parity state and is itself unprotected: its failure loses every in-flight
 request's parity and mirror state, and a standby coordinator would need those
-columns replicated to it, which we leave to future work; a head failure falls to full-prefix
-replay on its preloaded backup, unmeasured; its memory grows with concurrent
-requests and context length beyond the per-request figures above.  The
+columns replicated to it, which we leave to future work.  Its memory grows
+with concurrent requests and context length beyond the per-request figures
+above.  A head failure falls to full-prefix replay on its preloaded backup, a
+path we did not measure.  The
 scheduler does not optimize where backups land, so the two-failure result
 holds for mappings that, like the 7B one, place the two backups on distinct
 nodes.  After a recovery the promoted backup serves unprotected until the
@@ -115,9 +115,9 @@ adding backup spread to the placement objective would make the two-failure
 cost independent of where backups land.  Other model families, fleets with
 different SKUs, and a head/middle/tail victim sweep would test the
 generality of the flat-in-$P$ result.  Protecting the coordinator and the
-head stage are the next steps for the protection domain; a general
+head stage are the next steps for the protection domain.  A general
 $k$-parity construction with Cauchy coefficients pays off only when
-$\sum_s\ell_s/\ell_{\max}$ is large; and the contract can be relaxed for
+$\sum_s\ell_s/\ell_{\max}$ is large, and the contract can be relaxed for
 tail victims and prefill failures while the placement objective absorbs
 recovery latency and per-hop costs.
 
@@ -133,13 +133,13 @@ the backup assignment so that the failed stage's weights have a device to
 load on.
 On a six-stage Jetson pipeline serving OPT-6.7B, single parity recovers in
 1.2--1.4\,s, flat over the measured failure positions, while recomputation
-grows to 16\,s; it recovers about one decode step later than replication
+grows to 16\,s.  It recovers about one decode step later than replication
 while retaining $3.7\times$ less coordinator KV state ($2.7\times$ over
-the stages the parity path recovers), and changes failure-free throughput by $+0.6$\% ($\pm11$\% across three
-rounds); double parity
-restores two simultaneous stage failures from the same stored bytes at the
-cost of one when their backups sit on distinct nodes; and, in an offline placement analysis with backups
-confined to pipeline devices, joint placement remains feasible at every
+the stages the parity path recovers), and it changes failure-free throughput
+by $+0.6$\% ($\pm11$\% across three rounds).  Double parity restores two
+simultaneous stage failures from the same stored bytes at the cost of one
+when their backups sit on distinct nodes.  In an offline placement analysis
+with backups confined to pipeline devices, joint placement remains feasible at every
 per-device memory cap at which the model fits, where a cost-first placement
 cannot be backed up.  For edge deployments that cannot depend on a remote
 service, this turns a protected-stage failure whose recovery contract holds
