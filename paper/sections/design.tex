@@ -222,7 +222,8 @@ when $\psi$ and $R$ repeat or after ten iterations,
 returning the best self-consistent pair.  The alternation is a heuristic
 without an optimality guarantee.  Every ordered device subset is enumerated around this loop (1\,950 on the
 six-worker fleet, $\sum_{k=2}^{|\mathcal{D}|}P(|\mathcal{D}|,k)$ in general,
-about 9.9 million at ten devices).  The 7B solve took 122\,s on this fleet.
+about 9.9 million at ten devices; the prototype searches up to eight
+devices, 109\,592 orderings).  The 7B solve took 122\,s on this fleet.
 
 
 \subsection{Runtime Integration}\label{sec:design:runtime}

@@ -41,13 +41,11 @@ below denotes the median failure-free token interval of the same sweep,
 measured in three independent trials, each on a freshly restarted pipeline,
 so each fit pools 15 trials and carries a standard error.
 
-\textbf{Software environment.}  The workers run JetPack 6.1 (L4T R36.4,
-Ubuntu 22.04, CUDA 12.6, cuDNN 9.3, Python 3.10) with NVIDIA's PyTorch 2.5
-wheel; the coordinator, an AGX Xavier that JetPack 6 does not support, runs
+\textbf{Software environment.}  The workers run JetPack 6 (L4T R36.4.x, Ubuntu 22.04, CUDA 12.6, cuDNN
+9.3, Python 3.10) with NVIDIA's PyTorch 2.5 wheel; the coordinator, an AGX Xavier that JetPack 6 does not support, runs
 JetPack 5 (Ubuntu 20.04, Python 3.9) with a CPU-only PyTorch build.  Both
-use transformers 4.50 and gRPC (grpcio 1.60+).  The Orin Nanos run at MAXN
-SUPER, \texttt{ao-1} at MAXN with locked clocks, and \texttt{ao-2} as
-flashed.  All boards share one wired campus LAN.
+use transformers 4.50 and gRPC (grpcio 1.60+).  The Orin Nanos run at MAXN SUPER and \texttt{ao-1} at MAXN with
+locked clocks.  All boards share one wired campus LAN.
 
 \textbf{Small-model microscopy.}  Three analyses run on OPT-350M instead:
 the cross-tier fidelity probe, the five-position Reconfigure sweep, and the
@@ -230,8 +228,8 @@ Table~\ref{tab:recovery-summary} charges the mirror to Petals alone.
 Charged to every family, the ratios become $3.0\times$ for one column and
 42\% for two.
 Replication and the replay families tolerate any number of simultaneous
-protected-stage failures that backups can host; parity restores up to $k$
-and falls to replay beyond.
+protected-stage failures that backups can host; parity restores up to $k$ and falls to replay beyond, and its path
+additionally fetches the surviving columns at recovery.
 During failure-free decoding, parity and replication ship the same KV
 columns from the workers, so their difference is coordinator memory, not
 traffic.  In general, $k$ parity
@@ -241,14 +239,16 @@ placement and 2.25 on the head-heavy 350M placement, where a third column
 would already retain more state than replication; the implementation stops
 at $k=2$.  Over a 2\,048-token context the 7B placement retains 832\,MB
 under replication and 224\,MB under single parity (350M: 72 versus 32\,MB),
-a derived projection from the measured layer shapes.  \textbf{Coordinator
-sizing.}  Per request the coordinator holds $k\,\ell_{\max}N_{\mathrm{ctx}}$
-bytes of parity plus the input mirror: at 7B over 2\,048 tokens, 224\,MB
-(single parity) or 448\,MB (double) plus 80\,MB of mirror as built, against
-832\,MB plus the same mirror under replication.  The AGX Xavier coordinator
-has about 30\,GB free, so single parity leaves room for roughly 100 such
-requests in flight where replication leaves room for about 30; a smaller
-coordinator shifts both bounds proportionally.
+a derived projection from the measured layer shapes.  \textbf{Coordinator sizing.}  For a request of $N_{\mathrm{ctx}}$ tokens
+the coordinator holds $k\,\ell_{\max}N_{\mathrm{ctx}}$ bytes of parity plus
+the input mirror: at 7B over 2\,048 tokens, 224\,MB (single parity) or
+448\,MB (double) plus 96\,MB of mirror as built (six 8\,kB vectors per
+position, the head's included), against 832\,MB plus the same mirror under
+replication.  Per byte of coordinator memory, single parity therefore holds
+about $2.9\times$ as many such requests in flight as replication; the
+prototype caps each of its parity, mirror, and replica stores at 256\,MB and
+evicts whole requests, so the deployed capacity is a configuration choice
+rather than the coordinator's memory.
 
 \textbf{Two simultaneous failures.}  With $k=2$, we fail two protected
 stages at once (\texttt{on-2} and \texttt{ao-2}, whose backups
