@@ -41,6 +41,14 @@ below denotes the median failure-free token interval of the same sweep,
 measured in three independent trials, each on a freshly restarted pipeline,
 so each fit pools 15 trials and carries a standard error.
 
+\textbf{Software environment.}  The workers run JetPack 6.1 (L4T R36.4,
+Ubuntu 22.04, CUDA 12.6, cuDNN 9.3, Python 3.10) with NVIDIA's PyTorch 2.5
+wheel; the coordinator, an AGX Xavier that JetPack 6 does not support, runs
+JetPack 5 (Ubuntu 20.04, Python 3.9) with a CPU-only PyTorch build.  Both
+use transformers 4.50 and gRPC (grpcio 1.60+).  The Orin Nanos run at MAXN
+SUPER, \texttt{ao-1} at MAXN with locked clocks, and \texttt{ao-2} as
+flashed.  All boards share one wired campus LAN.
+
 \textbf{Small-model microscopy.}  The cross-tier fidelity probe, the
 five-position Reconfigure sweep, and the analysis of a concentrated backup
 mapping need byte-level instrumentation or repeated boots that the 7B
@@ -232,7 +240,14 @@ placement and 2.25 on the head-heavy 350M placement, where a third column
 would already retain more state than replication; the implementation stops
 at $k=2$.  Over a 2\,048-token context the 7B placement retains 832\,MB
 under replication and 224\,MB under single parity (350M: 72 versus 32\,MB),
-a derived projection from the measured layer shapes.
+a derived projection from the measured layer shapes.  \textbf{Coordinator
+sizing.}  Per request the coordinator holds $k\,\ell_{\max}N_{\mathrm{ctx}}$
+bytes of parity plus the input mirror: at 7B over 2\,048 tokens, 224\,MB
+(single parity) or 448\,MB (double) plus 80\,MB of mirror as built, against
+832\,MB plus the same mirror under replication.  The AGX Xavier coordinator
+has about 30\,GB free, so single parity leaves room for roughly 100 such
+requests in flight where replication leaves room for about 30; a smaller
+coordinator shifts both bounds proportionally.
 
 \textbf{Two simultaneous failures.}  With $k=2$, we fail two protected
 stages at once (\texttt{on-2} and \texttt{ao-2}, whose backups
