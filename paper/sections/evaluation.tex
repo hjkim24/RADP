@@ -49,15 +49,16 @@ use transformers 4.50 and gRPC (grpcio 1.60+).  The Orin Nanos run at MAXN
 SUPER, \texttt{ao-1} at MAXN with locked clocks, and \texttt{ao-2} as
 flashed.  All boards share one wired campus LAN.
 
-\textbf{Small-model microscopy.}  The cross-tier fidelity probe, the
-five-position Reconfigure sweep, and the analysis of a concentrated backup
-mapping need byte-level instrumentation or repeated boots that the 7B
-deployment makes impractical.  For these we use OPT-350M in fp16 (24 layers,
-4\,096 bytes of KV per layer per token) on a five-stage pipeline over five of
-the same workers (\texttt{ao-2} head, layers 1--15; \texttt{on-1} 16--17;
-\texttt{on-6} 18--19; \texttt{ao-1} 20--23; \texttt{on-2} 24; 163\,ms median token
-interval in the recovery sweep), plus two CPU-only Orin Nano workers as candidate backup hosts in
-the placement study.  Both deployments share the coordinator, the injection
+\textbf{Small-model microscopy.}  Three analyses run on OPT-350M instead:
+the cross-tier fidelity probe, the five-position Reconfigure sweep, and the
+analysis of a concentrated backup mapping.  Each needs byte-level
+instrumentation or repeated boots that the 7B deployment makes impractical.
+The 350M model (fp16, 24 layers, 4\,096 bytes of KV per layer per token)
+runs as a five-stage pipeline over five of the same workers, \texttt{ao-2}
+(head, layers 1--15), \texttt{on-1} (16--17), \texttt{on-6} (18--19),
+\texttt{ao-1} (20--23), and \texttt{on-2} (24), with a 163\,ms median token
+interval in the recovery sweep; two CPU-only Orin Nano workers serve as
+candidate backup hosts in the placement study.  Both deployments share the coordinator, the injection
 mechanism, and the validity gates, and every 350M result is marked.
 
 \textbf{Recovery families.}  Five recovery paths run under one coordinator
