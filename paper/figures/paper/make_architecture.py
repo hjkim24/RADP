@@ -12,8 +12,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _paper import EMPH, GRAY, INK, LIGHT, save  # noqa: E402
 
 # generic pipeline: (label, is_head, is_ellipsis, backups hosted by this device)
-STAGES = [("head", True, False, ["stage $n$"]), ("stage 2", False, False, []),
-          ("stage 3", False, False, ["head", "stage 2"]), ("", False, True, []), ("stage $n$", False, False, ["stage 3"])]
+STAGES = [("Head", True, False, ["Stage $n$"]), ("Stage 2", False, False, []),
+          ("Stage 3", False, False, ["Head", "Stage 2"]), ("", False, True, []), ("Stage $n$", False, False, ["Stage 3"])]
 
 fig, ax = plt.subplots(figsize=(3.45, 2.4))
 ax.set_xlim(0, 100); ax.set_ylim(9, 80); ax.axis("off")
@@ -35,14 +35,14 @@ def dotted_arrow(p, q, *, color=GRAY, lw=0.6):
     arrow((x1 - 1.8 * ux, y1 - 1.8 * uy), q, color=color, lw=lw)
 
 # --- client
-box(51.5, 71, 16, 7); ax.text(59.5, 74.5, "client", ha="center", va="center", size=7)
-arrow((59.5, 71), (59.5, 65)); ax.text(61, 68, "request", size=5.5, color=GRAY, va="center")
+box(51.5, 71, 16, 7); ax.text(59.5, 74.5, "Client", ha="center", va="center", size=7)
+arrow((59.5, 71), (59.5, 65)); ax.text(61, 68, "Request", size=5.5, color=GRAY, va="center")
 
 # --- coordinator
 box(28, 44.5, 63, 20.5, lw=0.9)
 ax.text(59.5, 62.1, "Coordinator", ha="center", va="center", size=7.5, weight="bold")
-for x, y, t in [(44.5, 55.7, "recovery-aware\nplacement ($\\psi$, $R$)"), (74.5, 55.7, "cross-stage\nparity ($P$, $Q$)"),
-                (44.5, 48.5, "input mirror"), (74.5, 48.5, "failure detection")]:
+for x, y, t in [(44.5, 55.7, "Recovery-aware\nplacement ($\\psi$, $R$)"), (74.5, 55.7, "Cross-stage\nparity ($P$, $Q$)"),
+                (44.5, 48.5, "Input mirror"), (74.5, 48.5, "Failure detection")]:
     h = 6.6 if "\n" in t else 4.4
     box(x - 14, y - h / 2, 28, h, ec=LIGHT, lw=0.5, r=0.6)
     ax.text(x, y, t, ha="center", va="center", size=6, linespacing=1.05)
@@ -50,10 +50,10 @@ for x, y, t in [(44.5, 55.7, "recovery-aware\nplacement ($\\psi$, $R$)"), (74.5,
 # --- legend (left)
 lx = 2
 box(lx, 44.5, 25, 20.5, ec=LIGHT, lw=0.5)
-for y, col, ls, t in [(62.3, INK, "-", "request path"), (58.5, GRAY, "-", "activation"),
-                      (54.7, EMPH, "-", "KV + input"), (50.9, GRAY, (0, (1, 1.5)), "control ($\\psi$, $R$)")]:
+for y, col, ls, t in [(62.3, INK, "-", "Request path"), (58.5, GRAY, "-", "Activation"),
+                      (54.7, EMPH, "-", "KV + input"), (50.9, GRAY, (0, (1, 1.5)), "Control ($\\psi$, $R$)")]:
     ax.plot([lx + 1.5, lx + 6.5], [y, y], color=col, lw=0.7, linestyle=ls); ax.text(lx + 8, y, t, size=5.5, va="center")
-box(lx + 1.5, 45.5, 5, 3.2, ls=(0, (2, 1.5)), ec=INK, lw=0.5, r=0.5); ax.text(lx + 8, 47.1, "backup ($R$)", size=5.5, va="center")
+box(lx + 1.5, 45.5, 5, 3.2, ls=(0, (2, 1.5)), ec=INK, lw=0.5, r=0.5); ax.text(lx + 8, 47.1, "Backup ($R$)", size=5.5, va="center")
 
 # --- workers
 W, GAP = 15.5, 3.6
@@ -67,10 +67,12 @@ for i, (lab, head, dots, hosted) in enumerate(STAGES):
     box(x, 19, W, 11, fc="#F2F2F2" if head else "white")
     ax.text(c, 24.5, lab, ha="center", va="center", size=6.5)
     if hosted:
-        h = 3.4 * len(hosted) + 1.2
+        h = 8.0  # same box for every device: room for two backups
         box(x + 0.8, 17.2 - h, W - 1.6, h, ls=(0, (2, 1.5)), lw=0.5, r=0.6)
-        for k, l in enumerate(hosted):
-            ax.text(c, 17.2 - h + 1.9 + 3.4 * (len(hosted) - 1 - k), l, ha="center", va="center", size=5.6, color=GRAY)
+        mid = 17.2 - h / 2
+        ys = [mid] if len(hosted) == 1 else [mid + 1.7, mid - 1.7]
+        for l, yy in zip(hosted, ys):
+            ax.text(c, yy, l, ha="center", va="center", size=5.6, color=GRAY)
     if not head:  # KV column + input to the coordinator
         arrow((c + 2.2, 30), (c + 2.2, 38), color=EMPH, lw=0.6)
     # control stub from the dotted bus

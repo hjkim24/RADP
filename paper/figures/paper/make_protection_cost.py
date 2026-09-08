@@ -28,8 +28,8 @@ else:
 BASE = NAME['parity'].split(" (")[0]
 MODES = [("single_parity", f"{BASE}\n($k$=1)"),
          ("double_parity", f"{BASE}\n($k$=2)"),
-         ("replication",   f"{NAME['replicate']}\n(replication)")]
-METRICS = [("throughput_delta_vs_off_pct", "throughput loss", -1, "white", ""),
+         ("replication",   f"{NAME['replicate']}\n(Replication)")]
+METRICS = [("throughput_delta_vs_off_pct", "Throughput loss", -1, "white", ""),
            ("tbt_p50_delta_vs_off_pct",    "TBT p50 increase", +1, LIGHT, "////")]
 
 fig, ax = plt.subplots(figsize=COL)
@@ -42,12 +42,13 @@ for j, (key, name, sign, face, hatch) in enumerate(METRICS):
     ax.bar(xs, means, w, yerr=stds, color=face, edgecolor=INK, linewidth=0.6,
            hatch=hatch, capsize=2, error_kw=dict(linewidth=0.6), label=name, zorder=3)
     for xi, m, s in zip(xs, means, stds):
-        ax.annotate(f"{m:.1f}%", xy=(xi, m + s), xytext=(0, 2), textcoords="offset points",
-                    ha="center", va="bottom", fontsize=6)
+        # values in a row along the bottom of the axes, under each bar, clear of the whiskers
+        ax.annotate(f"{m:+.1f}%", xy=(xi, YLIM[0]), xytext=(0, 2), textcoords="offset points",
+                    ha="center", va="bottom", fontsize=5.5, zorder=4)
 
 ax.set_xticks(x)
 ax.set_xticklabels([lbl for _, lbl in MODES])
-ax.set_ylabel("overhead vs. protection off (%)")
+ax.set_ylabel("Overhead vs. protection off (%)")
 ax.set_ylim(*YLIM)
 if YLIM[0] < 0:
     ax.axhline(0, color=INK, linewidth=0.5, zorder=2)

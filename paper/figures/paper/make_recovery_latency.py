@@ -95,11 +95,11 @@ for mode in ORDER:
 
 # absolute anchor: one normal decode step
 ax.axhline(median_step, color=INK, linewidth=0.5, linestyle=":", zorder=1)
-label(ax, f"one decode step ({median_step*1e3:.0f} ms)", xy=(35.5, median_step),
+label(ax, f"One decode step ({median_step*1e3:.0f} ms)", xy=(35.5, median_step),
       dy=-2, ha="right", va="top", color=INK, size=6)
 
-ax.set_xlabel("failure position $P$ (tokens generated before the failure)")
-ax.set_ylabel("recovery latency (s)")
+ax.set_xlabel("Failure position $P$ (tokens generated before the failure)")
+ax.set_ylabel("Recovery latency (s)")
 ax.set_yscale("log")
 ax.set_xlim(0, 36)
 ax.set_ylim(*YLIM)

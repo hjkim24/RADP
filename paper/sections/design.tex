@@ -82,7 +82,7 @@ each column to $\ell_{\max}=\max_{s\in\mathcal{S}}\ell_s$ before encoding and
 records $\ell_s$ so that recovered bytes can be trimmed before installation.
 With one parity column, the coordinator stores
 \begin{equation}\label{eq:single-parity}
-  P[r,q] = \bigoplus_{s\in\mathcal{S}}
+  P[r,q] = \mathop{\textstyle\bigoplus}_{s\in\mathcal{S}}
             \operatorname{pad}\!\left(D_s[r,q]\right).
 \end{equation}
 An update is applied at most once for each $(r,q,s)$ tuple.  The coordinator
@@ -93,7 +93,7 @@ For $k=2$, \sys{} stores a second column over the Galois field
 $\mathrm{GF}(2^8)$.  Each stage has a distinct nonzero coefficient $a_s=g^{\operatorname{rank}(s)}$, where
 $g$ is a primitive field element, and
 \begin{equation}\label{eq:double-parity}
-  Q[r,q] = \bigoplus_{s\in\mathcal{S}}
+  Q[r,q] = \mathop{\textstyle\bigoplus}_{s\in\mathcal{S}}
             a_s\otimes\operatorname{pad}\!\left(D_s[r,q]\right).
 \end{equation}
 All operations are byte-wise, so the worker-side KV representation does not
@@ -116,7 +116,7 @@ and requires a complete parity entry for every $q<N$.
 For one failed stage $x$, each prefix column is recovered as
 \begin{equation}\label{eq:recover-single}
   \widehat{D}_x[r,q] = \operatorname{trim}_{\ell_x}\!\left(
-  P[r,q]\oplus\!\bigoplus_{s\in\mathcal{S}\setminus\{x\}}
+  P[r,q]\oplus\!\mathop{\textstyle\bigoplus}_{s\in\mathcal{S}\setminus\{x\}}
   \operatorname{pad}\!\left(D_s[r,q]\right)\right).
 \end{equation}
 For two failed stages $x$ and $y$, the surviving columns are first removed

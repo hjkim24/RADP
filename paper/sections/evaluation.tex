@@ -270,26 +270,11 @@ effect, and the distributed mapping at 7B removes it.
 
 \subsection{KV-State Fidelity}\label{sec:eval:fidelity}
 
-\begin{table}[t]
-  \centering
-  \scriptsize
-  \caption{Cross-tier replay of one protected stage: regenerated KV compared
-  element-wise with the original (live probe, OPT-350M).}
-  \label{tab:fidelity}
-  \begin{tabular}{l r}
-    \toprule
-    KV elements differing between tiers & 26.9\% \\
-    Maximum absolute difference & $2^{-8}$ \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
 The parity and replication paths install the bytes that were stored, so a
 completed parity recovery is bit-exact by construction (the unit tests assert
 layer-wise identity of the recovered K and V tensors).  Replay-based recovery
 regenerates KV through a model forward pass, which on heterogeneous hardware
-need not reproduce the original bytes.  Table~\ref{tab:fidelity} quantifies this with
-a controlled probe on the 350M deployment, the only one whose stages fit a
+need not reproduce the original bytes.  A controlled probe on the 350M deployment quantifies this, the only one whose stages fit a
 CPU-only board (a tier pair absent from the all-CUDA 7B fleet): the same fp16 input forwarded through the same two-layer
 stage (layers 16--17, eight positions) on \texttt{on-1} (CUDA) and on a
 CPU-only Orin Nano differs in 26.9\% of KV elements, with a maximum absolute
