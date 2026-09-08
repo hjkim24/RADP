@@ -41,8 +41,8 @@ below denotes the median failure-free token interval of the same sweep,
 measured in three independent trials, each on a freshly restarted pipeline,
 so each fit pools 15 trials and carries a standard error.
 
-\textbf{Software environment.}  The workers run JetPack 6 (L4T R36.4.x, Ubuntu 22.04, CUDA 12.6, cuDNN
-9.3, Python 3.10) with NVIDIA's PyTorch 2.5 wheel; the coordinator, an AGX Xavier that JetPack 6 does not support, runs
+\textbf{Software environment.}  The workers run JetPack 6.1--6.2 (L4T R36.4.0--R36.4.3, Ubuntu 22.04,
+CUDA 12.6, cuDNN 9.3, Python 3.10) with NVIDIA's PyTorch 2.5 wheel; the coordinator, an AGX Xavier that JetPack 6 does not support, runs
 JetPack 5 (Ubuntu 20.04, Python 3.9) with a CPU-only PyTorch build.  Both
 use transformers 4.50 and gRPC (grpcio 1.60+).  The Orin Nanos run at MAXN SUPER and \texttt{ao-1} at MAXN with
 locked clocks.  All boards share one wired campus LAN.
