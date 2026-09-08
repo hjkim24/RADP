@@ -1,4 +1,4 @@
-\section{Evaluation}\label{sec:eval}
+\section{Performance Evaluation}\label{sec:eval}
 
 We evaluate \sys{} on a heterogeneous Jetson testbed around the three axes
 introduced in Section~\ref{sec:intro}: \emph{Recovery Latency},
@@ -218,7 +218,8 @@ KV per token in total (416\,kB) and the largest holds 114\,688 (112\,kB).
 DejaVu retains the sum; a single parity column retains one padded largest
 column, $3.7\times$ less, and two columns retain 224\,kB, 46\% less than
 replication.  Both families retain the tail stage's column, whose recovery
-falls back to replay (Section~\ref{sec:disc}); over the four stages the
+falls back to replay because no downstream survivor can confirm its final
+slot; over the four stages the
 parity path recovers, the ratio is $2.7\times$.  Petals retains instead the
 fp16 input of every protected stage at every position, 40\,kB per token here.
 The prototype retains this per-position input mirror for every family,

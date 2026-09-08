@@ -2606,3 +2606,4 @@ fig_storage_tolerance는 본문 공식으로 대체·삭제. testbed 필요 항�
 ## Phase PAPER-ARS-ROUND5 — 4차 검증 재심사 (2026-09-08)
 
 - 5차 패널(Fable): 5/5 Accept, 차단 없음. 4차 MUST 5건 전파 검증 통과, Fit 6→7. 잔여는 신규 텍스트에 한정: 코디네이터 사이징의 "30 GB free" 근거 없음·256 MB 저장소 상한·미러 6벡터(96 MB)·"about 30"(실제 33.7) → 바이트당 비교(2.9×)로 재작성; 환경 문단 JetPack 6.1→"JetPack 6 (R36.4.x)", ao-2 모드 삭제; §II-B Sun proactive·Zhang 서술·Ma 델타 완화; 서론 CASIT 서술·미인용 절 삭제; tolerance 문장 fetch 절 복원; 8-device 탐색 상한(scheduler max_search_devices=8, 109,592 orderings) 명시. 응답서 Round 5 절.
+- 2026-09-08 교수 피드백 반영: (1) 저널 약어·월, (2) 학회 in Proc. 약어·장소·월·페이지, URL은 온라인 전용만 유지, (3) §IV 제목 Performance Evaluation, (4) Limitations 문단을 sections/limitations_holdout.tex로 분리(PDF 제외, 리비전 시 복원). 10쪽.

@@ -60,54 +60,6 @@ fits.  Where the threshold lies depends on which devices may host backups;
 allowing backups on devices outside the pipeline dissolved the gap on both
 fleets.
 
-\textbf{Limitations.}  The measurements come from one fleet of Jetson boards
-on a wired LAN and from two models of one family, OPT-6.7B and OPT-350M.  Other model families, device classes, and lossy or intermittent links, under
-which a missed KV column fails the contract into replay, remain to be
-measured.  At 7B, Reconfigure was
-measured at two positions.  The protection domain covers
-fail-stop failures of non-head workers: the head stage and the coordinator
-are unprotected, a last-stage failure falls back to replay because no
-downstream survivor can confirm the final slot, and a failure during prefill
-has no prefix to reconstruct.  The injected failure is a deterministic exception raised after the victim's
-input for position $P$ has reached the coordinator.  Process kills,
-out-of-memory terminations, failures before the mirrored input lands
-(contract check (iv)), and the replay fallback they trigger were not
-measured, so the reported latencies characterize the parity path rather than
-the average over all failure timings.  Latency was measured with
-synchronous forwarding; asynchronous forwarding adds a heartbeat-bounded
-detection delay common to all families that we did not quantify, and a
-worker that hangs rather than crashes can still be misattributed.  Backup weights are preloaded and Eq.~\ref{eq:mem} reserves memory for them;
-a lazy variant that loads only the failed stage's weights at failure time
-would relax the reservation at a recovery cost between \sys{} and
-Reconfigure, a middle point we did not measure.  The coordinator holds all
-parity state and is itself unprotected: its failure loses every in-flight
-request's parity and mirror state, and a standby coordinator would need those
-columns replicated to it, which we leave to future work.  Its memory grows
-with concurrent requests and context length beyond the per-request figures
-above.  A head failure falls to full-prefix replay on its preloaded backup, a
-path we did not measure.  The
-scheduler does not optimize where backups land, so the two-failure result
-holds for mappings that, like the 7B one, place the two backups on distinct
-nodes.  After a recovery the promoted backup serves unprotected until the
-coordinator re-solves the mapping, a re-protection step we did not measure.
-The flat-in-$P$ result is measured to $P=32$; the reconstruction loop is
-linear in the prefix at a per-position cost the fit bounds below 12\,ms.  The fidelity probe covers
-one tier pair and one two-layer stage on the 350M deployment.  The storage
-advantage depends on placement geometry: double parity saves 46\% over
-replication on the 7B placement but only 11\% on the head-heavy 350M
-placement, where a third parity column would cost more state than
-replication while tolerating fewer failures.  Each recovery-latency fit
-pools three trials per position; the victim-sensitivity sweep, the 7B Reconfigure trials, and the 350M
-sweeps are one trial per position; the protection-cost figures are means over
-three rounds.  Network traffic and per-token energy were not measured.
-Recovery latencies are measured with the failure detected on the request
-RPC path; a failure detected only by heartbeat adds up to the 5\,s timeout.  Every
-measurement is single-request; concurrency and prompt length were not
-varied.  Recovery latency excludes post-recovery degradation: a promoted
-backup that serves two stages decodes more slowly until re-protection.  The
-$k=1$ and $k=2$ trials differ in victim identity and backup tier as well as
-in $k$.
-
 \textbf{Future work.}  A full Reconfigure sweep at 7B, end-to-end
 measurements that include heartbeat detection, process-kill injection, and
 the lazy-backup middle point would complete the latency comparison, and
