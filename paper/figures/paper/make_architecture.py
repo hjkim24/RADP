@@ -39,17 +39,17 @@ box(51.5, 71, 16, 7); ax.text(59.5, 74.5, "Client", ha="center", va="center", si
 arrow((59.5, 71), (59.5, 65)); ax.text(61, 68, "Request", size=5.5, color=GRAY, va="center")
 
 # --- coordinator
-box(28, 44.5, 63, 20.5, lw=0.9)
-ax.text(59.5, 62.1, "Coordinator", ha="center", va="center", size=7.5, weight="bold")
-for x, y, t in [(44.5, 55.7, "Recovery-aware\nplacement ($\\psi$, $R$)"), (74.5, 55.7, "Cross-stage\nparity ($P$, $Q$)"),
-                (44.5, 48.5, "Input mirror"), (74.5, 48.5, "Failure detection")]:
-    h = 6.6 if "\n" in t else 4.4
-    box(x - 14, y - h / 2, 28, h, ec=LIGHT, lw=0.5, r=0.6)
-    ax.text(x, y, t, ha="center", va="center", size=6, linespacing=1.05)
+box(28, 43.5, 63, 21.5, lw=0.9)
+ax.text(59.5, 62.4, "Coordinator", ha="center", va="center", size=7.5, weight="bold")
+for x, y, t in [(44.5, 55.4, "Recovery-aware\nplacement ($\\psi$, $R$)"), (74.5, 55.4, "Cross-stage\nparity ($P$, $Q$)"),
+                (44.5, 47.6, "Input mirror"), (74.5, 47.6, "Failure detection")]:
+    h = 7.6 if "\n" in t else 4.8
+    box(x - 14.2, y - h / 2, 28.4, h, ec=LIGHT, lw=0.5, r=0.6)
+    ax.text(x, y, t, ha="center", va="center", size=5.8, linespacing=1.15)
 
 # --- legend (left)
 lx = 2
-box(lx, 44.5, 25, 20.5, ec=LIGHT, lw=0.5)
+box(lx, 43.5, 25, 21.5, ec=LIGHT, lw=0.5)
 for y, col, ls, t in [(62.3, INK, "-", "Request path"), (58.5, GRAY, "-", "Activation"),
                       (54.7, EMPH, "-", "KV + input"), (50.9, GRAY, (0, (1, 1.5)), "Control ($\\psi$, $R$)")]:
     ax.plot([lx + 1.5, lx + 6.5], [y, y], color=col, lw=0.7, linestyle=ls); ax.text(lx + 8, y, t, size=5.5, va="center")
