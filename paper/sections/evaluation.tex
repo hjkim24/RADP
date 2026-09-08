@@ -15,9 +15,19 @@ decoding.  Every result is labelled as a \emph{live} fleet measurement, a
 \emph{controlled offline} analysis on measured profiles, or a \emph{derived
 projection} from model geometry.
 
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{paper/fig_testbed.jpg}
+  \caption{The testbed: two Jetson AGX Orin and the AGX Xavier coordinator
+  (left, enclosed), six Jetson Orin Nano (top and bottom), and the gigabit
+  switch that joins them on one wired LAN.}
+  \label{fig:testbed}
+\end{figure}
+
 \subsection{Experimental Setup}\label{sec:eval:setup}
 
-\textbf{Testbed and model.}  The coordinator runs on a Jetson AGX Xavier.
+\textbf{Testbed and model.}  Fig.~\ref{fig:testbed} shows the fleet.  The
+coordinator runs on a Jetson AGX Xavier.
 Workers are two Jetson AGX Orin 32\,GB (\texttt{ao-1}, \texttt{ao-2}) and
 four Jetson Orin Nano 8\,GB (\texttt{on-1}, \texttt{on-2}, \texttt{on-5},
 \texttt{on-6}), all executing stages on CUDA over a shared LAN.  The model is
