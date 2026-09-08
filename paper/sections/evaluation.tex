@@ -185,7 +185,13 @@ report levels rather than a slope.  Holding no recovery state thus
 costs more than two orders of magnitude relative to any family with a
 pre-assigned backup, and the penalty grows with the model: on the 350M
 deployment the same baseline recovers in 24.25\,s at the median
-(18.62--39.35\,s over five positions).
+(18.62--39.35\,s over five positions), of which replaying the prefix
+accounts for 1.6--6.4\,s.  This baseline is deliberately unassisted:
+SpotServe reaches much lower migration cost by planning around advance
+preemption notice and a grace period~\cite{miao2024spotserve}, and an
+unannounced crash or out-of-memory kill on an edge worker offers neither,
+which is why \sys{} keeps its backup weights loaded and its recovery state
+current before the failure.
 
 \textbf{Victim sensitivity.}  Failing \texttt{on-5} (layers 15--18) instead
 of \texttt{on-2} on the same placement (one trial per position) gives the
@@ -249,7 +255,15 @@ replication.  Per byte of coordinator memory, single parity therefore holds
 about $2.9\times$ as many such requests in flight as replication; the
 prototype caps each of its parity, mirror, and replica stores at 256\,MB and
 evicts whole requests, so the deployed capacity is a configuration choice
-rather than the coordinator's memory.
+rather than the coordinator's memory.  The argument for parity is therefore
+retained state, and it holds when that state matters: long contexts, larger
+models, many concurrent requests, or a memory-constrained coordinator.  With
+short requests and a coordinator with memory to spare, replication is the
+simpler choice, which \sys{}'s \texttt{ReplicaCache} path provides on the
+same shipping channel; the per-token footprint and context length, both
+known before deployment, decide between the two.  A quantized replica would
+narrow the gap at the price of the bit-exactness of
+Section~\ref{sec:eval:fidelity}.
 
 \textbf{Two simultaneous failures.}  With $k=2$, we fail two protected
 stages at once (\texttt{on-2} and \texttt{ao-2}, whose backups
@@ -265,8 +279,11 @@ the backups land.  On the 350M deployment the scheduler assigned every
 non-head backup to the same Orin Nano, and the same two-failure trials, while
 reconstructing both columns at every position with a slope of 2.78\,ms per
 position, posted an intercept of 30.3\,s because that board had to load a
-second stage cold before it could serve.  The intercept is a placement
-effect, and the distributed mapping at 7B removes it.
+second stage cold before it could serve.  The intercept is a placement effect, and the distributed mapping at 7B
+removes it: a scheduler that spreads backups buys double-failure tolerance
+at roughly the cost of single-failure recovery.  The result should be read
+for its guarantee first; at both scales every two-failure trial
+reconstructed both lost columns from $P$ and $Q$.
 
 \subsection{KV-State Fidelity}\label{sec:eval:fidelity}
 
@@ -344,9 +361,14 @@ both procedures succeed, and the joint-only band appears at 300--600\,MB
 (pipeline devices) and 200\,MB (whole fleet, where two CPU-only nodes absorb
 reservations).
 These are feasibility results under a memory constraint and say nothing
-about serving latency; they show that the backup reservation in Eq.~\ref{eq:mem} decides
-which placements are admissible once memory is tight, and that a 7B-class
-model on 8\,GB boards is already in that regime.
+about serving latency.  Coupling is a property of the memory-constrained
+regime: once the free memory per device approaches the size of a stage and
+its backup, the reservation in Eq.~\ref{eq:mem} decides which placements are
+admissible, and the alternating search of Section~\ref{sec:design:dp} finds
+placements that a sequential procedure discards.  The 350M deployment
+reaches that regime only under synthetic caps, whereas a 7B-class model on
+8\,GB boards lives in it; where the threshold lies depends on which devices
+may host backups.
 
 \subsection{Cost of Protection}\label{sec:eval:cost}
 

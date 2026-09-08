@@ -139,3 +139,4 @@ Panel: R0, R1, R2, R3, DA all Accept; nothing blocks. All five Round-4 MUST erra
 
 Still not applied: LAN rate and an artifact statement (no public repository yet); the Reconfigure discard reasons (by choice); the relative-error column (no data).
 
+Advisor pass (2026-09-08): reference list in IEEE form (journal abbreviations, months, 'in Proc.' conference abbreviations with location); Section IV retitled Performance Evaluation; the Limitations paragraph held out of the submitted version (sections/limitations_holdout.tex, to be restored at revision); Table II folded into §IV-D prose; the Discussion subsection folded into §IV-B/§IV-C/§IV-E and Section V retitled Conclusion and Future Work; figures with capitalised labels, Fig. 4 values along the bottom axis, Fig. 1 uniform backup boxes; XOR operators reduced to \oplus with limits. 10 pages.
