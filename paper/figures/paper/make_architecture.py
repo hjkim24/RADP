@@ -70,7 +70,7 @@ for i, (lab, head, dots, hosted) in enumerate(STAGES):
         h = 8.0  # same box for every device: room for two backups
         box(x + 0.8, 17.2 - h, W - 1.6, h, ls=(0, (2, 1.5)), lw=0.5, r=0.6)
         mid = 17.2 - h / 2
-        ys = [mid] if len(hosted) == 1 else [mid + 1.7, mid - 1.7]
+        ys = [mid + 0.5] if len(hosted) == 1 else [mid + 2.2, mid - 1.2]  # optical centring (descenders)
         for l, yy in zip(hosted, ys):
             ax.text(c, yy, l, ha="center", va="center", size=5.6, color=GRAY)
     if not head:  # KV column + input to the coordinator
