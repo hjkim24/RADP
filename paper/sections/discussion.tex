@@ -3,7 +3,8 @@
 IoT deployments that keep inference on site run LLMs as pipelines over
 heterogeneous, memory-constrained devices, where a stage failure loses the
 request's KV state and existing recovery paths trade prefix-length
-recomputation, sum-of-stages replication, or minutes of reconfiguration.
+recomputation, sum-of-stages replication, or a reactive reconfiguration that
+reloads the pipeline.
 \sys{} recovers the lost KV from one or two cross-stage parity columns
 without recomputing the prefix and selects the layer placement together with
 the backup assignment so that the failed stage's weights have a device to
@@ -14,14 +15,15 @@ grows to 16\,s.  It recovers about one decode step later than replication
 while retaining $3.7\times$ less coordinator KV state ($2.7\times$ over
 the stages the parity path recovers), and it changes failure-free throughput
 by $+0.6$\% ($\pm11$\% across three rounds).  Double parity restores two
-simultaneous stage failures from the same stored bytes at the cost of one
-when their backups sit on distinct nodes.  In an offline placement analysis
+simultaneous stage failures from the same stored bytes with recovery
+latency comparable to a single failure when their backups reside on
+distinct nodes.  In an offline placement analysis
 with backups confined to pipeline devices, joint placement remains feasible at every
 per-device memory cap at which the model fits, where a cost-first placement
 cannot be backed up.  For edge deployments that cannot depend on a remote
 service, this turns a protected-stage failure whose recovery contract holds
-from a request loss or a minutes-long reconfiguration into a delay of two to
-four decode steps.
+from a request loss or a reactive reconfiguration into a delay of two to
+four decode steps over the measured range ($P\le32$).
 
 Future work includes a full Reconfigure sweep at 7B and end-to-end
 measurements that include heartbeat detection, process-kill injection, and

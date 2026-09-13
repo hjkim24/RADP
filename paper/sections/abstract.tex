@@ -1,26 +1,25 @@
 \begin{abstract}
-Internet of Things deployments that cannot depend on a remote service run
-large language models (LLMs) on site as a pipeline of decoder layers over
-heterogeneous edge devices.  A stage failure then loses the request's
-key-value (KV) cache.  Existing recovery paths recompute the lost state at
-prefix-length cost, replicate every protected stage's KV cache, or
-reconfigure the pipeline in minutes.  This paper presents KV-CARE (KV Cache
-Availability and Recovery at the Edge).  Cross-stage parity folds the
-protected stages' KV columns into one parity column (two for simultaneous
-failures) and reconstructs a failed stage's KV cache bit-exactly without
-recomputing the prefix.  Recovery-aware placement charges backup-weight reservations to each
-device's memory while placing layers, so the failed stage's weights have a device to
-load on.  On a six-stage Jetson pipeline serving OPT-6.7B, KV-CARE's
-recovery latency is flat over the measured failure positions ($5\pm3$\,ms
-per generated token against $447\pm6$\,ms for recomputation) and completes
-in two to four decode steps.  It recovers about one decode step later than
-replication while retaining 3.7$\times$ less coordinator KV state
-(2.7$\times$ over the stages it recovers), and it restores two simultaneous
-failures at the cost of one when their backups sit on distinct nodes.  In an
-offline placement analysis with backups confined to pipeline devices, joint
+Internet of Things sites that cannot depend on a remote service run large
+language models (LLMs) as pipelines of decoder layers over heterogeneous
+edge devices.  A stage failure then loses the request's key-value (KV)
+cache.  Existing recovery paths recompute the lost state at prefix-length
+cost, replicate every protected stage's KV cache, or reactively reconfigure
+and reload the pipeline.  This paper presents KV-CARE (KV Cache Availability
+and Recovery at the Edge).  Cross-stage parity folds the protected stages'
+KV columns into one parity column (two for simultaneous failures) and
+reconstructs a failed stage's KV cache bit-exactly without recomputing the
+prefix.  Recovery-aware placement charges backup-weight reservations to each
+device's memory while placing layers, so the failed stage's weights have a
+device to load on.  On a six-stage Jetson pipeline serving OPT-6.7B,
+KV-CARE's recovery latency is flat over the measured failure positions
+($5\pm3$\,ms per generated token against $447\pm6$\,ms for recomputation)
+and completes in two to four decode steps over that range.  It recovers
+about one decode step later than replication while retaining 3.7$\times$
+less coordinator KV state (2.7$\times$ over the stages it recovers), and it
+restores two simultaneous failures with recovery latency comparable to a
+single failure when their backups reside on distinct nodes.  In an offline
+placement analysis with backups confined to pipeline devices, joint
 placement remains feasible across the memory range in which the model fits,
 where placement followed by backup assignment does not.  Single-parity
 protection changes throughput by $+0.6$\% ($\pm11$\% across three rounds).
-On site, a protected-stage failure whose recovery contract holds becomes
-a delay of a few decode steps.
 \end{abstract}

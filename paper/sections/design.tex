@@ -52,7 +52,9 @@ stage, and two columns protect two simultaneous failed stages.  We assume an
 unannounced process crash, out-of-memory termination, or network partition is
 observed as a fail-stop event.  Byzantine corruption, coordinator failure, a
 head-stage failure, and more than $k$ simultaneous protected-stage failures
-are outside this guarantee.  A partitioned worker that later returns is
+are outside this guarantee.  The current contract may also fall back to
+replay for a tail-stage victim, because final-slot confirmation is
+unavailable when no downstream survivor exists.  A partitioned worker that later returns is
 not fenced by the prototype, and $R$ does not model shared failure domains.
 
 A failure count within the limit is necessary but not sufficient.  Before
@@ -220,7 +222,19 @@ as the backup burden, keeps the pair if it satisfies Eq.~\ref{eq:mem} under
 its own reservations and ranks better under Eq.~\ref{eq:rank}, and stops
 when $\psi$ and $R$ repeat or after ten iterations,
 returning the best self-consistent pair.  The alternation is a heuristic
-without an optimality guarantee.  Every ordered device subset is enumerated around this loop (1\,950 on the
+without an optimality guarantee.  The mapping $R$ itself is built greedily
+from the current $\psi$: stages are visited in device order, and for each
+stage the solver scans the candidate hosts (the pipeline devices by default,
+or the whole fleet), discards any host whose free memory, after its own
+stage and the reservations already assigned to it, cannot hold the stage's
+weights, and picks among the rest the host with the smallest estimated
+recovery time, the sum of a profiled weight-transfer time and a profiled
+recompute time on that host.  The chosen host's reservation then grows by
+the stage's weight bytes before the next stage is assigned, so one fast
+peer cannot absorb every backup; ties keep the first candidate in host
+order, and a stage with no admissible host makes the pair $(\psi,R)$
+infeasible.  This is the production backup solver of
+Section~\ref{sec:eval:feasibility}.  Every ordered device subset is enumerated around this loop (1\,950 on the
 six-worker fleet, $\sum_{k=2}^{|\mathcal{D}|}P(|\mathcal{D}|,k)$ in general,
 about 9.9 million at ten devices; the prototype searches up to eight
 devices, 109\,592 orderings).  The 7B solve took 122\,s on this fleet.
